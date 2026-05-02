@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-04-30
+
+### Added
+
+- Initial repository scaffold from `KeplerOps/keplerops-template`.
+- `.ground-control.yaml` configured with `pulsar` project identifier and
+  `KeplerOps/pulsar` GitHub repo.
+- `.mcp.json` wired to the local Ground Control MCP server with
+  `GH_REPO=KeplerOps/pulsar`.
+- `docs/adrs/` seeded with foundational ADRs covering the custom
+  runtime decision, scene/composition model, timeline engine, audio
+  engine, default rendering surface, export path, browser workbench,
+  and agent-native authoring constraint.
+- `docs/design/` seeded with architecture recommendations and a
+  positioning/landscape doc that motivate the ADRs.
+- `docs/requirements/` scaffolded with conventions (UID `PUL-`,
+  F/Q/A/P series, RFC 2119 statements, status/priority/wave) and
+  placeholders for personas, use cases, and user stories.
+- `AGENTS.md` rewritten for this repo (replaces template residue).
+- Personas, use cases, and user stories for Scene Author, Coding Agent,
+  Presenter, and Reviewer under `docs/requirements/`.
+- 55 requirements created in Ground Control: 30 functional (PUL-F001
+  through PUL-F030), 10 quality (PUL-Q001 through PUL-Q010), 10
+  architectural constraints (PUL-A001 through PUL-A010), 5 policy/process
+  (PUL-P001 through PUL-P005). All requirements are `DRAFT` and carry
+  priority + wave. Inter-requirement relations (DEPENDS_ON, REFINES,
+  RELATED) and ADR traceability links (DOCUMENTS, CONSTRAINS) added.
+- `.claude/skills/`: `implement`, `ship`, `stage`, `review-tests`, and
+  `gh-workflow-monitor` skills imported and adapted from
+  `KeplerOps/Ground-Control`. The end-of-flow Codex cross-model review
+  step is removed in this repo's `/implement` and `/ship`; test-quality
+  review still runs.
+- `.claude/hooks/`: `git-merge-guard.py` (blocks merges/force-push),
+  `log-skill-call.sh` (records skill invocations for the stop hook),
+  `verify-implementation.sh` (stop hook enforcing CHANGELOG when
+  `/implement` was used).
+- `.claude/settings.json`: registered the new hooks (PreToolUse Bash,
+  PostToolUse Skill, Stop).

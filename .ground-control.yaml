@@ -1,0 +1,10 @@
+schema_version: 1
+project: pulsar
+github_repo: KeplerOps/pulsar
+# Tech stack is not yet committed. The workflow block is intentionally
+# omitted until the repo-layout / build-tooling ADR lands and chooses
+# concrete test/lint/format/completion commands.
+rules:
+  plan_rules: .gc/plan-rules.md
+knowledge:
+  dir: docs/knowledge

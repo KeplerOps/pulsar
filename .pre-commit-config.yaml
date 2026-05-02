@@ -1,0 +1,30 @@
+fail_fast: true
+
+repos:
+  # =============================================================================
+  # STAGE 1: Fast checks (linting, formatting, syntax)
+  # =============================================================================
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # =============================================================================
+  # STAGE 2: Security
+  # =============================================================================
+
+  # Secrets detection
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.0
+    hooks:
+      - id: gitleaks

@@ -1,0 +1,2 @@
+[allowlist]
+  description = "Global gitleaks allowlist for false positives"
