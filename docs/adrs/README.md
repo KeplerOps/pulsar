@@ -34,3 +34,4 @@ Each ADR includes:
 | [006](006-remotion-export-path.md) | Remotion as a Parallel Export Path, Not the Live Runtime | Accepted |
 | [007](007-browser-workbench.md) | Browser as the Default Workbench and Agent Collaboration Surface | Accepted |
 | [008](008-agent-native-authoring.md) | Agent-Native Authoring as a First-Class Architectural Constraint | Accepted |
+| [009](009-repo-layout-and-build-tooling.md) | Repo Layout and Build Tooling | Accepted |

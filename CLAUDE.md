@@ -19,8 +19,9 @@ a specific deck. The runtime is the product.
 
 ## Build
 
-Tech stack is not yet committed. Build commands will be documented after
-the repo-layout/build-tooling ADR lands.
+Toolchain is defined by [ADR-009](docs/adrs/009-repo-layout-and-build-tooling.md):
+TypeScript + ESM, pnpm, Vite, Vitest, Biome, Node 22 LTS. Build commands
+land in `package.json` and `.ground-control.yaml` when the scaffold lands.
 
 ## Ground Control
 
