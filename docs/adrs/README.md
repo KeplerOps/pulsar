@@ -26,11 +26,11 @@ Each ADR includes:
 | ADR | Title | Status |
 |-----|-------|--------|
 | [000](000-template.md) | ADR Template | — |
-| [001](001-custom-experience-runtime.md) | Custom Experience Runtime, Not a Slide Framework | Proposed |
-| [002](002-scene-registry-and-compositions.md) | Scene Registry and Composition Manifests as the Core Abstraction | Proposed |
-| [003](003-gsap-timeline-engine.md) | GSAP as the Timeline Engine | Proposed |
-| [004](004-howler-audio-engine.md) | Howler.js as the Audio Engine | Proposed |
-| [005](005-dom-css-default-rendering-surface.md) | DOM/CSS as the Default Rendering Surface | Proposed |
-| [006](006-remotion-export-path.md) | Remotion as a Parallel Export Path, Not the Live Runtime | Proposed |
-| [007](007-browser-workbench.md) | Browser as the Default Workbench and Agent Collaboration Surface | Proposed |
-| [008](008-agent-native-authoring.md) | Agent-Native Authoring as a First-Class Architectural Constraint | Proposed |
+| [001](001-custom-experience-runtime.md) | Custom Experience Runtime, Not a Slide Framework | Accepted |
+| [002](002-scene-registry-and-compositions.md) | Scene Registry and Composition Manifests as the Core Abstraction | Accepted |
+| [003](003-gsap-timeline-engine.md) | GSAP as the Timeline Engine | Accepted |
+| [004](004-howler-audio-engine.md) | Howler.js as the Audio Engine | Accepted |
+| [005](005-dom-css-default-rendering-surface.md) | DOM/CSS as the Default Rendering Surface | Accepted |
+| [006](006-remotion-export-path.md) | Remotion as a Parallel Export Path, Not the Live Runtime | Accepted |
+| [007](007-browser-workbench.md) | Browser as the Default Workbench and Agent Collaboration Surface | Accepted |
+| [008](008-agent-native-authoring.md) | Agent-Native Authoring as a First-Class Architectural Constraint | Accepted |
