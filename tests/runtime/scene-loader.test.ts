@@ -586,6 +586,7 @@ describe('createSceneLoader (PUL-F008)', () => {
       });
       // Only the FIRST runner invocation blocks; the follow-up
       // navigation runs through immediately so the test settles.
+      let firstRunInvoked = false;
       const blockingRunner: SceneTimelineRunner = (input) => {
         if (firstRunInvoked) return undefined;
         firstRunInvoked = true;
