@@ -468,6 +468,30 @@ describe('subscribeNavigation — clause 2: parse at startup and on popstate', (
     expect(fake.removeEventListener).toHaveBeenCalledTimes(1);
     expect(fake.removeEventListener).toHaveBeenCalledWith('popstate', handler);
   });
+
+  it('removes the popstate listener if the startup user-callback throws', () => {
+    // Without cleanup-on-startup-throw, the disposer never returns and
+    // the popstate listener leaks for the entire window lifetime.
+    // Codex review (cycle 2) caught this; this test pins the contract.
+    const fake = buildFakeWindow('?scene=intro');
+    const onNavigateThatThrows = vi.fn(() => {
+      throw new Error('user callback bug');
+    });
+    expect(() =>
+      subscribeNavigation({
+        window: fake,
+        onNavigate: onNavigateThatThrows,
+        onError,
+      }),
+    ).toThrow('user callback bug');
+    expect(onNavigateThatThrows).toHaveBeenCalledTimes(1);
+    expect(fake.addEventListener).toHaveBeenCalledTimes(1);
+    expect(fake.removeEventListener).toHaveBeenCalledTimes(1);
+    const addArgs = fake.addEventListener.mock.calls[0];
+    const removeArgs = fake.removeEventListener.mock.calls[0];
+    expect(removeArgs?.[0]).toBe('popstate');
+    expect(removeArgs?.[1]).toBe(addArgs?.[1]);
+  });
 });
 
 describe('bootstrapNavigation — runtime entry wiring', () => {

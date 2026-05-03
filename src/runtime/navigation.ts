@@ -307,10 +307,21 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   };
 
   win.addEventListener('popstate', handle);
-  handle();
-  return () => {
+  const dispose = (): void => {
     win.removeEventListener('popstate', handle);
   };
+  // If `onNavigate` / `onError` itself throws during the startup parse,
+  // remove the popstate listener before the exception escapes. Without
+  // this, the disposer never returns and the listener leaks across the
+  // entire window lifetime. Grammar failures during startup never reach
+  // this catch — those route through `onError` and return normally.
+  try {
+    handle();
+  } catch (err) {
+    dispose();
+    throw err;
+  }
+  return dispose;
 }
 
 /**
