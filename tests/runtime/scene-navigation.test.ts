@@ -189,6 +189,30 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
       ]);
     });
 
+    it('throws when the addressed scene id appears more than once in the composition (ambiguous; use composition+index)', () => {
+      // ADR-013: repeated scene ids in `composition+scene` are
+      // ambiguous and the URL must use `composition+index` to
+      // disambiguate. Without this check, `findIndex` silently picks
+      // the first occurrence and the user can load the wrong slice
+      // (especially when later occurrences carry different overrides).
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([
+        {
+          id: 'looped',
+          manifest: ['intro', 'intro', { id: 'intro', behavior: { fade: true } }],
+        },
+      ]);
+      expect(() =>
+        resolveSceneNavigation(compositionSceneTarget('looped', 'intro'), {
+          scenes,
+          compositions,
+        }),
+      ).toThrow(
+        /^scene navigation failed: scene "intro" appears 3 times in composition "looped" — use composition\+index/,
+      );
+    });
+
     it('throws when the addressed scene is not a member of the composition', () => {
       const intro = buildScene({ id: 'intro' });
       const middle = buildScene({ id: 'middle' });

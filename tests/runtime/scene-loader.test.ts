@@ -231,7 +231,7 @@ describe('createSceneLoader (PUL-F008)', () => {
       );
     });
 
-    it('handleError(err) sets the error attribute and clears any stale scene attributes', () => {
+    it('handleError(err) sets the error attribute and clears any stale scene attributes', async () => {
       const stage = buildStage();
       stage.attrs.set('data-pulsar-scene-target', 'previous');
       stage.attrs.set('data-pulsar-composition-target', 'previous');
@@ -250,6 +250,10 @@ describe('createSceneLoader (PUL-F008)', () => {
       const parseErr = new Error('navigation grammar is invalid: repeated query parameter "scene"');
 
       loader.handleError(parseErr);
+      // handleError queues through the navigation pipeline so it runs
+      // after any in-flight cleanup; the assertions below are about
+      // the post-drain state.
+      await loader.idle();
 
       expect(captured).toEqual([parseErr]);
       expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
@@ -363,6 +367,176 @@ describe('createSceneLoader (PUL-F008)', () => {
       // (silent dispose).
       expect(log).toEqual(['intro:create', 'intro:cleanup']);
       expect(captured).toEqual([]);
+    });
+
+    it('drops superseded queued targets — rapid handle(B) then handle(C) skips B and runs only C', async () => {
+      // While A is in flight, queue B then C. C supersedes B; the
+      // loader must drop B from the queue rather than running A → B → C.
+      // Without latest-target semantics, C aborts A but B still runs to
+      // completion before C, loading a URL that is no longer current.
+      const log: string[] = [];
+      const make = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`${id}:create`);
+          },
+          cleanup: () => {
+            log.push(`${id}:cleanup`);
+          },
+        });
+      const a = make('a');
+      const b = make('b');
+      const c = make('c');
+      let firstRunInvoked = false;
+      const blockingRunner: SceneTimelineRunner = (input) => {
+        if (!firstRunInvoked) {
+          firstRunInvoked = true;
+          return new Promise<void>((_resolve, reject) => {
+            input.signal?.addEventListener(
+              'abort',
+              () => reject(input.signal?.reason ?? new Error('aborted')),
+              { once: true },
+            );
+          });
+        }
+        return undefined;
+      };
+
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([a, b, c]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: blockingRunner,
+      });
+
+      void loader.handle(sceneTarget('a'));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(log).toEqual(['a:create']);
+
+      // Queue B then C in immediate succession — C must supersede B.
+      void loader.handle(sceneTarget('b'));
+      void loader.handle(sceneTarget('c'));
+      await loader.idle();
+
+      // B must NEVER have run; only A (aborted with cleanup) and C.
+      expect(log).toEqual(['a:create', 'a:cleanup', 'c:create', 'c:cleanup']);
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('c');
+    });
+
+    it('handleError(err) aborts the active scene before surfacing the error', async () => {
+      // PUL-F007 dispatches `pulsar:navigate-error` for malformed
+      // URLs. When the URL becomes malformed *during* a scene's
+      // lifecycle, the active scene must be aborted and cleaned up
+      // before the error attribute is set — otherwise the previous
+      // scene keeps running while the stage advertises a navigation
+      // failure.
+      const log: string[] = [];
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          log.push('intro:create');
+        },
+        cleanup: () => {
+          log.push('intro:cleanup');
+        },
+      });
+      const blockingRunner: SceneTimelineRunner = (input) =>
+        new Promise<void>((_resolve, reject) => {
+          input.signal?.addEventListener(
+            'abort',
+            () => reject(input.signal?.reason ?? new Error('aborted')),
+            { once: true },
+          );
+        });
+      const stage = buildStage();
+      const captured: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: blockingRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      void loader.handle(sceneTarget('intro'));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(log).toEqual(['intro:create']);
+
+      const parseErr = new Error('navigation grammar is invalid: ...');
+      loader.handleError(parseErr);
+      await loader.idle();
+
+      // intro must have been aborted+cleaned up before the error attr
+      // landed; the stage now reflects only the error.
+      expect(log).toEqual(['intro:create', 'intro:cleanup']);
+      expect(captured).toEqual([parseErr]);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBe(parseErr.message);
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+    });
+
+    it('handleError supersedes queued targets — queued navigation does not later overwrite the error', async () => {
+      const log: string[] = [];
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          log.push('intro:create');
+        },
+        cleanup: () => {
+          log.push('intro:cleanup');
+        },
+      });
+      const middle = buildScene({
+        id: 'middle',
+        create: () => {
+          log.push('middle:create');
+        },
+      });
+      let firstRunInvoked = false;
+      const blockingRunner: SceneTimelineRunner = (input) => {
+        if (!firstRunInvoked) {
+          firstRunInvoked = true;
+          return new Promise<void>((_resolve, reject) => {
+            input.signal?.addEventListener(
+              'abort',
+              () => reject(input.signal?.reason ?? new Error('aborted')),
+              { once: true },
+            );
+          });
+        }
+        return undefined;
+      };
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, middle]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: blockingRunner,
+        onError: () => undefined,
+      });
+
+      void loader.handle(sceneTarget('intro'));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(log).toEqual(['intro:create']);
+
+      // Queue a target then immediately fire a parse error — the
+      // error supersedes the queued target so middle never runs.
+      void loader.handle(sceneTarget('middle'));
+      loader.handleError(new Error('navigation grammar is invalid: bad url'));
+      await loader.idle();
+
+      expect(log).toEqual(['intro:create', 'intro:cleanup']);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(/bad url/);
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
     });
 
     it('handle() after dispose() is a no-op', async () => {

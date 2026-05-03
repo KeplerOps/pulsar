@@ -121,12 +121,30 @@ interface InFlightLoad {
   silent: boolean;
 }
 
+/**
+ * One queued navigation event. The discriminator routes the event to
+ * either a target-resolve+lifecycle path (`kind: 'target'`) or an
+ * error-surfacing path (`kind: 'error'`). Both flow through the same
+ * queue so cleanup-before-handoff and latest-event supersession apply
+ * uniformly to PUL-F007's `pulsar:navigate` and `pulsar:navigate-error`
+ * events.
+ */
+type NavigationEvent =
+  | { readonly kind: 'target'; readonly target: NavigationTarget }
+  | { readonly kind: 'error'; readonly err: unknown };
+
 export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   const { stage } = options;
   const onError = options.onError ?? ((err) => console.error(err));
   let inFlight: InFlightLoad | null = null;
   let disposed = false;
-  // `pending` chains every navigation so concurrent calls run in
+  // Latest-event generation. Every enqueue bumps this counter; queued
+  // events that find their generation no longer current at the top of
+  // `runOnce` skip themselves. Without this, a sequence
+  // handle(B) → handle(C) while A is in flight would run A → B → C
+  // even though B was superseded before it ever started.
+  let generation = 0;
+  // `pending` chains every navigation event so handlers run in
   // submission order without overlapping stage mutations.
   let pending: Promise<void> = Promise.resolve();
 
@@ -160,13 +178,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     setStageAttr(ATTR_ERROR, describeError(err));
   };
 
-  const runOnce = async (target: NavigationTarget): Promise<void> => {
-    // Cancel any in-flight load and wait for its cleanup before
-    // starting fresh. This is the popstate-during-load path.
-    await abortAndAwait();
-    if (disposed) return;
-    resetStageAttrs();
-
+  const runTarget = async (target: NavigationTarget): Promise<void> => {
     let resolved: SceneNavigationTarget | null;
     try {
       resolved = resolveSceneNavigation(target, {
@@ -202,7 +214,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       await load.settled;
     } catch (err) {
       // Don't surface an error caused by our own abort — the new
-      // navigation that triggered it owns the visible state.
+      // event that triggered it owns the visible state.
       if (!load.silent && !load.controller.signal.aborted) {
         surfaceError(err);
       }
@@ -211,36 +223,43 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
   };
 
-  const enqueue = (target: NavigationTarget): Promise<void> => {
+  const runOnce = async (event: NavigationEvent, myGen: number): Promise<void> => {
+    // Drop superseded events before doing any visible work — both at
+    // entry (handle → handle race) and after the abort-and-await yield
+    // (slow cleanup observed by another enqueue).
+    if (myGen !== generation || disposed) return;
+    await abortAndAwait();
+    if (myGen !== generation || disposed) return;
+    resetStageAttrs();
+
+    if (event.kind === 'error') {
+      surfaceError(event.err);
+      return;
+    }
+    await runTarget(event.target);
+  };
+
+  const enqueue = (event: NavigationEvent): Promise<void> => {
     if (disposed) return pending;
-    // Abort the in-flight load eagerly so the queued navigation can
-    // proceed past `await load.settled` immediately. Without this,
-    // a popstate-fired re-navigation would wait for the current load
-    // to drain naturally — which is exactly the wrong behavior when
-    // the user clicked back/forward.
+    // Eagerly abort any in-flight load so the queued event can
+    // proceed past `await load.settled` immediately. Without this, a
+    // popstate-fired re-navigation would wait for the current load to
+    // drain naturally — exactly the wrong behavior when the user
+    // clicked back/forward.
     if (inFlight !== null) inFlight.controller.abort();
+    const myGen = ++generation;
     pending = pending.then(
-      () => runOnce(target),
-      () => runOnce(target),
+      () => runOnce(event, myGen),
+      () => runOnce(event, myGen),
     );
     return pending;
   };
 
-  const handleError = (err: unknown): void => {
-    if (disposed) return;
-    // Parse errors don't queue against the navigation chain — they
-    // surface immediately on the stage so reviewers see the broken
-    // URL even if a previous scene is still mid-cleanup. Reset
-    // success-state attrs so the stage doesn't lie about which scene
-    // is loaded.
-    clearStageAttr(ATTR_SCENE);
-    clearStageAttr(ATTR_COMPOSITION);
-    surfaceError(err);
-  };
-
   return {
-    handle: enqueue,
-    handleError,
+    handle: (target) => enqueue({ kind: 'target', target }),
+    handleError: (err) => {
+      void enqueue({ kind: 'error', err });
+    },
     idle: () => pending,
     dispose: () => {
       disposed = true;

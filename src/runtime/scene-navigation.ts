@@ -181,9 +181,28 @@ function resolveCompositionAndScene(
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
   const manifest = resolveCompositionManifest(compositionId, compositions);
-  const startIndex = manifest.findIndex((entry) => entryId(entry) === sceneId);
-  if (startIndex < 0) {
+  // Walk the whole manifest once: a single occurrence is the
+  // unambiguous slice start; zero occurrences is a non-member error;
+  // two or more occurrences make `composition+scene` ambiguous and
+  // require `composition+index` per ADR-013. Without the count check,
+  // `findIndex` silently picks the first match and a later occurrence
+  // (especially with different `range` / `behavior` overrides) loads
+  // a slice that does not match what the URL named.
+  let startIndex = -1;
+  let count = 0;
+  for (const [index, entry] of manifest.entries()) {
+    if (entryId(entry) === sceneId) {
+      if (startIndex < 0) startIndex = index;
+      count += 1;
+    }
+  }
+  if (count === 0) {
     fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
+  }
+  if (count > 1) {
+    fail(
+      `scene "${sceneId}" appears ${count} times in composition "${compositionId}" — use composition+index for ambiguous locators`,
+    );
   }
   const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
   const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);

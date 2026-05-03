@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modules by id when synthesizing its scene registry so manifests
   with repeated scene ids (which `resolveComposition` legitimately
   supports) are not rejected by the registry's duplicate-id guard.
+- `src/runtime/scene-navigation.ts` — `composition+scene` resolution
+  rejects ambiguous locators: when the addressed scene id appears
+  more than once in the named composition, the resolver throws
+  `scene navigation failed: scene "<id>" appears <N> times in
+  composition "<id>" — use composition+index for ambiguous locators`
+  per ADR-013. Without the count check, `findIndex` silently picks
+  the first occurrence and a later occurrence with different
+  `range` / `behavior` overrides would load a slice that does not
+  match what the URL named.
 - `src/runtime/scene-loader.ts` — `createSceneLoader(options)`
   factory plus `WorkbenchSceneCtx` and `StageElement` shapes.
   Encapsulates the navigation state machine that consumes PUL-F007's
@@ -38,8 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   navigations through a queue so concurrent calls don't race on
   stage attributes, eagerly aborts any in-flight load when a new
   navigation is enqueued (so back/forward doesn't wait for the
-  current scene to drain naturally), runs the previous scene's
-  `cleanup(ctx)` before the next preload begins, and writes
+  current scene to drain naturally), drops superseded queued
+  events via a per-event generation counter (so a rapid
+  `handle(B)` → `handle(C)` while A is in flight skips B and runs
+  only C, instead of running A → B → C), routes parse errors
+  (`handleError`) through the same queue so a malformed URL aborts
+  the active scene before the error attribute is set, runs the
+  previous scene's `cleanup(ctx)` before the next preload begins,
+  and writes
   `data-pulsar-scene-target` / `data-pulsar-composition-target` /
   `data-pulsar-navigation-error` so reviewers, agents, and
   screenshot automation can verify the runtime honored the URL —
