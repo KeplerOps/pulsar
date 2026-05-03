@@ -38,4 +38,5 @@ Each ADR includes:
 | [010](010-issue-tag-taxonomy.md) | GitHub Issue Tag Taxonomy | Accepted |
 | [011](011-composition-resolver-orchestration.md) | Composition Resolver as a Pure Orchestrator with Injected Adapters | Accepted |
 | [012](012-asset-preloader-fetch-and-drain.md) | Asset Preloader — Warm Bytes via Fetch + Drain; Decode-Complete is Future Work | Accepted |
-| [013](013-url-scene-target-selection.md) | URL `scene` Parameter Selects the Runtime Navigation Target | Accepted |
+| [013](013-url-navigation-grammar-boundary.md) | URL Navigation Grammar Boundary | Accepted |
+| [014](014-url-scene-target-selection.md) | Loading the Addressed Scene as the Runtime Navigation Target | Accepted |

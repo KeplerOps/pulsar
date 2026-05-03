@@ -9,42 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `src/runtime/url-navigation.ts` — `SceneNavigationTarget` /
+- `src/runtime/scene-navigation.ts` — `SceneNavigationTarget` /
   `SceneNavigationCompositionContext` interfaces,
-  `resolveSceneNavigationTarget` parser, and
+  `resolveSceneNavigation` dispatcher, and
   `loadSceneNavigationTarget` lifecycle bridge. Implements PUL-F008
-  end-to-end (the `scene` URL parameter plus the
-  `?composition=X&scene=Y` and `?composition=X` shapes from ADR-002
-  §Navigation): parse `scene` and `composition` once via
-  `URLSearchParams.getAll` at the runtime boundary, reject
-  repeated/conflicting values for either parameter, validate
-  identifier shapes with the shared `isKebabIdentifier` rule from
-  `./identifier.ts`, resolve scene existence via `SceneRegistry.has`
-  / `.get`, resolve composition existence via
-  `CompositionRegistry.has` / `.get`, verify the addressed scene is
-  a member of the named composition (when both supplied), and
-  surface malformed / unknown / non-member / empty-composition cases
-  as navigation errors prefixed `scene navigation failed: …` before
-  any scene lifecycle hook runs. Three navigation shapes are
-  supported: (a) `?scene=Y` — single-scene navigation, (b)
-  `?composition=X&scene=Y` — composition-scoped scene navigation,
-  (c) `?composition=X` — composition-from-start (the navigation
-  target is the composition's first scene). For shapes (b) and (c),
-  the resolver snapshots the manifest slice from the addressed
-  scene onwards plus the matching scene modules; the bridge plays
-  that snapshot through `resolveComposition` so the URL path
-  inherits PUL-F004's preload → create → timeline → cleanup
-  ordering and PUL-F006's mandatory-cleanup invariant. Per-entry
-  `range` and `behavior` overrides survive slicing intact and
-  forward to the runner adapter unchanged (ADR-011). The bridge
-  de-duplicates scene modules by id when synthesizing its scene
-  registry so manifests with repeated scene ids (which
-  `resolveComposition` legitimately supports) are not rejected by
-  the registry's duplicate-id guard. Accepts `URL`,
-  `URLSearchParams`, raw search strings, and `Location`-like `{
-  search }` objects so the same parser works in browser bootstrap
-  and in Node-side tooling. No localStorage / cookie fallback —
-  URL state is authoritative (ADR-013).
+  on top of PUL-F007's `parseNavigationSearch` parser
+  (`./navigation.ts`): consumes the parser's `NavigationTarget`,
+  resolves the locator (`kind: 'scene' | 'composition' |
+  'composition-scene' | 'composition-index' | 'none'`) against the
+  scene + composition registries, snapshots the manifest slice +
+  matching scene modules, and surfaces every miss (unknown scene,
+  unknown composition, scene-not-in-composition, index out of
+  range, empty composition, references to unregistered scenes) as a
+  `scene navigation failed: …` error before any lifecycle hook
+  runs. The lifecycle bridge plays the snapshot through
+  `resolveComposition` so the URL path inherits PUL-F004's preload
+  → create → timeline → cleanup ordering and PUL-F006's
+  mandatory-cleanup invariant. Per-entry `range` and `behavior`
+  overrides survive slicing intact and forward to the runner
+  adapter unchanged (ADR-011). The bridge de-duplicates scene
+  modules by id when synthesizing its scene registry so manifests
+  with repeated scene ids (which `resolveComposition` legitimately
+  supports) are not rejected by the registry's duplicate-id guard.
+- `src/runtime/scene-loader.ts` — `createSceneLoader(options)`
+  factory plus `WorkbenchSceneCtx` and `StageElement` shapes.
+  Encapsulates the navigation state machine that consumes PUL-F007's
+  `pulsar:navigate` / `pulsar:navigate-error` events: serializes
+  navigations through a queue so concurrent calls don't race on
+  stage attributes, eagerly aborts any in-flight load when a new
+  navigation is enqueued (so back/forward doesn't wait for the
+  current scene to drain naturally), runs the previous scene's
+  `cleanup(ctx)` before the next preload begins, and writes
+  `data-pulsar-scene-target` / `data-pulsar-composition-target` /
+  `data-pulsar-navigation-error` so reviewers, agents, and
+  screenshot automation can verify the runtime honored the URL —
+  including malformed URLs, which set
+  `data-pulsar-navigation-error` rather than silently no-op-ing.
+  `dispose()` aborts any in-flight load silently and prevents
+  future navigations. Errors flow through an optional `onError`
+  hook (defaults to `console.error`) so headless harnesses observe
+  failures without monkey-patching `console`. The loader depends
+  only on injected registries / adapters / stage, which keeps the
+  entire state machine unit-testable in Node's vitest environment
+  without DOM polyfills. `WorkbenchSceneCtx` is the scene-context
+  shape the workbench passes to every lifecycle hook (`{ stage:
+  StageElement | null }`); future requirements extend it with
+  `gsap`, `audio`, and `mode` per ADR-003 / ADR-004 / ADR-007.
 - `src/runtime/composition-registry.ts` — `CompositionRegistry`
   interface, `CompositionRegistryEntry` shape, and
   `createCompositionRegistry` factory. Mirrors PUL-F002's scene
@@ -72,52 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   containing only the placeholder scene. Gives `?composition=default`
   a registered target and gives `?composition=default&scene=
   placeholder` an end-to-end membership-validated path.
-- `src/main.ts` — workbench entry rewritten to wire PUL-F008
-  end-to-end through `WorkbenchNavigator`. Builds the scene registry
-  from `placeholderScene` and the composition registry from
-  `defaultComposition`, hands them to the navigator along with the
-  PUL-F005 asset preloader and a placeholder timeline runner, and
-  triggers the initial navigation. The navigator owns URL parsing at
-  startup and on `popstate` (ADR-007), abort-and-restart so back/
-  forward navigation runs the active scene's `cleanup(ctx)` before
-  the next one starts, and stage-attribute bookkeeping (data-
-  pulsar-scene-target, data-pulsar-composition-target,
-  data-pulsar-navigation-error) so reviewers, agents, and screenshot
-  automation can verify the runtime honored the URL — including
-  malformed URLs, which set `data-pulsar-navigation-error` rather
-  than silently no-op-ing.
-- `src/runtime/workbench-navigator.ts` —
-  `createWorkbenchNavigator(options)` factory plus
-  `WorkbenchSceneCtx`, `WorkbenchHost`, and `StageElement`
-  interfaces. Encapsulates the startup-and-popstate state machine
-  PUL-F008 + ADR-007 require: registers a `popstate` listener at
-  construction, runs URL resolution + lifecycle dispatch on every
-  navigation, eagerly aborts any in-flight load when a new
-  navigation is enqueued (so the user clicking back/forward doesn't
-  wait for the current scene to drain naturally), and serializes
-  navigations through a `pending` chain so attribute mutations on
-  the stage element don't race. Stage attributes are reset on every
-  navigation so stale state from the previous URL never leaks.
-  `dispose()` removes the listener and aborts any in-flight load
-  (silently — no error UI). Errors at parse / lookup / lifecycle
-  flow through the optional `onError` hook (defaults to
-  `console.error`) so headless harnesses and tests observe failures
-  without monkey-patching `console`. The navigator depends only on
-  injected `host` / `stage` surfaces, which keeps the entire state
-  machine unit-testable in Node's vitest environment without DOM
-  polyfills. `WorkbenchSceneCtx` is the scene-context shape the
-  workbench passes to every lifecycle hook (`{ stage: StageElement |
-  null }`); future requirements extend it with `gsap`, `audio`, and
-  `mode` per ADR-003 / ADR-004 / ADR-007.
-- `src/runtime/url-navigation-bridge.ts` — `loadSceneNavigationTarget`
-  + `LoadSceneNavigationTargetOptions` extracted out of
-  `url-navigation.ts` so the URL parser stays a pure "URL → target"
-  module with no dependency on `composition-resolver` or
-  `registry`. The bridge is the only place that synthesizes a scene
-  registry from the resolver snapshot and forwards it to
-  `resolveComposition`. Move surfaced after refactor review found
-  the original module mixed parsing and lifecycle responsibilities
-  in one >400-LOC file.
+- `src/main.ts` — workbench entry wires PUL-F007's URL navigation
+  parser to PUL-F008's scene loader. Builds the scene registry from
+  `placeholderScene` and the composition registry from
+  `defaultComposition`, instantiates a `SceneLoader` with the
+  PUL-F005 asset preloader + a placeholder timeline runner, and
+  subscribes the loader's `handle` / `handleError` to the
+  `pulsar:navigate` / `pulsar:navigate-error` events that
+  `bootstrapNavigation` dispatches. The loader honors URL
+  parameters at startup and on every `popstate`, runs the active
+  scene's `cleanup(ctx)` before the next scene's preload, and
+  records both successful targets and parse / lookup / lifecycle
+  errors on `#stage` via `data-pulsar-scene-target` /
+  `data-pulsar-composition-target` /
+  `data-pulsar-navigation-error`. The Vite HMR `dispose` hook
+  removes the popstate listener AND disposes the loader so
+  re-evaluation does not stack duplicate listeners or strand a
+  half-loaded scene.
 - `src/runtime/composition.ts` — exported `findUnregisteredEntries`
   helper (returns `MissingEntry[]` in iteration order). Centralizes
   the "report every missing scene id, not just the first"
@@ -144,34 +125,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workbench-navigator.ts`'s local `describeError`) so any future
   rendering rule (truncation, redaction, structured-cause unwrap)
   lands once.
-- `tests/runtime/workbench-navigator.test.ts` — 10-test Vitest spec
-  pinning startup navigation (single scene, composition+scene,
-  no-op when neither parameter present); error surfacing
-  (unregistered scene, lifecycle-throw, stale-attribute reset);
-  popstate handling (listener registration, re-navigation on
-  popstate, mid-lifecycle abort with cleanup invariant preserved,
-  dispose abort).
-- `tests/runtime/url-navigation.test.ts` — 58-test Vitest spec
-  covering every PUL-F008 clause and ADR-013 guardrail: input-shape
-  coverage (URL, URLSearchParams, full URL string, bare search
-  string, Location-like `{ search }` object); scene-absent → null;
-  repeated-`scene` rejection (different values, same value,
-  three-way); 13 malformed identifier shapes; unknown-id registry-
-  miss errors; sentinel registry assertions that `has` / `get` are
-  NOT called on the early failure paths; lifecycle never touched on
-  parse-failure paths; orthogonality with `mode`, `index`, `beat`,
-  and combinations thereof; the explicit `?scene=middle&index=0`
-  identity-precedence test from ADR-013; full composition+scene
-  resolution path including manifest-slice snapshot, override
-  preservation, first-entry / last-entry slice boundaries,
-  repeated-`composition` rejection, malformed / empty composition id,
-  unregistered composition, non-member scene, and missing
-  composition registry; lifecycle integration via
+- `tests/runtime/scene-navigation.test.ts` — 29-test Vitest spec
+  covering every PUL-F008 dispatch path: each `NavigationLocator`
+  kind (none, scene, composition, composition-scene,
+  composition-index) for happy paths and error paths (unknown
+  scene / composition, non-member scene, out-of-range index, empty
+  composition, scenes referenced by composition not in scene
+  registry); manifest-slice snapshot freezing; per-entry override
+  preservation; repeated-scene-id slices; lifecycle never touched
+  on any error path; lifecycle integration via
   `loadSceneNavigationTarget` × `resolveComposition` covering
-  preload-to-cleanup ordering for both single-scene and
-  composition+scene paths, identity guarantee against decoy
-  registries, mandatory cleanup, preload-aborts-before-create, ctx
-  pass-through, and override forwarding to the runner adapter.
+  preload → create → timeline → cleanup ordering for both
+  single-scene and composition paths, identity guarantee against
+  decoy registries, mandatory cleanup on create-throws,
+  preload-aborts-before-create, ctx pass-through, and override
+  forwarding to the runner adapter.
+- `tests/runtime/scene-loader.test.ts` — 11-test Vitest spec
+  pinning the loader state machine: handle() for single-scene and
+  composition+scene targets, no-op on `kind: 'none'`,
+  stale-attribute reset between navigations, error surfacing
+  through the injected `onError` hook AND the
+  `data-pulsar-navigation-error` stage attribute (unregistered
+  scene, lifecycle-throw), `handleError(parseErr)` clearing stale
+  scene attrs while recording the error, mid-lifecycle abort with
+  cleanup invariant preserved, silent dispose, and post-dispose
+  no-op.
 - `tests/runtime/composition-registry.test.ts` — 13-test Vitest spec
   covering empty / single / multi composition construction; generator
   inputs; id-shape validation (kebab-case, empty, whitespace);
@@ -184,15 +162,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{ id, ... }` object). Single source of truth for composition-entry
   identity, reused by the resolver and the URL navigation slice
   builder.
-- `docs/adrs/013-url-scene-target-selection.md` — registers the
-  decision that the `scene` URL parameter is a navigation target
-  selector that resolves through the scene registry and never
-  bypasses the runtime lifecycle, plus the
-  `?composition=X&scene=Y` semantics: composition is resolved via
-  `CompositionRegistry.has` / `.get`, membership is verified, and
-  the manifest slice is snapshotted to defend against mid-flight
-  registry substitution.
-- `docs/adrs/README.md` — registers ADR-013 in the index.
+- `docs/adrs/014-url-scene-target-selection.md` — records PUL-F008's
+  scene navigation dispatch decisions: consume PUL-F007's parsed
+  `NavigationTarget` (no parallel parser), resolve the locator
+  against the scene + composition registries, snapshot the
+  manifest slice + matching scene modules to defend against
+  mid-flight registry substitution, fail before any lifecycle hook
+  runs, route through the existing composition resolver lifecycle.
+  Indexed in `docs/adrs/README.md`.
 
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
   field on both `ResolveCompositionOptions` and

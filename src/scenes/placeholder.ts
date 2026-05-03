@@ -25,7 +25,7 @@
 // trailer-worthy to show).
 
 import type { SceneModule } from '../runtime/scene';
-import type { WorkbenchSceneCtx } from '../runtime/workbench-navigator';
+import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 
 const LIFECYCLE_ATTR = 'data-pulsar-scene-lifecycle';
 
