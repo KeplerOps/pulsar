@@ -10,25 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `src/runtime/composition-resolver.ts` — `resolveComposition` async
-  function plus `ResolveCompositionOptions`, `AssetPreloader`, and
-  `SceneTimelineRunner` types. Implements PUL-F004 (composition
-  resolution): given a `SceneRegistry` and a `CompositionManifest`, the
-  runtime (a) calls `assertCompositionManifest` defensively then
-  aggregates every missing scene id into a single actionable error
-  before any side effect; (b) per scene, `await`s the injected
-  `preloadAssets(scene)` adapter; (c) `await`s `scene.create(ctx)`;
-  (d) `await`s `runTimeline(scene, scene.timeline(ctx))`; (e) always
-  `await`s `scene.cleanup(ctx)` whenever the scene was touched
-  (mandatory cleanup per ADR-008 / PUL-P001 — runs after `create`
-  failure when resources may have been partially acquired, and after
-  timeline failure). Errors carry a `composition resolution failed:`
-  prefix; original errors are preserved as `Error.cause`; when both a
-  lifecycle phase AND cleanup throw, the wrapping message names both
-  and the cleanup error is chained onto the phase error
-  (`phaseError.cause = cleanupError`) so neither is silently swallowed.
-  Scene `ctx`, `range`, and `behavior` are opaque to the resolver —
-  sub-range / behavior interpretation is delegated to the timeline
-  runner adapter (ADR-011).
+  function plus `ResolveCompositionOptions`, `AssetPreloader`,
+  `SceneTimelineRunInput`, and `SceneTimelineRunner` types. Implements
+  PUL-F004 (composition resolution): given a `SceneRegistry` and a
+  `CompositionManifest`, the runtime (a) calls
+  `assertCompositionManifest` defensively then aggregates every missing
+  scene id into a single actionable error before any side effect; (b)
+  per scene, `await`s the injected `preloadAssets(scene)` adapter; (c)
+  `await`s `scene.create(ctx)`; (d) `await`s the value of
+  `scene.timeline(ctx)` (so async timeline factories resolve to a
+  concrete timeline) then `await`s
+  `runTimeline({ scene, timeline, range?, behavior? })` — `range` and
+  `behavior` overrides from object entries flow through the runner
+  input unchanged so the future GSAP runner can honor sub-range cuts
+  and behavior overrides without another resolver-signature change;
+  (e) always `await`s `scene.cleanup(ctx)` whenever the scene was
+  touched (mandatory cleanup per ADR-008 / PUL-P001 — runs after
+  `create` failure when resources may have been partially acquired,
+  and after timeline failure). Errors carry a `composition resolution
+  failed:` prefix; single-failure errors preserve the original as
+  `Error.cause`; combined lifecycle-phase + cleanup failures throw an
+  `AggregateError` whose `errors` array carries both errors in order
+  (the resolver does not mutate caller-supplied errors). Scene `ctx`
+  is opaque to the resolver and passed straight through.
 - `tests/runtime/composition-resolver.test.ts` — 27-test Vitest spec
   covering every clause of PUL-F004: manifest-defense boundary;
   clause-(a) pre-flight existence with single, multiple, and object-

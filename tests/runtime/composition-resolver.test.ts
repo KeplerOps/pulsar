@@ -3,6 +3,7 @@ import type { CompositionManifest } from '../../src/runtime/composition';
 import {
   type AssetPreloader,
   type ResolveCompositionOptions,
+  type SceneTimelineRunInput,
   type SceneTimelineRunner,
   resolveComposition,
 } from '../../src/runtime/composition-resolver';
@@ -92,8 +93,8 @@ const buildHarness = (opts: HarnessOpts): Harness => {
     });
   const runTimeline: SceneTimelineRunner =
     opts.runTimeline ??
-    ((scene, timelineValue) => {
-      log.push({ hook: 'runTimeline', sceneId: scene.id, value: timelineValue });
+    (({ scene, timeline }) => {
+      log.push({ hook: 'runTimeline', sceneId: scene.id, value: timeline });
     });
   return {
     log,
@@ -358,12 +359,60 @@ describe('resolveComposition (PUL-F004)', () => {
           },
         ],
         manifest: ['scene-a'],
-        runTimeline: (scene, value) => {
-          runCalls.push({ sceneId: scene.id, value });
+        runTimeline: ({ scene, timeline }) => {
+          runCalls.push({ sceneId: scene.id, value: timeline });
         },
       });
       await resolveComposition(options);
       expect(runCalls).toEqual([{ sceneId: 'scene-a', value: sentinel }]);
+    });
+
+    it('awaits an async (Promise-returning) scene.timeline factory before handing the resolved value to runTimeline', async () => {
+      const sentinel = { kind: 'resolved-timeline' };
+      const runCalls: { sceneId: string; value: unknown }[] = [];
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            timeline: async () => sentinel,
+          },
+        ],
+        manifest: ['scene-a'],
+        runTimeline: ({ scene, timeline }) => {
+          runCalls.push({ sceneId: scene.id, value: timeline });
+        },
+      });
+      await resolveComposition(options);
+      // Runner must receive the resolved sentinel object, not a Promise.
+      expect(runCalls).toHaveLength(1);
+      const onlyCall = runCalls[0];
+      expect(onlyCall).toBeDefined();
+      expect(onlyCall?.sceneId).toBe('scene-a');
+      expect(onlyCall?.value).toBe(sentinel);
+      expect(onlyCall?.value instanceof Promise).toBe(false);
+    });
+
+    it('forwards range / behavior overrides from object entries to runTimeline', async () => {
+      const runCalls: SceneTimelineRunInput[] = [];
+      const { options } = buildHarness({
+        scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+        manifest: ['scene-a', { id: 'scene-b', range: ['intro', 'outro'], behavior: { speed: 2 } }],
+        runTimeline: (input) => {
+          runCalls.push(input);
+        },
+      });
+      await resolveComposition(options);
+      expect(runCalls).toHaveLength(2);
+      const aCall = runCalls[0];
+      const bCall = runCalls[1];
+      expect(aCall).toBeDefined();
+      expect(aCall?.scene.id).toBe('scene-a');
+      expect(aCall?.range).toBeUndefined();
+      expect(aCall?.behavior).toBeUndefined();
+      expect(bCall).toBeDefined();
+      expect(bCall?.scene.id).toBe('scene-b');
+      expect(bCall?.range).toEqual(['intro', 'outro']);
+      expect(bCall?.behavior).toEqual({ speed: 2 });
     });
 
     it('awaits runTimeline before calling cleanup', async () => {
@@ -382,7 +431,7 @@ describe('resolveComposition (PUL-F004)', () => {
           },
         ],
         manifest: ['scene-a'],
-        runTimeline: async (scene) => {
+        runTimeline: async ({ scene }) => {
           log.push(`runTimeline-${scene.id}-start`);
           await runGate;
           log.push(`runTimeline-${scene.id}-end`);
@@ -419,7 +468,7 @@ describe('resolveComposition (PUL-F004)', () => {
           },
         ],
         manifest: ['scene-a', 'scene-b'],
-        runTimeline: (scene) => {
+        runTimeline: ({ scene }) => {
           if (scene.id === 'scene-a') {
             throw new Error('gsap exploded');
           }
@@ -524,7 +573,7 @@ describe('resolveComposition (PUL-F004)', () => {
       }
     });
 
-    it('chains the cleanup error as Error.cause when both timeline and cleanup fail (timeline error wins as the message)', async () => {
+    it('throws an AggregateError carrying both the timeline error and the cleanup error when both fail (no caller-error mutation)', async () => {
       const timelineErr = new Error('runner failed');
       const cleanupErr = new Error('and so did cleanup');
       const { options } = buildHarness({
@@ -545,19 +594,19 @@ describe('resolveComposition (PUL-F004)', () => {
         await resolveComposition(options);
         expect.unreachable('expected combined failure to propagate');
       } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message).toMatch(
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect(top.message).toMatch(
           /^composition resolution failed: scene "scene-a" timeline threw: runner failed \(cleanup also failed: and so did cleanup\)$/,
         );
-        // Cause chain: top-level Error.cause is the timeline error; its
-        // .cause is the cleanup error so neither is silently dropped.
-        const top = err as Error & { cause?: unknown };
-        expect(top.cause).toBe(timelineErr);
-        expect((timelineErr as Error & { cause?: unknown }).cause).toBe(cleanupErr);
+        expect(top.errors).toEqual([timelineErr, cleanupErr]);
+        // The resolver must NOT mutate the caller-supplied errors.
+        expect((timelineErr as Error & { cause?: unknown }).cause).toBeUndefined();
+        expect((cleanupErr as Error & { cause?: unknown }).cause).toBeUndefined();
       }
     });
 
-    it('chains the cleanup error as Error.cause when both create and cleanup fail', async () => {
+    it('throws an AggregateError carrying both the create error and the cleanup error when both fail (no caller-error mutation)', async () => {
       const createErr = new Error('mount blew up');
       const cleanupErr = new Error('cleanup also blew up');
       const { options } = buildHarness({
@@ -578,12 +627,46 @@ describe('resolveComposition (PUL-F004)', () => {
         await resolveComposition(options);
         expect.unreachable('expected combined failure to propagate');
       } catch (err) {
-        const top = err as Error & { cause?: unknown };
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
         expect(top.message).toMatch(
           /^composition resolution failed: scene "scene-a" create threw: mount blew up \(cleanup also failed: cleanup also blew up\)$/,
         );
-        expect(top.cause).toBe(createErr);
-        expect((createErr as Error & { cause?: unknown }).cause).toBe(cleanupErr);
+        expect(top.errors).toEqual([createErr, cleanupErr]);
+        expect((createErr as Error & { cause?: unknown }).cause).toBeUndefined();
+        expect((cleanupErr as Error & { cause?: unknown }).cause).toBeUndefined();
+      }
+    });
+
+    it('preserves a non-Error throw + cleanup failure together (no upcasting required)', async () => {
+      const stringThrow = 'create blew up but threw a string, not an Error';
+      const cleanupErr = new Error('cleanup error');
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            create: () => {
+              throw stringThrow;
+            },
+            cleanup: () => {
+              throw cleanupErr;
+            },
+          },
+        ],
+        manifest: ['scene-a'],
+      });
+      try {
+        await resolveComposition(options);
+        expect.unreachable('expected combined failure to propagate');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        // String throw appears in the message verbatim and is preserved
+        // in errors[] alongside the cleanup error.
+        expect(top.message).toMatch(
+          /^composition resolution failed: scene "scene-a" create threw: create blew up but threw a string, not an Error \(cleanup also failed: cleanup error\)$/,
+        );
+        expect(top.errors).toEqual([stringThrow, cleanupErr]);
       }
     });
   });
@@ -610,8 +693,8 @@ describe('resolveComposition (PUL-F004)', () => {
           },
         ],
         manifest: ['scene-a'],
-        runTimeline: (_scene, value) => {
-          log.push(`runTimeline-received-${String(value)}`);
+        runTimeline: ({ timeline }) => {
+          log.push(`runTimeline-received-${String(timeline)}`);
         },
       });
       await resolveComposition(options);

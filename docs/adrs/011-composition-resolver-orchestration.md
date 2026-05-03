@@ -50,10 +50,10 @@ is a **pure orchestrator**. It owns:
    into a single error before any side effect; cleanup is mandatory
    whenever a scene was touched (including failure paths after `create`
    or timeline execution); when a lifecycle phase AND cleanup both
-   throw, the wrapping `Error` carries both — the phase error as
-   `Error.cause` and the cleanup error chained onto it
-   (`phaseError.cause = cleanupError`) — so neither is silently
-   swallowed (PUL-Q005 spirit).
+   throw, the wrapping error is an `AggregateError` whose `errors`
+   array carries both the phase error and the cleanup error in order
+   — neither caller-supplied error is mutated and both are
+   programmatically recoverable (PUL-Q005 spirit).
 3. The boundary defensiveness pattern: the resolver calls
    `assertCompositionManifest` itself, mirroring how
    `createSceneRegistry` calls `assertSceneModule` (PUL-F002 / PUL-F001
@@ -63,7 +63,8 @@ The resolver delegates the *work* of preloading and of running a
 timeline to **injected callbacks**:
 
 - `AssetPreloader = (scene: SceneModule) => void | Promise<void>`
-- `SceneTimelineRunner = (scene: SceneModule, timeline: unknown) => void | Promise<void>`
+- `SceneTimelineRunner = (input: SceneTimelineRunInput) => void | Promise<void>`
+  where `SceneTimelineRunInput` is `{ scene, timeline, range?, behavior? }`.
 
 The scene `ctx` is opaque to the resolver — it is passed straight
 through to every lifecycle hook. The resolver does not depend on,
@@ -71,12 +72,20 @@ import, or feature-detect any specific asset library, GSAP, Howler, or
 DOM API.
 
 `range` and `behavior` overrides on object entries (PUL-F003) are
-accepted at the boundary by `assertCompositionManifest` but are NOT
-read or interpreted by the resolver in PUL-F004. Their interpretation
-belongs to the timeline runner adapter (sub-range cuts use GSAP labels;
-behavior overrides are runner-defined). The resolver simply hands the
-scene module to the runner; the runner decides what to do with the
-entry-level overrides when it is ready to support them.
+accepted at the boundary by `assertCompositionManifest`. The resolver
+does NOT read or interpret either field — but it does forward both to
+the runner adapter unchanged through `SceneTimelineRunInput`. Carrying
+them on the runner input now (rather than only inside the manifest the
+resolver consumes) means the future GSAP runner can honor sub-range
+cuts and behavior overrides without another resolver-signature change.
+The resolver hands `range` / `behavior` to the runner; the runner
+decides what to do with them when it is ready to support them.
+
+`scene.timeline(ctx)` is `await`ed before its return value is handed to
+the runner so async timeline factories (e.g. ones that load a beat
+script before constructing the GSAP timeline) resolve to a concrete
+timeline before the runner sees them. Awaiting a non-Promise value is
+identity, so synchronous timeline factories are unaffected.
 
 ## Consequences
 

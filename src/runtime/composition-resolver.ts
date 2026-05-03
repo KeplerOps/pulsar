@@ -16,20 +16,17 @@
 //  - ADR-011 — composition resolver as a pure orchestrator; asset
 //    preloading and timeline execution are injected adapters so the
 //    resolver does not depend on the asset loader (PUL-F005+) or the
-//    GSAP timeline engine (ADR-003).
+//    GSAP timeline engine (ADR-003). Per-entry `range` and `behavior`
+//    overrides flow through the runner adapter input so the future
+//    GSAP runner can honor sub-range cuts and behavior overrides
+//    without another resolver-signature change.
 //  - PUL-P001 — cleanup is a policy-level invariant.
-//
-// Per the codex architecture preflight: this module is orchestration
-// only. It does not own scene shape (PUL-F001), the registry (PUL-F002),
-// the manifest format (PUL-F003), the asset loader, or the timeline
-// engine. Manifest entries with `range` or `behavior` overrides are
-// accepted at the boundary (PUL-F003) but their interpretation belongs
-// to the timeline runner adapter; the resolver does not read either
-// field.
 
 import {
+  type BehaviorOverride,
   type CompositionEntry,
   type CompositionManifest,
+  type SubRange,
   assertCompositionManifest,
 } from './composition';
 import type { SceneRegistry } from './registry';
@@ -49,13 +46,40 @@ import type { SceneModule } from './scene';
 export type AssetPreloader = (scene: SceneModule) => void | Promise<void>;
 
 /**
- * Adapter that runs a single scene's timeline (clause d of PUL-F004).
- * Receives the scene module plus whatever value `scene.timeline(ctx)`
- * returned (typically a GSAP timeline per ADR-003, but the resolver
- * does not assume any specific shape). Resolves when the timeline has
- * ended; the resolver then runs `cleanup(ctx)` (clause e).
+ * Inputs the resolver passes to the {@link SceneTimelineRunner} for
+ * one scene. The shape carries everything the runner needs to honor
+ * per-entry overrides without forcing the resolver to interpret them
+ * itself:
+ *
+ *  - `scene` — the validated scene module (ADR-008's "stable, addressable
+ *    identity").
+ *  - `timeline` — the value `scene.timeline(ctx)` returned, awaited so
+ *    async timeline factories resolve to a concrete timeline before the
+ *    runner sees them.
+ *  - `range` — optional sub-range from an object entry's
+ *    `CompositionEntryOverride.range` (PUL-F003); the runner interprets
+ *    the labels against its own timeline implementation (ADR-003 §Labels).
+ *  - `behavior` — optional behavior-override blob from an object entry's
+ *    `CompositionEntryOverride.behavior`; key semantics are the runner's
+ *    contract with its callers (ADR-011).
+ *
+ * `range` and `behavior` are absent when the entry is a bare string.
  */
-export type SceneTimelineRunner = (scene: SceneModule, timeline: unknown) => void | Promise<void>;
+export interface SceneTimelineRunInput {
+  readonly scene: SceneModule;
+  readonly timeline: unknown;
+  readonly range?: SubRange;
+  readonly behavior?: BehaviorOverride;
+}
+
+/**
+ * Adapter that runs a single scene's timeline (clause d of PUL-F004).
+ * Receives a {@link SceneTimelineRunInput} bundle. Resolves when the
+ * scene's timeline has ended; the resolver then runs `cleanup(ctx)`
+ * (clause e). Throwing or rejecting aborts the composition; cleanup
+ * still runs for the failing scene.
+ */
+export type SceneTimelineRunner = (input: SceneTimelineRunInput) => void | Promise<void>;
 
 /**
  * Inputs to {@link resolveComposition}. All fields are required: the
@@ -97,6 +121,36 @@ const fail = (detail: string, cause: unknown): Error =>
   new Error(`composition resolution failed: ${detail}`, { cause });
 
 /**
+ * Build the resolver's wrapping `AggregateError` for a combined
+ * lifecycle + cleanup failure. The `errors` array preserves both
+ * failures programmatically without mutating either error's
+ * `cause` chain.
+ */
+const failAggregate = (detail: string, errors: readonly unknown[]): AggregateError =>
+  new AggregateError(errors, `composition resolution failed: ${detail}`);
+
+/**
+ * Build the {@link SceneTimelineRunInput} for one entry. Bare-string
+ * entries omit `range` / `behavior` entirely; object entries forward
+ * whatever the validator accepted (which already rejects unknown
+ * override keys per PUL-F003).
+ */
+function buildRunInput(
+  scene: SceneModule,
+  entry: CompositionEntry,
+  timeline: unknown,
+): SceneTimelineRunInput {
+  if (typeof entry === 'string') return { scene, timeline };
+  const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
+    scene,
+    timeline,
+  };
+  if (entry.range !== undefined) input.range = entry.range;
+  if (entry.behavior !== undefined) input.behavior = entry.behavior;
+  return input;
+}
+
+/**
  * Resolves and plays `manifest` against `registry`.
  *
  * Algorithm (PUL-F004):
@@ -112,8 +166,10 @@ const fail = (detail: string, cause: unknown): Error =>
  *          the composition; create / timeline / cleanup do not run for
  *          the failing scene and subsequent scenes are not visited.
  *       b. `await scene.create(ctx)` — clause (c).
- *       c. `await runTimeline(scene, scene.timeline(ctx))` — clause
- *          (d).
+ *       c. `await runTimeline({ scene, timeline, range?, behavior? })`
+ *          — clause (d). The timeline value is awaited before being
+ *          handed to the runner so async timeline factories resolve to
+ *          a concrete timeline.
  *       d. `await scene.cleanup(ctx)` — clause (e). Cleanup runs
  *          whenever step (b) was attempted — including when create
  *          itself threw (resources may have been partially acquired)
@@ -125,15 +181,16 @@ const fail = (detail: string, cause: unknown): Error =>
  *    the original error is attached as `Error.cause` of the wrapping
  *    error so it is never silently dropped.
  *  - When both the lifecycle phase AND cleanup throw, the wrapping
- *    error reports the lifecycle phase as the cause and chains the
- *    cleanup error onto the lifecycle error itself
- *    (`lifecycleError.cause = cleanupError`) so neither is lost.
+ *    error is an `AggregateError` whose `errors` array carries both
+ *    the phase error and the cleanup error in order. Neither is
+ *    mutated; both are programmatically recoverable.
  *  - A cleanup-only failure (timeline succeeded) is re-raised with
  *    `Error.cause` set to the original cleanup error.
  *
- * Out of scope here: cancellation / presenter interrupts, sub-range
- * (`range`) interpretation, and per-entry `behavior` overrides. Those
- * are timeline-runner concerns (see ADR-011).
+ * Out of scope here: cancellation / presenter interrupts. `range` and
+ * `behavior` overrides are forwarded to the runner adapter unchanged
+ * (the resolver does not interpret them — that is the runner's job
+ * per ADR-011).
  */
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
   const { registry, manifest, ctx, preloadAssets, runTimeline } = options;
@@ -147,7 +204,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   for (const entry of manifest) {
     const scene = registry.get(entryId(entry));
     await preloadScene(scene, preloadAssets);
-    await runScene(scene, ctx, runTimeline);
+    await runScene(scene, entry, ctx, runTimeline);
   }
 }
 
@@ -192,6 +249,7 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
  */
 async function runScene(
   scene: SceneModule,
+  entry: CompositionEntry,
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
 ): Promise<void> {
@@ -200,8 +258,12 @@ async function runScene(
   try {
     await scene.create(ctx);
     phase = 'timeline';
-    const timeline = scene.timeline(ctx);
-    await runTimeline(scene, timeline);
+    // Await the timeline factory so async timeline constructors resolve
+    // to a concrete timeline before the runner sees them. Awaiting a
+    // non-Promise value is identity, so synchronous timeline factories
+    // are unaffected.
+    const timeline = await scene.timeline(ctx);
+    await runTimeline(buildRunInput(scene, entry, timeline));
   } catch (err) {
     phaseError = err;
   }
@@ -218,14 +280,13 @@ async function runScene(
 
 /**
  * Convert the pair `(phaseError, cleanupError)` into a thrown wrapping
- * `Error`, or return cleanly when both are absent.
+ * error, or return cleanly when both are absent.
  *
- * - Both present: wrapping message names both; the cause-chain top →
- *   phase → cleanup makes both errors programmatically recoverable.
- *   Attaching `cleanupError` onto `phaseError` mutates the caller's
- *   error object, but only when its `cause` is currently unset —
- *   never overwrites an existing chain.
- * - Only `phaseError`: rethrown wrapped, with the original as cause.
+ * - Both present: throws an `AggregateError` whose `errors` array
+ *   carries both the phase error and the cleanup error in order. The
+ *   message names both. Neither caller-supplied error is mutated.
+ * - Only `phaseError`: rethrown wrapped, with the original as
+ *   `Error.cause`.
  * - Only `cleanupError`: rethrown wrapped as a cleanup-only failure.
  */
 function finalizeSceneFailure(
@@ -235,12 +296,9 @@ function finalizeSceneFailure(
   cleanupError: unknown,
 ): void {
   if (phaseError !== undefined && cleanupError !== undefined) {
-    if (phaseError instanceof Error && phaseError.cause === undefined) {
-      phaseError.cause = cleanupError;
-    }
-    throw fail(
+    throw failAggregate(
       `scene "${scene.id}" ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
-      phaseError,
+      [phaseError, cleanupError],
     );
   }
   if (phaseError !== undefined) {
