@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { CompositionManifest } from '../../src/runtime/composition';
 import {
   type AssetPreloader,
@@ -956,21 +956,4 @@ describe('resolveComposition (PUL-F004)', () => {
       ]);
     });
   });
-
-  describe('contract surfaces', () => {
-    it('exports resolveComposition as an async function', () => {
-      // ResolveCompositionOptions / AssetPreloader / SceneTimelineRunner
-      // type imports above pin the public surface — if they are removed
-      // or renamed this test file fails to type-check.
-      expect(typeof resolveComposition).toBe('function');
-      // Calling with no arg blows up at runtime — deliberately not
-      // testing that path (TypeScript catches it at compile time and
-      // we don't add runtime guards beyond assertCompositionManifest's
-      // boundary check).
-    });
-  });
 });
-
-// Silence unused-import warnings for vi (kept available for future fakes
-// that need vi.useFakeTimers or vi.spyOn).
-void vi;
