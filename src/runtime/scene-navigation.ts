@@ -340,10 +340,18 @@ export async function loadSceneNavigationTarget(
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
   const composition = target.composition;
-  const scenes =
-    composition === undefined ? [target.scene] : (composition.sceneSlice as SceneModule[]);
-  const manifest: CompositionManifest =
-    composition === undefined ? [target.scene.id] : composition.manifestSlice;
+  // Collapse the single-scene vs composition-slice paths into one
+  // assignment so the two values cannot drift (e.g. picking
+  // composition manifest with single-scene registry, or vice versa).
+  let scenes: readonly SceneModule[];
+  let manifest: CompositionManifest;
+  if (composition === undefined) {
+    scenes = [target.scene];
+    manifest = [target.scene.id];
+  } else {
+    scenes = composition.sceneSlice;
+    manifest = composition.manifestSlice;
+  }
 
   // De-duplicate scene modules by id so a manifest slice with
   // repeated scene ids (which `resolveComposition` legitimately

@@ -124,6 +124,25 @@ const ATTR_COMPOSITION = 'data-pulsar-composition-target';
 const ATTR_ERROR = 'data-pulsar-navigation-error';
 
 /**
+ * Returns true when `err` is the resolver's own "aborted" wrapper
+ * for the active scene's signal — the rejection a new event
+ * intentionally caused. Pure function (no closure captures), hoisted
+ * to module scope so the loader factory does not recreate it per
+ * instance. AggregateErrors carry multi-fault information (abort +
+ * cleanup failure, etc.) and are explicitly NOT treated as pure
+ * aborts so cleanup failures during an aborted lifecycle still
+ * surface to the operator.
+ */
+function isPureAbort(err: unknown, signal: AbortSignal): boolean {
+  return (
+    signal.aborted &&
+    err instanceof Error &&
+    !(err instanceof AggregateError) &&
+    /aborted/.test(err.message)
+  );
+}
+
+/**
  * One in-flight load: the abort signal that cancels it, the promise
  * that settles when the lifecycle ends (or rejects on abort), and the
  * abort-detection flag used to suppress the "rejection is an error"
@@ -227,8 +246,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     } catch (err) {
       // Roll back the success-state attrs we just wrote and surface
       // the error so the stage doesn't lie about a half-loaded scene.
-      clearStageAttr(ATTR_SCENE);
-      clearStageAttr(ATTR_COMPOSITION);
+      // `resetStageAttrs()` clears all three navigation attrs in
+      // lock-step with the success-path reset, so this rollback
+      // cannot drift if a fourth navigation attr is added later.
+      resetStageAttrs();
       surfaceError(err);
       return;
     }
@@ -259,15 +280,6 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       if (inFlight === load) inFlight = null;
     }
   };
-
-  function isPureAbort(err: unknown, signal: AbortSignal): boolean {
-    return (
-      signal.aborted &&
-      err instanceof Error &&
-      !(err instanceof AggregateError) &&
-      /aborted/.test(err.message)
-    );
-  }
 
   const runOnce = async (event: NavigationEvent, myGen: number): Promise<void> => {
     // Drop superseded events before doing any visible work — both at

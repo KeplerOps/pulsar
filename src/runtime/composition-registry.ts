@@ -48,45 +48,28 @@ export interface CompositionRegistryEntry {
 export type CompositionRegistry = IdRegistry<CompositionManifest>;
 
 /**
- * Deep-freeze a composition manifest so the stored copy cannot be
- * mutated by callers after registration. Freezes the array, each
- * object-form entry, any nested `range` (tuple), and the entire
- * `behavior` value graph (records and arrays at every depth).
- * Bare-string entries are immutable already.
+ * Deep-snapshot then deep-freeze the manifest so the stored value
+ * cannot be mutated by callers after registration. `structuredClone`
+ * gives us a fresh graph (no shared subtrees with the caller's
+ * references — defeats the "callers can mutate `behavior.fade.ease`
+ * after registration" leak); `deepFreeze` walks the clone and freezes
+ * every plain object/array reachable from the manifest (the array,
+ * each object-form entry, nested `range` tuples, and the entire
+ * `behavior` value graph at every depth). Bare-string entries are
+ * immutable already.
  *
- * Necessary because TypeScript's `readonly` modifier is a compile-time
- * declaration only; runtime mutation is what actually breaks the
- * immutable-registry contract.
+ * `structuredClone` is platform-standard since Node 17 / all current
+ * browsers; per ADR-008 #1's declarative-data invariant, manifest
+ * payloads (including `behavior` records) are structured data only —
+ * no functions, classes, or other non-cloneable values.
+ *
+ * The `unknown` cast is necessary because the source `manifest` is
+ * typed `readonly CompositionEntry[]`; the cloned array has the same
+ * shape but TypeScript widens the cloned-readonly to `unknown` for
+ * `structuredClone`'s untyped output.
  */
 function freezeManifest(manifest: CompositionManifest): CompositionManifest {
-  const copy: CompositionEntry[] = [];
-  for (const entry of manifest) {
-    if (typeof entry === 'string') {
-      copy.push(entry);
-      continue;
-    }
-    const frozenEntry: { id: string; range?: unknown; behavior?: unknown } = { id: entry.id };
-    if (entry.range !== undefined) {
-      frozenEntry.range = Array.isArray(entry.range)
-        ? Object.freeze(entry.range.slice())
-        : entry.range;
-    }
-    if (entry.behavior !== undefined) {
-      // True deep snapshot via `structuredClone` then deep-freeze, so
-      // callers cannot mutate the registry's `behavior` value through
-      // any reference no matter how deep their nested objects are or
-      // whether they passed pre-frozen subgraphs (a shallow copy +
-      // deepFreeze chain still shares descendants because deepFreeze
-      // short-circuits on already-frozen values). `structuredClone`
-      // is platform-standard since Node 17 / all current browsers;
-      // behavior values are required to be structurally cloneable
-      // (`Readonly<Record<string, unknown>>` already excludes
-      // functions per ADR-008 #1's declarative-data invariant).
-      frozenEntry.behavior = deepFreeze(structuredClone(entry.behavior));
-    }
-    copy.push(Object.freeze(frozenEntry) as unknown as CompositionEntry);
-  }
-  return Object.freeze(copy) as CompositionManifest;
+  return deepFreeze(structuredClone(manifest as CompositionEntry[])) as CompositionManifest;
 }
 
 /**
