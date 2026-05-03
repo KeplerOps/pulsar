@@ -225,6 +225,12 @@ describe('CompositionManifest format (PUL-F003)', () => {
         ).not.toThrow();
       });
 
+      it('accepts an Object.create(null) behavior dictionary', () => {
+        const behavior = Object.create(null) as Record<string, unknown>;
+        behavior.mute = true;
+        expect(() => assertCompositionManifest([{ id: 'scene-a', behavior }])).not.toThrow();
+      });
+
       it.each<[string, unknown]>([
         ['null', null],
         ['undefined-tagged value', 'not-an-object'],
@@ -235,6 +241,30 @@ describe('CompositionManifest format (PUL-F003)', () => {
         expect(() => assertCompositionManifest([{ id: 'scene-a', behavior }])).toThrow(
           /^composition entry \[0\] is invalid: behavior must be a plain object/,
         );
+      });
+
+      // Class instances and built-in non-record objects must not satisfy
+      // `behavior` — the contract is a serializable record, not an opaque
+      // object instance (codex review, ADR-008 #1).
+      it.each<[string, () => unknown]>([
+        ['Date', () => new Date()],
+        ['Map', () => new Map([['mute', true]])],
+        ['Set', () => new Set(['mute'])],
+        ['RegExp', () => /payoff/],
+        ['Error', () => new Error('boom')],
+        [
+          'class instance',
+          () => {
+            class Override {
+              mute = true;
+            }
+            return new Override();
+          },
+        ],
+      ])('rejects %s as behavior (must be a plain object)', (_label, makeBehavior) => {
+        expect(() =>
+          assertCompositionManifest([{ id: 'scene-a', behavior: makeBehavior() }]),
+        ).toThrow(/^composition entry \[0\] is invalid: behavior must be a plain object/);
       });
 
       it('does NOT inspect the contents of the behavior object', () => {
@@ -287,6 +317,30 @@ describe('CompositionManifest format (PUL-F003)', () => {
         ['array', ['scene-a']],
       ])('rejects a non-plain-object entry (%s)', (_label, entry) => {
         expect(() => assertCompositionManifest([entry])).toThrow(
+          /^composition entry \[0\] is invalid:/,
+        );
+      });
+
+      // Class instances and built-in non-record objects must not satisfy
+      // the entry shape — same reasoning as for `behavior` (codex review,
+      // ADR-008 #1: manifests are declarative data, not opaque objects).
+      it.each<[string, () => unknown]>([
+        ['Date', () => new Date()],
+        ['Map', () => new Map()],
+        ['Set', () => new Set()],
+        ['RegExp', () => /scene-a/],
+        ['Error', () => new Error('boom')],
+        [
+          'class instance',
+          () => {
+            class Entry {
+              id = 'scene-a';
+            }
+            return new Entry();
+          },
+        ],
+      ])('rejects %s as an entry (must be a plain { id, ... } object)', (_label, makeEntry) => {
+        expect(() => assertCompositionManifest([makeEntry()])).toThrow(
           /^composition entry \[0\] is invalid:/,
         );
       });

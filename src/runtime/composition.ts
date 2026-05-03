@@ -70,8 +70,19 @@ const KEBAB_CONDITION =
 const RANGE_CONDITION =
   'must be a kebab-case beat label or a [start, end] tuple of kebab-case beat labels';
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
+// Plain-record predicate. Matches `{}` / `Object.create(null)` literals
+// only and rejects class instances such as Date, Map, Set, RegExp, Error,
+// and user classes. The composition format is declarative data per the
+// codex architecture preflight (ADR-008 #1 / "manifests are declarative
+// data only"), so opaque object instances must not satisfy either the
+// entry-shape check or the `behavior` override check — otherwise the
+// downstream resolver receives values it cannot safely serialize, diff,
+// or treat as a record of override keys.
+const isPlainObject = (v: unknown): v is Record<string, unknown> => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+};
 
 const isValidSubRange = (v: unknown): v is SubRange => {
   if (isKebabIdentifier(v)) return true;
