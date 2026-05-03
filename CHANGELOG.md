@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/registry.ts` — `SceneRegistry` interface and
+  `createSceneRegistry` factory. Builds a single in-memory registry
+  keyed by `scene.id`, delegating per-scene shape validation to
+  `assertSceneModule` (PUL-F001) and rejecting duplicate ids on
+  construction. The returned registry is frozen and exposes only
+  id-based lookup (`get`, `has`, `ids`, `size`) — no positional or
+  mutation API by design. Implements PUL-F002 (and ADR-002 §Scene
+  registry / §Navigation, ADR-008 #2 "manifests over flow control"):
+  scene id is the source of truth for addressability and the registry
+  is the only navigation lookup path.
+- `tests/runtime/registry.test.ts` — 32-test Vitest spec covering both
+  clauses of PUL-F002: registry construction (happy paths over arrays,
+  generators, sets), validation delegation to PUL-F001, duplicate-id
+  rejection, lookup hits and misses, `has` semantics, insertion-order
+  listing with caller-side mutation isolation, registry frozenness, and
+  structural absence of positional / mutation methods.
 - `src/runtime/scene.ts` — `SceneModule`, `Caption`, `SceneContext`,
   `SceneLifecycleFn` types plus `assertSceneModule` runtime validator
   and `isSceneModule` predicate. Implements the canonical scene-module
