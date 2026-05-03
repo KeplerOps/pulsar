@@ -216,7 +216,13 @@ function resolveCompositionAndIndex(
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
   const manifest = resolveCompositionManifest(compositionId, compositions);
-  if (index >= manifest.length) {
+  // Re-validate the index invariants PUL-F007's parser already
+  // enforces. `NavigationTarget` is an exported type and a non-parser
+  // caller (event-detail unmarshaling, future test harness, etc.)
+  // could supply a negative or non-integer index. Without this
+  // re-check, `manifest.slice(-1)` would silently load the last scene
+  // when the URL claimed `index=-1`.
+  if (!Number.isInteger(index) || index < 0 || index >= manifest.length) {
     fail(
       `index ${index} is out of range for composition "${compositionId}" (size ${manifest.length})`,
     );

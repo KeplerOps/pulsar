@@ -48,8 +48,12 @@ const compositionRegistry = createCompositionRegistry([
 // PUL-F005 asset preloader. The placeholder scene declares no assets,
 // so the preloader is a structural no-op today; once scenes start
 // declaring URLs the same wire-up validates schemes, fetches, and
-// stream-drains them ahead of `create(ctx)`.
-const preloadAssets = createAssetPreloader();
+// stream-drains them ahead of `create(ctx)`. The factory shape lets
+// the loader build a fresh preloader per navigation with an
+// `AbortSignal` that cancels the in-flight `fetch` calls when the
+// user clicks back/forward mid-preload.
+const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPreloader> =>
+  createAssetPreloader({ init: { signal } });
 
 // Timeline runner placeholder. The composition resolver awaits the
 // runner before invoking `cleanup(ctx)`, so an empty runner cleanly
@@ -68,7 +72,7 @@ const loader = createSceneLoader({
   compositions: compositionRegistry,
   stage,
   ctx,
-  preloadAssets,
+  createPreloader,
   runTimeline,
 });
 

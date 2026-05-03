@@ -29,11 +29,12 @@
 //  - ADR-007 — runtime parses URL parameters at startup AND popstate.
 //  - ADR-013 — URL navigation grammar boundary; F007 owns parsing.
 
+import type { CompositionRegistry } from './composition-registry';
+import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
 import { describeError } from './error';
 import type { NavigationTarget } from './navigation';
+import type { SceneRegistry } from './registry';
 import {
-  type LoadSceneNavigationTargetOptions,
-  type ResolveSceneNavigationOptions,
   type SceneNavigationTarget,
   loadSceneNavigationTarget,
   resolveSceneNavigation,
@@ -70,11 +71,25 @@ export interface WorkbenchSceneCtx {
  * they stay swappable across browser bootstrap, screenshot tests,
  * and Node-side automation.
  */
-export interface SceneLoaderOptions
-  extends ResolveSceneNavigationOptions,
-    Omit<LoadSceneNavigationTargetOptions, 'signal'> {
+export interface SceneLoaderOptions {
+  readonly scenes: SceneRegistry;
+  readonly compositions: CompositionRegistry;
   /** May be `null` when the workbench has no stage (rare; e.g. Node tests). */
   readonly stage: StageElement | null;
+  /** Opaque scene context forwarded to every lifecycle hook. */
+  readonly ctx: unknown;
+  /**
+   * Build a per-navigation asset preloader bound to that
+   * navigation's abort signal. The loader calls this once per
+   * navigation, threading the per-load `AbortController.signal`
+   * through so back/forward during a long preload aborts the
+   * in-flight `fetch` calls instead of waiting for them to finish
+   * naturally. Production callers typically wrap PUL-F005's
+   * `createAssetPreloader({ init: { signal } })`.
+   */
+  readonly createPreloader: (signal: AbortSignal) => AssetPreloader;
+  /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
+  readonly runTimeline: SceneTimelineRunner;
   /**
    * Sink for navigation errors (resolution failure, lifecycle phase
    * throw). Defaults to `console.error` in production but is
@@ -202,7 +217,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
         ctx: options.ctx,
-        preloadAssets: options.preloadAssets,
+        // Build the preloader against this navigation's abort
+        // signal so its underlying `fetch` calls cancel when the
+        // user clicks back/forward mid-preload.
+        preloadAssets: options.createPreloader(controller.signal),
         runTimeline: options.runTimeline,
         signal: controller.signal,
       }),
@@ -213,15 +231,27 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     try {
       await load.settled;
     } catch (err) {
-      // Don't surface an error caused by our own abort — the new
-      // event that triggered it owns the visible state.
-      if (!load.silent && !load.controller.signal.aborted) {
+      // Suppress only the resolver's own "aborted" wrapper error —
+      // the new event that triggered the abort owns the visible
+      // state. AggregateErrors (multi-fault: phase + cleanup) and
+      // any non-abort errors still surface so cleanup failures
+      // during an aborted lifecycle are not silently dropped.
+      if (!load.silent && !isPureAbort(err, load.controller.signal)) {
         surfaceError(err);
       }
     } finally {
       if (inFlight === load) inFlight = null;
     }
   };
+
+  function isPureAbort(err: unknown, signal: AbortSignal): boolean {
+    return (
+      signal.aborted &&
+      err instanceof Error &&
+      !(err instanceof AggregateError) &&
+      /aborted/.test(err.message)
+    );
+  }
 
   const runOnce = async (event: NavigationEvent, myGen: number): Promise<void> => {
     // Drop superseded events before doing any visible work — both at

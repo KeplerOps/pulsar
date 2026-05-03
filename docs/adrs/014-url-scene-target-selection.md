@@ -74,9 +74,12 @@ Locator handling:
 - `kind: 'composition'` — load the named composition from the start.
   An empty composition is a navigation error.
 - `kind: 'composition-scene'` — find the addressed scene id in the
-  named composition. If the id appears more than once the URL must
-  use `composition-index` instead (per ADR-013); the dispatcher uses
-  the first occurrence and slices from there.
+  named composition. If the id appears more than once the locator is
+  ambiguous and the URL must use `composition-index` instead (per
+  ADR-013); the dispatcher rejects ambiguous locators with
+  `scene "<id>" appears <N> times in composition "<id>" — use
+  composition+index for ambiguous locators` rather than silently
+  picking the first occurrence.
 - `kind: 'composition-index'` — index into the composition's
   manifest, snapshot from that entry onwards.
 

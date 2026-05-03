@@ -276,6 +276,39 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
       expect(target?.composition?.manifestSlice).toEqual(['intro', 'middle']);
     });
 
+    it('throws on a negative index (defense in depth — parser already rejects, but the dispatcher re-validates)', () => {
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([{ id: 'full-talk', manifest: ['intro'] }]);
+      // PUL-F007's parser already rejects negative indexes, but
+      // `NavigationTarget` is an exported type and consumers can
+      // construct one directly (event-detail unmarshaling, tests,
+      // future callers). The dispatcher re-validates so the
+      // `manifest.slice(-1)` interpretation cannot leak through.
+      expect(() =>
+        resolveSceneNavigation(compositionIndexTarget('full-talk', -1), {
+          scenes,
+          compositions,
+        }),
+      ).toThrow(
+        /^scene navigation failed: index -1 is out of range for composition "full-talk" \(size 1\)$/,
+      );
+    });
+
+    it('throws on a non-integer index', () => {
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([{ id: 'full-talk', manifest: ['intro'] }]);
+      expect(() =>
+        resolveSceneNavigation(compositionIndexTarget('full-talk', 0.5), {
+          scenes,
+          compositions,
+        }),
+      ).toThrow(
+        /^scene navigation failed: index 0\.5 is out of range for composition "full-talk" \(size 1\)$/,
+      );
+    });
+
     it('throws when the index is out of range', () => {
       const intro = buildScene({ id: 'intro' });
       const scenes = createSceneRegistry([intro]);

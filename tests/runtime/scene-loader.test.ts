@@ -85,7 +85,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
 
@@ -107,7 +107,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         ]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
 
@@ -124,7 +124,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
 
@@ -146,7 +146,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
 
@@ -167,7 +167,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
           captured.push(err);
@@ -192,7 +192,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: () => undefined,
       });
@@ -218,7 +218,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: () => undefined,
       });
@@ -241,7 +241,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
           captured.push(err);
@@ -306,7 +306,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
       });
 
@@ -349,7 +349,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: (err) => {
           captured.push(err);
@@ -409,7 +409,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
       });
 
@@ -459,7 +459,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: (err) => {
           captured.push(err);
@@ -519,7 +519,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: stage.element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: () => undefined,
       });
@@ -539,6 +539,92 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
     });
 
+    it("builds a per-navigation preloader bound to that navigation's abort signal", async () => {
+      // PUL-F005's `createAssetPreloader` accepts an `init.signal` so
+      // the per-asset `fetch` calls can be aborted. The loader must
+      // create one preloader per navigation, threading the
+      // navigation's abort controller's signal through, so back/
+      // forward during a long preload cancels the in-flight fetches
+      // instead of waiting for the old preload to finish.
+      const observedSignals: (AbortSignal | undefined)[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, middle]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: (signal) => {
+          observedSignals.push(signal);
+          return () => undefined;
+        },
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(sceneTarget('intro'));
+      await loader.handle(sceneTarget('middle'));
+
+      // One preloader per navigation, each bound to its own signal.
+      expect(observedSignals).toHaveLength(2);
+      expect(observedSignals[0]).toBeInstanceOf(AbortSignal);
+      expect(observedSignals[1]).toBeInstanceOf(AbortSignal);
+      expect(observedSignals[0]).not.toBe(observedSignals[1]);
+    });
+
+    it('surfaces cleanup failures even when the lifecycle was aborted (multi-fault visibility)', async () => {
+      // The resolver throws an `AggregateError` when an aborted
+      // lifecycle ALSO has a cleanup failure. The naive "any abort →
+      // suppress" rule would drop the cleanup half from both stage
+      // state and `onError`. The loader must surface AggregateErrors
+      // even when its own controller aborted the load.
+      const broken = buildScene({
+        id: 'broken',
+        cleanup: () => {
+          throw new Error('cleanup boom');
+        },
+      });
+      // Only the FIRST runner invocation blocks; the follow-up
+      // navigation runs through immediately so the test settles.
+      const blockingRunner: SceneTimelineRunner = (input) => {
+        if (firstRunInvoked) return undefined;
+        firstRunInvoked = true;
+        return new Promise<void>((_resolve, reject) => {
+          input.signal?.addEventListener(
+            'abort',
+            () => reject(input.signal?.reason ?? new Error('aborted')),
+            { once: true },
+          );
+        });
+      };
+      const stage = buildStage();
+      const captured: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([broken, buildScene({ id: 'next' })]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: blockingRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      void loader.handle(sceneTarget('broken'));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      void loader.handle(sceneTarget('next'));
+      await loader.idle();
+
+      // The cleanup failure on `broken` MUST have surfaced — it's a
+      // real bug the operator needs to see, not a routine abort.
+      expect(captured.length).toBeGreaterThanOrEqual(1);
+      const surfaced = captured.find(
+        (e) => e instanceof Error && /cleanup boom/.test((e as Error).message),
+      );
+      expect(surfaced).toBeDefined();
+    });
+
     it('handle() after dispose() is a no-op', async () => {
       const log: string[] = [];
       const intro = buildScene({
@@ -552,7 +638,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         compositions: createCompositionRegistry([]),
         stage: buildStage().element,
         ctx: {},
-        preloadAssets: () => undefined,
+        createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
 
