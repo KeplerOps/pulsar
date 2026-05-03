@@ -11,31 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
   field on both `ResolveCompositionOptions` and
-  `SceneTimelineRunInput`. When the caller supplies a signal,
-  `resolveComposition` checks `signal.aborted` before each scene's
-  preload (so an inter-scene abort prevents the next scene from
-  being touched) and forwards the signal to the runner via
-  `SceneTimelineRunInput.signal` (so the runner can honor a
-  mid-scene abort by throwing — which routes through the existing
-  cleanup-always path so the active scene's `cleanup(ctx)` still
-  runs). Pre-start aborts throw with `composition resolution
-  failed: aborted before any scene was visited`; inter-scene
-  aborts throw with `aborted between scenes after "<scene-id>"`
-  and forward `signal.reason` as `Error.cause`. Implements
-  PUL-F006's "presenter skip" exit path with a real cancellation
-  contract — the seam ADR-011 anticipated for the wave-1 PUL-F020
-  presenter-controls work, landed early because PUL-F006 needs it
-  for testable coverage.
+  `SceneTimelineRunInput`. Implements PUL-F006's "skip rest of
+  composition" (composition-level abort) exit path. Distinct from
+  the "skip current scene, advance to next" shape, which is the
+  cooperative runner-returns-void path the resolver already
+  supports without special handling (per ADR-011: the resolver
+  does not interpret runner intent). When the caller supplies a
+  signal, `resolveComposition` checks `signal.aborted` at three
+  checkpoints: pre-iteration, post-preload (so an abort observed
+  mid-preload prevents scene activation), and inside the runner
+  via the forwarded `SceneTimelineRunInput.signal` (so a runner
+  that calls `signal.throwIfAborted()` mid-timeline still routes
+  through the cleanup-always path for the active scene). Error
+  messages name the precise checkpoint: `aborted before any scene
+  was visited`, `aborted after preloading "<id>", before scene
+  activation`, or `aborted between scenes after "<id>"`.
+  `signal.reason` is forwarded as `Error.cause`. The seam ADR-011
+  anticipated for the wave-1 PUL-F020 presenter-controls work,
+  landed early because PUL-F006 needs it for testable coverage of
+  the composition-abort exit path.
 - `tests/runtime/composition-resolver.test.ts` — new
-  `describe('per-scene cleanup invocation (PUL-F006)')` block (9
+  `describe('per-scene cleanup invocation (PUL-F006)')` block (10
   tests) anchoring PUL-F006 to the resolver's cleanup-always
   invariant and the new signal contract. Pins the four exit paths
-  PUL-F006 enumerates (normal advance; presenter skip via
-  AbortSignal — mid-scene runner abort, inter-scene abort,
-  pre-start abort; runtime error during create / timeline
-  factory / runner; composition end) and the codex-preflight
-  axis "cleanup invoked exactly once per scene activation" — the
-  latter not asserted directly by PUL-F004's ordering tests.
+  PUL-F006 enumerates: normal advance; presenter skip via
+  AbortSignal (four shapes — mid-scene runner abort, inter-scene
+  abort, post-preload abort, pre-start abort); runtime error
+  during create / timeline factory / runner; composition end.
+  Also pins the codex-preflight axis "cleanup invoked exactly
+  once per scene activation" — not asserted directly by PUL-F004's
+  ordering tests. The "skip current scene, advance to next" shape
+  is satisfied by the existing PUL-F004 happy-path tests because
+  at the resolver level a cooperative runner early-return is
+  contractually identical to ordinary completion.
 - `src/runtime/composition-resolver.ts` — module-header
   documentation block enumerating the four PUL-F006 exit paths
   and routing them to the existing `runScene` finalization,

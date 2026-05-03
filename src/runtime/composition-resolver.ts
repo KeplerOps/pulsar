@@ -27,20 +27,33 @@
 //      1. normal advance         — happy-path loop iteration in
 //                                  `resolveComposition`; cleanup runs
 //                                  before the next scene's preload.
-//      2. presenter skip         — caller passes an `AbortSignal` via
-//                                  `ResolveCompositionOptions.signal`;
-//                                  the resolver checks it before each
-//                                  scene's preload AND forwards it to
-//                                  the runner via
-//                                  `SceneTimelineRunInput.signal`. A
-//                                  mid-scene abort makes the runner
-//                                  throw → the scene's cleanup still
-//                                  runs (cleanup-always invariant). An
-//                                  inter-scene abort throws after the
-//                                  previous scene's cleanup completed
-//                                  and before the next scene's
-//                                  preload begins. ADR-011 anticipated
-//                                  the seam; PUL-F006 lands it.
+//      2. presenter skip         — TWO shapes, both routed through
+//                                  the same finalization:
+//                                    a. "skip current scene, advance
+//                                       to next" — the runner returns
+//                                       void early. At the resolver
+//                                       level this is identical to a
+//                                       happy-path completion (the
+//                                       resolver does not interpret
+//                                       runner intent per ADR-011);
+//                                       cleanup runs and the next
+//                                       scene preloads as normal.
+//                                    b. "skip rest of composition"
+//                                       (composition-level abort) —
+//                                       caller passes an `AbortSignal`
+//                                       via `ResolveCompositionOptions.signal`;
+//                                       the resolver checks it
+//                                       pre-iteration AND post-preload
+//                                       AND forwards it to the runner
+//                                       via `SceneTimelineRunInput.signal`.
+//                                       A mid-scene abort makes the
+//                                       runner throw → the scene's
+//                                       cleanup still runs. An
+//                                       inter-scene or post-preload
+//                                       abort throws without mounting
+//                                       the next scene. ADR-011
+//                                       anticipated the seam; PUL-F006
+//                                       lands it.
 //      3. runtime error in scene — `create` / `timeline()` / runner
 //                                  throw or reject; the second
 //                                  unconditional try/catch in
@@ -335,6 +348,13 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
         : `aborted between scenes after "${lastCompletedSceneId}"`,
     );
     await preloadScene(step.scene, preloadAssets);
+    // Re-check the signal AFTER preload and BEFORE scene activation.
+    // Async preload can take arbitrary wall-clock time during which
+    // the caller may abort; without this check, an abort observed
+    // mid-preload would still mount and run the scene even though
+    // cancellation has been requested. The pre-loop check above is
+    // not enough because it only runs once per iteration.
+    throwIfAborted(signal, `aborted after preloading "${step.scene.id}", before scene activation`);
     await runScene(step, ctx, runTimeline, signal);
     lastCompletedSceneId = step.scene.id;
   }

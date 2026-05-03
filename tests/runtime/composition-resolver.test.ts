@@ -1076,6 +1076,35 @@ describe('per-scene cleanup invocation (PUL-F006)', () => {
     expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
   });
 
+  it('presenter skip during async preload: signal abort observed after preload completes prevents scene activation; preloaded scene is not created, cleanup is not invoked', async () => {
+    // PUL-F006 post-preload signal check (codex review hardening).
+    // Async preload can take arbitrary wall-clock time during which
+    // the caller may abort. Without the post-preload check, the
+    // resolver would still mount and run the scene even though
+    // cancellation was requested mid-preload. This test pins that
+    // the resolver re-checks the signal between preload completion
+    // and scene activation.
+    const controller = new AbortController();
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      preloadAssets: async (scene) => {
+        log.push({ hook: 'preload', sceneId: scene.id });
+        // Simulate an async preload that completes after the signal
+        // has been aborted by some external presenter event.
+        controller.abort(new Error('skip during preload'));
+        await Promise.resolve();
+      },
+    });
+    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
+      /^composition resolution failed: aborted after preloading "scene-a", before scene activation$/,
+    );
+    // Preload happened (the preloader ran to completion before the
+    // resolver re-checked the signal), but the scene was never
+    // activated — no create, no timeline, no cleanup.
+    expect(log.map((c) => c.hook)).toEqual(['preload']);
+  });
+
   it('presenter skip pre-start (signal already aborted on entry): no scene is mounted, no cleanup is invoked, resolver throws immediately', async () => {
     // Edge of the PUL-F006 skip contract: the caller may abort the
     // signal before resolveComposition is ever called. The resolver
