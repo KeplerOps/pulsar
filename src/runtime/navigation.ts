@@ -102,7 +102,12 @@ const GRAMMAR_KEYS = ['scene', 'composition', 'index', 'beat', 'mode'] as const;
 
 const KEBAB_CONDITION = `must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`;
 
-const INDEX_PATTERN = /^(?:0|[1-9]\d*)$/;
+// ADR-013 defines `index` as "base-10, zero-based, non-negative safe
+// integer." The pattern enforces only the base-10 digit set; leading
+// zeros (e.g. `01`) are accepted because the ADR does not forbid
+// them. Negatives, signs, decimals, exponents, and non-decimal
+// notations are all rejected.
+const INDEX_PATTERN = /^[0-9]+$/;
 
 /**
  * The thrown-error grammar matches `assertSceneModule` /
@@ -270,12 +275,27 @@ export interface NavigationWindowLike {
 /**
  * Inputs for {@link subscribeNavigation}. Both callbacks are required:
  * exactly one fires per parse — `onNavigate` on success, `onError` on
- * grammar failure. The subscriber never throws out to the caller.
+ * grammar failure.
+ *
+ * Grammar failures are routed to `onError` and never thrown out to the
+ * caller. User-callback errors thrown from `onNavigate` / `onError`
+ * propagate; in the synchronous-startup path the popstate listener is
+ * removed first so a buggy startup callback does not leak the
+ * listener.
  */
 export interface NavigationSubscriptionOptions {
   readonly window: NavigationWindowLike;
   readonly onNavigate: (target: NavigationTarget) => void;
   readonly onError: (error: Error) => void;
+  /**
+   * When `true`, the startup parse is deferred to a microtask
+   * (`queueMicrotask`) so synchronous module code that runs after
+   * {@link subscribeNavigation} returns has a chance to register
+   * additional subscribers before the first event fires. The popstate
+   * listener is registered synchronously either way. Default `false`
+   * — the startup parse runs inline.
+   */
+  readonly deferStartup?: boolean;
 }
 
 /**
@@ -293,7 +313,7 @@ export interface NavigationSubscriptionOptions {
  * handles.
  */
 export function subscribeNavigation(options: NavigationSubscriptionOptions): () => void {
-  const { window: win, onNavigate, onError } = options;
+  const { window: win, onNavigate, onError, deferStartup = false } = options;
 
   const handle = (_evt?: Event): void => {
     let target: NavigationTarget;
@@ -310,50 +330,49 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   const dispose = (): void => {
     win.removeEventListener('popstate', handle);
   };
+
   // If `onNavigate` / `onError` itself throws during the startup parse,
   // remove the popstate listener before the exception escapes. Without
   // this, the disposer never returns and the listener leaks across the
   // entire window lifetime. Grammar failures during startup never reach
   // this catch — those route through `onError` and return normally.
-  try {
-    handle();
-  } catch (err) {
-    dispose();
-    throw err;
+  //
+  // Deferred path: the same cleanup-on-throw runs inside the
+  // microtask. The thrown exception surfaces via the platform's
+  // unhandled-error handler (the caller cannot catch it because
+  // `subscribeNavigation` has already returned), but the popstate
+  // listener is still removed.
+  const startup = (): void => {
+    try {
+      handle();
+    } catch (err) {
+      dispose();
+      throw err;
+    }
+  };
+  if (deferStartup) {
+    queueMicrotask(startup);
+  } else {
+    startup();
   }
   return dispose;
 }
 
 /**
- * Event dispatched on a successful navigation parse. Future workbench
- * bootstrap layers subscribe to `'pulsar:navigate'` to receive parsed
- * targets without coupling to the runtime entry point.
- *
- * Subclasses `Event` (rather than using `CustomEvent`) so the helper
- * works on Node 18, where `CustomEvent` is not yet a global.
+ * Event type for successful navigation parses, dispatched as a
+ * `CustomEvent<NavigationTarget>` whose `detail` is the parsed target.
+ * Workbench bootstrap layers subscribe to this type on `window` to
+ * receive parsed targets without coupling to the runtime entry script.
  */
-export class PulsarNavigationEvent extends Event {
-  readonly navigationTarget: NavigationTarget;
-  constructor(target: NavigationTarget) {
-    super(PulsarNavigationEvent.TYPE);
-    this.navigationTarget = target;
-  }
-  static readonly TYPE = 'pulsar:navigate';
-}
+export const PULSAR_NAVIGATE_EVENT_TYPE = 'pulsar:navigate';
 
 /**
- * Event dispatched when URL grammar parsing fails. Future workbench
- * bootstrap layers subscribe to `'pulsar:navigate-error'` to surface
- * malformed URLs to the operator.
+ * Event type for parse failures, dispatched as a `CustomEvent<Error>`
+ * whose `detail` is the grammar `Error`. Workbench bootstrap layers
+ * subscribe to this type on `window` to surface malformed URLs to the
+ * operator.
  */
-export class PulsarNavigationErrorEvent extends Event {
-  readonly navigationError: Error;
-  constructor(error: Error) {
-    super(PulsarNavigationErrorEvent.TYPE);
-    this.navigationError = error;
-  }
-  static readonly TYPE = 'pulsar:navigate-error';
-}
+export const PULSAR_NAVIGATE_ERROR_EVENT_TYPE = 'pulsar:navigate-error';
 
 /**
  * Browser-target shape required by {@link bootstrapNavigation}: every
@@ -369,23 +388,31 @@ export interface NavigationEventTarget extends NavigationWindowLike {
  * Bootstrap navigation parsing for the runtime entry point.
  *
  * Subscribes the URL grammar parser to the supplied target's
- * `popstate` and runs it once at startup (PUL-F007 clause 2). Every
- * successful parse fires a {@link PulsarNavigationEvent}; every parse
- * failure fires a {@link PulsarNavigationErrorEvent}. Returns a
- * disposer that removes the listener.
+ * `popstate` and schedules the startup parse as a microtask (so
+ * synchronous module code that runs after `bootstrapNavigation`
+ * returns has time to register subscribers before the first event
+ * fires). PUL-F007 clause 2 — parsed at startup and on `popstate`.
  *
- * The future workbench bootstrap (scene catalog, mode dispatch,
- * composition orchestration) subscribes to these events on `window`
- * to receive parsed targets without coupling to the entry script.
+ * Every successful parse fires `'pulsar:navigate'` as a
+ * `CustomEvent<NavigationTarget>`; every parse failure fires
+ * `'pulsar:navigate-error'` as a `CustomEvent<Error>`. The standard
+ * `event.detail` envelope is used so consumers can read the payload
+ * with the platform-idiomatic API. Returns a disposer that removes
+ * the listener.
  */
 export function bootstrapNavigation(target: NavigationEventTarget): () => void {
   return subscribeNavigation({
     window: target,
     onNavigate: (parsed) => {
-      target.dispatchEvent(new PulsarNavigationEvent(parsed));
+      target.dispatchEvent(
+        new CustomEvent<NavigationTarget>(PULSAR_NAVIGATE_EVENT_TYPE, { detail: parsed }),
+      );
     },
     onError: (error) => {
-      target.dispatchEvent(new PulsarNavigationErrorEvent(error));
+      target.dispatchEvent(
+        new CustomEvent<Error>(PULSAR_NAVIGATE_ERROR_EVENT_TYPE, { detail: error }),
+      );
     },
+    deferStartup: true,
   });
 }

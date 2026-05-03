@@ -5,8 +5,8 @@ import {
   type NavigationMode,
   type NavigationSubscriptionOptions,
   type NavigationTarget,
-  PulsarNavigationErrorEvent,
-  PulsarNavigationEvent,
+  PULSAR_NAVIGATE_ERROR_EVENT_TYPE,
+  PULSAR_NAVIGATE_EVENT_TYPE,
   bootstrapNavigation,
   parseNavigationSearch,
   subscribeNavigation,
@@ -144,6 +144,11 @@ describe('parseNavigationSearch — clause 1: accepts the five grammar keys', ()
       ['1', 1],
       ['12', 12],
       ['123', 123],
+      // ADR-013 defines `index` as base-10 / non-negative / safe
+      // integer — it does not forbid leading zeros, so `01` parses
+      // as 1 and `0007` parses as 7.
+      ['01', 1],
+      ['0007', 7],
     ])('accepts non-negative base-10 index %s', (encoded, expected) => {
       expect(parseNavigationSearch(`composition=t&index=${encoded}`).locator).toEqual({
         kind: 'composition-index',
@@ -154,7 +159,6 @@ describe('parseNavigationSearch — clause 1: accepts the five grammar keys', ()
 
     it.each([
       ['negative', '-1'],
-      ['leading zero', '01'],
       ['decimal', '1.5'],
       ['hex', '0x1'],
       ['plus sign', '+1'],
@@ -469,6 +473,29 @@ describe('subscribeNavigation — clause 2: parse at startup and on popstate', (
     expect(fake.removeEventListener).toHaveBeenCalledWith('popstate', handler);
   });
 
+  it('deferStartup: defers the startup parse to a microtask but registers popstate immediately', async () => {
+    // Subscribers registered AFTER subscribeNavigation returns can
+    // still observe the initial event when deferStartup is true. The
+    // popstate listener is still added synchronously so an event that
+    // fires between subscribe and the microtask flush is not missed.
+    const fake = buildFakeWindow('?scene=intro');
+    subscribeNavigation({
+      window: fake,
+      onNavigate,
+      onError,
+      deferStartup: true,
+    });
+
+    expect(fake.addEventListener).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith({
+      locator: { kind: 'scene', scene: 'intro' },
+    } satisfies NavigationTarget);
+  });
+
   it('removes the popstate listener if the startup user-callback throws', () => {
     // Without cleanup-on-startup-throw, the disposer never returns and
     // the popstate listener leaks for the entire window lifetime.
@@ -536,41 +563,54 @@ describe('bootstrapNavigation — runtime entry wiring', () => {
     };
   };
 
-  const collectNavigateEvents = (browser: FakeBrowser): PulsarNavigationEvent[] => {
-    const out: PulsarNavigationEvent[] = [];
-    browser.events.addEventListener(PulsarNavigationEvent.TYPE, (evt) => {
-      out.push(evt as PulsarNavigationEvent);
+  const collectNavigateEvents = (browser: FakeBrowser): CustomEvent<NavigationTarget>[] => {
+    const out: CustomEvent<NavigationTarget>[] = [];
+    browser.events.addEventListener(PULSAR_NAVIGATE_EVENT_TYPE, (evt) => {
+      out.push(evt as CustomEvent<NavigationTarget>);
     });
     return out;
   };
 
-  const collectErrorEvents = (browser: FakeBrowser): PulsarNavigationErrorEvent[] => {
-    const out: PulsarNavigationErrorEvent[] = [];
-    browser.events.addEventListener(PulsarNavigationErrorEvent.TYPE, (evt) => {
-      out.push(evt as PulsarNavigationErrorEvent);
+  const collectErrorEvents = (browser: FakeBrowser): CustomEvent<Error>[] => {
+    const out: CustomEvent<Error>[] = [];
+    browser.events.addEventListener(PULSAR_NAVIGATE_ERROR_EVENT_TYPE, (evt) => {
+      out.push(evt as CustomEvent<Error>);
     });
     return out;
   };
 
-  it('dispatches PulsarNavigationEvent on startup with the parsed target', () => {
+  // bootstrapNavigation defers the startup parse to a microtask; flush
+  // it before asserting on the first event. Microtasks run before any
+  // awaited promise resolves, so a single `await Promise.resolve()` is
+  // enough.
+  const flushMicrotasks = async (): Promise<void> => {
+    await Promise.resolve();
+  };
+
+  it('defers the startup parse so subscribers can register before the first event', async () => {
+    // The subscriber registered AFTER bootstrapNavigation returns must
+    // still observe the initial event. Without microtask deferral this
+    // would miss the startup dispatch.
     const browser = buildFakeBrowser('?scene=intro');
+    bootstrapNavigation(browser.target);
     const navigate = collectNavigateEvents(browser);
 
-    bootstrapNavigation(browser.target);
-
+    expect(navigate).toHaveLength(0); // not fired yet
+    await flushMicrotasks();
     expect(navigate).toHaveLength(1);
     const evt = navigate[0];
     if (!evt) throw new Error('expected at least one navigate event');
     expect(evt.type).toBe('pulsar:navigate');
-    expect(evt.navigationTarget).toEqual({
+    expect(evt.detail).toEqual({
       locator: { kind: 'scene', scene: 'intro' },
     } satisfies NavigationTarget);
   });
 
-  it('dispatches PulsarNavigationEvent on each popstate using the current search', () => {
+  it('dispatches CustomEvent<NavigationTarget> on each popstate using the current search', async () => {
     const browser = buildFakeBrowser('?scene=intro');
     const navigate = collectNavigateEvents(browser);
     bootstrapNavigation(browser.target);
+    await flushMicrotasks();
     navigate.length = 0; // discard startup event
 
     browser.setSearch('?scene=outro');
@@ -578,23 +618,24 @@ describe('bootstrapNavigation — runtime entry wiring', () => {
     browser.setSearch('?composition=full-talk&index=2');
     browser.firePopstate();
 
-    expect(navigate.map((evt) => evt.navigationTarget)).toEqual([
+    expect(navigate.map((evt) => evt.detail)).toEqual([
       { locator: { kind: 'scene', scene: 'outro' } },
       { locator: { kind: 'composition-index', composition: 'full-talk', index: 2 } },
     ]);
   });
 
-  it('dispatches PulsarNavigationErrorEvent on parse failure (startup or popstate)', () => {
+  it('dispatches CustomEvent<Error> on parse failure (startup or popstate)', async () => {
     const browser = buildFakeBrowser('?scene=Bad');
     const errors = collectErrorEvents(browser);
     bootstrapNavigation(browser.target);
+    await flushMicrotasks();
 
     expect(errors).toHaveLength(1);
     const startup = errors[0];
     if (!startup) throw new Error('expected at least one error event');
     expect(startup.type).toBe('pulsar:navigate-error');
-    expect(startup.navigationError).toBeInstanceOf(Error);
-    expect(startup.navigationError.message).toMatch(/^navigation grammar is invalid:/);
+    expect(startup.detail).toBeInstanceOf(Error);
+    expect(startup.detail.message).toMatch(/^navigation grammar is invalid:/);
 
     errors.length = 0;
     browser.setSearch('?index=1');
@@ -602,13 +643,14 @@ describe('bootstrapNavigation — runtime entry wiring', () => {
     expect(errors).toHaveLength(1);
     const popstateErr = errors[0];
     if (!popstateErr) throw new Error('expected popstate error event');
-    expect(popstateErr.navigationError.message).toMatch(/^navigation grammar is invalid:/);
+    expect(popstateErr.detail.message).toMatch(/^navigation grammar is invalid:/);
   });
 
-  it('disposer stops further popstate dispatch', () => {
+  it('disposer stops further popstate dispatch', async () => {
     const browser = buildFakeBrowser('');
     const navigate = collectNavigateEvents(browser);
     const dispose = bootstrapNavigation(browser.target);
+    await flushMicrotasks();
     navigate.length = 0;
 
     dispose();
@@ -618,8 +660,8 @@ describe('bootstrapNavigation — runtime entry wiring', () => {
     expect(navigate).toHaveLength(0);
   });
 
-  it('static TYPE constants match the event type strings', () => {
-    expect(PulsarNavigationEvent.TYPE).toBe('pulsar:navigate');
-    expect(PulsarNavigationErrorEvent.TYPE).toBe('pulsar:navigate-error');
+  it('event-type constants match the dispatched event types', () => {
+    expect(PULSAR_NAVIGATE_EVENT_TYPE).toBe('pulsar:navigate');
+    expect(PULSAR_NAVIGATE_ERROR_EVENT_TYPE).toBe('pulsar:navigate-error');
   });
 });
