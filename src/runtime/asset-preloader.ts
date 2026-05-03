@@ -8,19 +8,29 @@
 // requirements have shipped, the workbench bootstrap passes
 // `createAssetPreloader()` straight to `resolveComposition({ preloadAssets })`.
 //
-// Strategy: fetch every asset URL in parallel via `Promise.allSettled`
-// and drain each successful response body via `arrayBuffer()` so the
-// network stream is fully consumed before the function resolves —
-// without the drain, `fetch` resolves on headers and the cache may
-// not yet hold the bytes when `create(ctx)` runs.
+// Strategy:
+//  1. Validate (scheme allowlist) and resolve (against `baseUrl`) every
+//     declared asset URL up front in a synchronous pass. Network requests
+//     do not start until validation has accepted every URL — an early
+//     valid asset cannot race a later disallowed scheme into a partial
+//     fetch.
+//  2. Fetch every resolved URL in parallel via `Promise.allSettled` and
+//     stream-drain each successful response body via
+//     `body.getReader()`. Streaming (rather than `arrayBuffer()`) keeps
+//     transient memory bounded for large assets.
+//  3. After fetch completes, re-validate the response's final URL
+//     (post-redirect) against the scheme allowlist so a 3xx to a
+//     disallowed scheme cannot bypass the up-front check.
 //
-// Failure handling: any non-2xx response, rejected fetch, or scheme
-// rejection surfaces as a single `AggregateError` whose `errors` array
-// carries every failure in declaration order. Each failure's message
-// names the asset URL so a multi-asset failure does not collapse into
-// indistinguishable network errors. Failures from non-2xx responses
-// drain/cancel the response body before throwing so connections are
-// not leaked. Failures are never swallowed; the resolver wraps the
+// Failure handling: any non-2xx response, rejected fetch, scheme
+// rejection, or invalid URL surfaces as a single `AggregateError` whose
+// `errors` array carries every failure in declaration order. Single-
+// failure cases use the same shape as multi-failure cases for consumer
+// consistency. Each per-asset failure message names the offending URL
+// (and the resolved URL when different) so multi-asset failures stay
+// distinguishable. Failures from non-2xx responses cancel the response
+// body via `body.cancel()` before throwing so connections are not
+// leaked. Failures are never swallowed; the resolver wraps the
 // AggregateError as
 // `composition resolution failed: scene "<id>" preloadAssets threw: ...`.
 //
@@ -29,13 +39,23 @@
 // can layer a decode pass on top of (or compose with) this preloader
 // without changing its contract.
 //
+// Cross-origin credential leak: if the caller passes
+// `init.headers` carrying credentials (Authorization, Cookie) and a
+// scene declares an asset on a third-party origin, those credentials
+// are sent to that origin. Per ADR-012, callers wanting credentialed
+// preload MUST either bind credentials to a custom `fetch` (per-origin)
+// or restrict scenes to first-party assets via `allowedSchemes` plus
+// deployment-level network policy. An origin-allowlist option may be
+// added in a future requirement; PUL-F005 documents the constraint.
+//
 // References:
 //  - ADR-002 §Resolution — runtime preloads assets per scene before mount.
 //  - ADR-008 #5 — scene asset inventories are statically inspectable
 //    (no runtime discovery; the only source is `scene.assets`).
 //  - ADR-011 — orchestrator-with-injected-adapters; this module is the
 //    asset adapter the resolver consumes.
-//  - ADR-012 — fetch + drain semantics; decode-complete deferred.
+//  - ADR-012 — fetch + drain semantics; decode-complete deferred;
+//    SSRF and credential-leak posture.
 
 import type { SceneModule } from './scene';
 
@@ -69,7 +89,9 @@ export interface AssetPreloaderOptions {
   /**
    * `RequestInit` forwarded to every fetch call (e.g. headers, signal,
    * cache mode). Forwarded by reference so callers can attach a single
-   * `AbortSignal` to all per-scene fetches.
+   * `AbortSignal` to all per-scene fetches. NB: credentials in
+   * `init.headers` flow to every asset URL — see ADR-012's
+   * cross-origin caveat before attaching `Authorization` or `Cookie`.
    */
   readonly init?: RequestInit;
   /**
@@ -79,7 +101,9 @@ export interface AssetPreloaderOptions {
    * relative paths resolve against `document.baseURI` automatically.
    * When provided, every resolved URL is re-validated against the
    * scheme allowlist (so a scene cannot smuggle a `file:` URL by
-   * declaring it absolute).
+   * declaring it absolute). When NOT provided, protocol-relative
+   * (`//host/path`) assets are rejected since their final scheme
+   * cannot be statically validated.
    */
   readonly baseUrl?: string;
   /**
@@ -88,6 +112,9 @@ export interface AssetPreloaderOptions {
    * (e.g. `['https:']` for production) or extend (e.g. add `'file:'`
    * for offline-export workflows). Schemes outside the list reject
    * before fetch with `asset "<url>": scheme "<scheme>" not allowed`.
+   * The allowlist is also re-checked against the response's final URL
+   * after fetch (defense against allowed-URL → disallowed-scheme
+   * redirects).
    */
   readonly allowedSchemes?: readonly string[];
 }
@@ -97,20 +124,25 @@ export interface AssetPreloaderOptions {
  *
  * The returned function:
  *  - resolves immediately when `scene.assets` is empty (no fetch calls);
- *  - validates every asset URL against the scheme allowlist before any
+ *  - validates every asset URL against the scheme allowlist BEFORE any
  *    network request (default allowlist is {@link DEFAULT_ALLOWED_SCHEMES});
  *  - if `baseUrl` is provided, resolves each asset against it via the
- *    `URL` constructor and re-validates the resolved scheme;
- *  - otherwise issues one parallel `fetch` per asset URL, drains each
- *    successful response body, and resolves with `undefined` once every
- *    asset is fully downloaded;
+ *    `URL` constructor and validates the resolved scheme;
+ *  - otherwise issues one parallel `fetch` per asset URL,
+ *    stream-drains each successful response body via
+ *    `response.body.getReader()`, and resolves with `undefined` once
+ *    every asset is fully downloaded;
+ *  - re-validates the post-redirect URL of every successful response
+ *    against the scheme allowlist (defense against
+ *    allowed → disallowed redirects);
  *  - throws an `AggregateError` when one or more assets fail (HTTP
  *    non-2xx, rejected fetch, scheme rejection, or invalid URL). The
  *    wrapping message is `composition asset preload failed: scene "<id>"`;
  *    per-asset failure messages live in `AggregateError.errors` and
- *    always name the offending asset URL so multi-asset failures stay
- *    distinguishable. The order of `errors` matches the declaration
- *    order in `scene.assets`, not completion order.
+ *    always name the offending asset URL (and the resolved URL when
+ *    different) so multi-asset failures stay distinguishable. The
+ *    order of `errors` matches the declaration order in `scene.assets`,
+ *    not completion order.
  *
  * The returned function is the `AssetPreloader` adapter the PUL-F004
  * resolver expects (`(scene: SceneModule) => Promise<void>`). When
@@ -126,22 +158,65 @@ export function createAssetPreloader(
   const allowedSchemes = options.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
   return async (scene) => {
     if (scene.assets.length === 0) return;
-    const results = await Promise.allSettled(
-      scene.assets.map((asset) => preloadAsset(asset, fetchImpl, init, baseUrl, allowedSchemes)),
-    );
-    const errors: unknown[] = [];
-    for (const result of results) {
-      if (result.status === 'rejected') errors.push(result.reason);
+
+    // Phase 1: resolve and scheme-validate every asset URL up front.
+    // Network requests do not start until validation accepts every
+    // URL — an early valid asset cannot race a later disallowed
+    // scheme into a partial fetch.
+    const resolved: string[] = [];
+    const validationErrors: unknown[] = [];
+    for (const asset of scene.assets) {
+      try {
+        resolved.push(resolveAssetUrl(asset, baseUrl, allowedSchemes));
+      } catch (cause) {
+        validationErrors.push(cause);
+      }
     }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, `composition asset preload failed: scene "${scene.id}"`);
+    if (validationErrors.length > 0) {
+      throw new AggregateError(
+        validationErrors,
+        `composition asset preload failed: scene "${scene.id}"`,
+      );
+    }
+
+    // Phase 2: fetch + stream-drain in parallel. Declaration order is
+    // preserved because we map through the original `scene.assets`
+    // array; `Promise.allSettled` collects every failure for the
+    // aggregate error.
+    const fetchResults = await Promise.allSettled(
+      scene.assets.map((asset, index) =>
+        fetchAndDrain(asset, resolved[index] as string, fetchImpl, init, allowedSchemes),
+      ),
+    );
+    const fetchErrors: unknown[] = [];
+    for (const result of fetchResults) {
+      if (result.status === 'rejected') fetchErrors.push(result.reason);
+    }
+    if (fetchErrors.length > 0) {
+      throw new AggregateError(
+        fetchErrors,
+        `composition asset preload failed: scene "${scene.id}"`,
+      );
     }
   };
 }
 
 /**
- * Resolve and scheme-validate one asset URL. Throws an asset-scoped
- * Error on rejection; the caller's `Promise.allSettled` collects.
+ * Resolve and scheme-validate one asset URL.
+ *
+ *  - `baseUrl` provided: resolve via `URL` constructor; validate
+ *    resolved protocol; return the absolute URL string. Absolute
+ *    asset URLs ignore the base (URL constructor behavior).
+ *  - `baseUrl` not provided, asset starts with `//`: reject. The
+ *    browser's `fetch` would resolve a protocol-relative URL against
+ *    `document.baseURI` to a host we cannot statically scheme-check,
+ *    so a tightened `allowedSchemes` would be silently bypassed.
+ *  - `baseUrl` not provided, asset is parseable as absolute URL:
+ *    validate protocol; return the asset string unchanged so fetch
+ *    sees it verbatim.
+ *  - `baseUrl` not provided, asset is a relative path: pass through.
+ *    The browser resolves against `document.baseURI` (same-origin by
+ *    default).
  */
 function resolveAssetUrl(
   asset: string,
@@ -158,10 +233,11 @@ function resolveAssetUrl(
     rejectDisallowedScheme(asset, resolved.protocol, allowedSchemes);
     return resolved.toString();
   }
-  // No baseUrl: try parsing as an absolute URL. If parsing succeeds,
-  // the asset declared an explicit scheme — validate it. If parsing
-  // throws, the asset is a relative path; pass it through and let the
-  // browser's `fetch` resolve it against `document.baseURI`.
+  if (asset.startsWith('//')) {
+    throw new Error(
+      `asset "${asset}": protocol-relative URL requires AssetPreloaderOptions.baseUrl for scheme validation`,
+    );
+  }
   let absolute: URL | null;
   try {
     absolute = new URL(asset);
@@ -184,43 +260,76 @@ function rejectDisallowedScheme(
 }
 
 /**
- * Fetch one resolved asset URL and drain its body. All errors thrown
- * here carry the asset URL in their message so multi-asset failures
- * stay distinguishable.
+ * Fetch one resolved asset URL, re-validate the post-redirect URL,
+ * and stream-drain the body. All errors thrown here carry the asset
+ * URL (and the resolved URL when different) in their message.
  */
-async function preloadAsset(
+async function fetchAndDrain(
   asset: string,
+  resolvedUrl: string,
   fetchImpl: typeof globalThis.fetch,
   init: RequestInit | undefined,
-  baseUrl: string | undefined,
   allowedSchemes: readonly string[],
 ): Promise<void> {
-  const resolvedUrl = resolveAssetUrl(asset, baseUrl, allowedSchemes);
+  const label = describeAsset(asset, resolvedUrl);
   let response: Response;
   try {
     response =
       init === undefined ? await fetchImpl(resolvedUrl) : await fetchImpl(resolvedUrl, init);
   } catch (cause) {
-    throw new Error(`asset "${asset}": ${describeFailure(cause)}`, { cause });
+    throw new Error(`${label}: ${describeFailure(cause)}`, { cause });
+  }
+  // Re-validate the final URL after redirects. `response.url` is the
+  // URL after any redirects fetch followed. A scene declared an
+  // allowed URL that 302s to a disallowed scheme MUST reject.
+  if (response.url !== '' && response.url !== resolvedUrl) {
+    let finalProtocol: string | null = null;
+    try {
+      finalProtocol = new URL(response.url).protocol;
+    } catch {
+      finalProtocol = null;
+    }
+    if (finalProtocol === null || !allowedSchemes.includes(finalProtocol)) {
+      await cancelBodyQuietly(response);
+      throw new Error(`${label}: redirected to disallowed URL "${response.url}"`);
+    }
   }
   if (!response.ok) {
-    // Drain/cancel the body before throwing so connections are not
-    // tied up waiting for GC. `cancel()` is a no-op if the body is
-    // already consumed or null; failures here are irrelevant — the
-    // HTTP error is the failure we want to surface.
+    // Cancel the body before throwing so connections are not held
+    // open until GC.
     await cancelBodyQuietly(response);
-    throw new Error(`asset "${asset}": ${response.status} ${response.statusText}`);
+    throw new Error(`${label}: ${response.status} ${response.statusText}`);
   }
-  // Drain the body so the network transfer fully completes before the
-  // caller's `create(ctx)` runs. Without this, `fetch` resolves on
-  // headers and the bytes may still be in flight, defeating the
-  // "preload" contract.
   try {
-    await response.arrayBuffer();
+    await streamDrain(response);
   } catch (cause) {
-    throw new Error(`asset "${asset}": body drain failed: ${describeFailure(cause)}`, { cause });
+    throw new Error(`${label}: body drain failed: ${describeFailure(cause)}`, { cause });
   }
 }
+
+/**
+ * Drain the response body without buffering the whole payload into
+ * memory. Reads chunks and discards them. Compared to
+ * `response.arrayBuffer()`, this avoids transient allocation
+ * proportional to asset size — relevant for video / large audio
+ * scenes (see ADR-012 §Negative).
+ */
+async function streamDrain(response: Response): Promise<void> {
+  const body = response.body;
+  if (body === null) return;
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done } = await reader.read();
+      if (done) return;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+const describeAsset = (asset: string, resolved: string): string =>
+  asset === resolved ? `asset "${asset}"` : `asset "${asset}" → "${resolved}"`;
 
 const describeFailure = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);

@@ -48,10 +48,24 @@ to extend.
 ## Decision
 
 PUL-F005 ships the **byte-warming** preloader. `createAssetPreloader`
-in `src/runtime/asset-preloader.ts` uses `fetch` and drains every
-successful response body via `response.arrayBuffer()` so the network
-transfer is fully complete before `create(ctx)` runs. No asset-type
-discrimination, no decode pass, no browser-only APIs.
+in `src/runtime/asset-preloader.ts` uses `fetch` and stream-drains
+every successful response body via `response.body.getReader()` so the
+network transfer is fully complete before `create(ctx)` runs without
+buffering the whole payload into memory. No asset-type discrimination,
+no decode pass, no browser-only APIs.
+
+The factory runs validation in two phases:
+
+1. **Up-front**, synchronously: every declared asset URL is resolved
+   (against `baseUrl` if configured) and scheme-checked against the
+   allowlist. If any URL fails validation, no fetch starts. This way
+   an early valid asset cannot race a later disallowed asset into a
+   partial network call.
+2. **Post-fetch**, per response: the `response.url` (the URL after
+   any redirects fetch followed) is re-validated against the same
+   scheme allowlist. A scene declared an allowed URL that 302s to a
+   disallowed scheme (`https://allowed.example` → `file:///etc/passwd`)
+   is rejected before its body is read.
 
 Failure handling matches the
 [ADR-011](011-composition-resolver-orchestration.md) convention: any
@@ -94,11 +108,31 @@ The factory is configurable via `AssetPreloaderOptions`:
 
 Failures from rejected fetches and from non-2xx responses are
 **asset-scoped**: every per-asset error message starts with
-`asset "<url>": ...` so two simultaneously failing fetches stay
+`asset "<url>": ...` (or `asset "<declared>" → "<resolved>": ...` when
+`baseUrl` was used) so two simultaneously failing fetches stay
 distinguishable in `AggregateError.errors`. Rejected fetches preserve
 the original error as `Error.cause`. Non-2xx responses cancel the
 response body via `body.cancel()` before throwing so connections are
 not held open until garbage collection.
+
+### Cross-origin credential caveat
+
+`init.headers` flows to **every** asset URL fetched. If a caller
+configures `init.headers` carrying credentials (`Authorization`,
+`Cookie`) and a scene declares an asset on a third-party origin,
+those credentials are sent to that origin. PUL-F005 does not ship an
+origin-allowlist option. Callers wanting credentialed preload have
+two options today:
+
+1. Bind credentials to a custom `fetch` that injects headers per
+   request based on the destination URL. The custom fetch can refuse
+   to send credentials cross-origin or attach origin-specific tokens.
+2. Restrict the `allowedSchemes` and/or the scene authoring layer so
+   third-party absolute URLs cannot appear in `scene.assets`. For
+   first-party-only deployments this is sufficient.
+
+A future requirement may add an explicit `originAllowlist` option to
+the preloader if profiling or threat-model evolution motivates it.
 
 Decode-complete semantics are explicitly **out of scope** for PUL-F005.
 A future requirement that needs decode-complete (e.g. when screenshot

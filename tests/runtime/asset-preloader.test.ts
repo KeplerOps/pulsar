@@ -165,37 +165,176 @@ describe('createAssetPreloader (PUL-F005)', () => {
   });
 
   describe('body drain invariant', () => {
-    it("awaits the response body's arrayBuffer() before resolving", async () => {
-      // fetch resolves with headers immediately, but the body's
-      // arrayBuffer() resolution is gated. The preloader must wait on
-      // the body before its own promise resolves.
-      let releaseBody: ((value: ArrayBuffer) => void) | undefined;
-      const bodyGate = new Promise<ArrayBuffer>((resolve) => {
-        releaseBody = resolve;
-      });
+    it('stream-drains the response body via getReader (does not buffer the whole payload)', async () => {
+      // Build a ReadableStream that emits a couple of chunks then
+      // closes. Track every read so we can assert the preloader
+      // actually consumed the stream rather than ignoring or
+      // buffering it.
+      const reads: number[] = [];
       const fetchImpl: typeof globalThis.fetch = async () => {
-        const response = new Response(new ArrayBuffer(0), { status: 200 });
-        // Override arrayBuffer to return the gated promise so the
-        // preloader's drain step is observable.
-        Object.defineProperty(response, 'arrayBuffer', {
-          value: () => bodyGate,
+        let chunkIndex = 0;
+        const stream = new ReadableStream({
+          pull(controller) {
+            chunkIndex += 1;
+            if (chunkIndex > 3) {
+              controller.close();
+              return;
+            }
+            reads.push(chunkIndex);
+            controller.enqueue(new Uint8Array([chunkIndex]));
+          },
         });
-        return response;
+        return new Response(stream, { status: 200 });
+      };
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await preload(buildScene('scene-a', ['/a']));
+      // Three pulls were issued; the preloader must have driven the
+      // reader to completion.
+      expect(reads).toEqual([1, 2, 3]);
+    });
+
+    it('awaits the body drain before resolving (gated reader)', async () => {
+      // Build a stream whose first read is gated. Until released, the
+      // preloader's promise must NOT resolve.
+      let releaseFirstChunk: (() => void) | undefined;
+      const firstChunkGate = new Promise<void>((resolve) => {
+        releaseFirstChunk = resolve;
+      });
+      let chunkIndex = 0;
+      const fetchImpl: typeof globalThis.fetch = async () => {
+        const stream = new ReadableStream({
+          async pull(controller) {
+            chunkIndex += 1;
+            if (chunkIndex === 1) {
+              await firstChunkGate;
+              controller.enqueue(new Uint8Array([1]));
+              return;
+            }
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200 });
       };
       const preload = createAssetPreloader({ fetch: fetchImpl });
       let resolved = false;
       const promise = preload(buildScene('scene-a', ['/a'])).then(() => {
         resolved = true;
       });
-      // Drain microtasks: fetch resolves, but body is still gated,
-      // so the preloader promise must NOT have resolved yet.
-      for (let i = 0; i < 5; i += 1) {
-        await Promise.resolve();
-      }
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
       expect(resolved).toBe(false);
-      releaseBody?.(new ArrayBuffer(0));
+      releaseFirstChunk?.();
       await promise;
       expect(resolved).toBe(true);
+    });
+  });
+
+  describe('up-front validation (codex review: validate full asset list before any fetch)', () => {
+    it('does not start any fetch when a later asset has a disallowed scheme', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await expect(
+        preload(
+          buildScene('scene-a', [
+            'https://allowed.example/a.png',
+            'file:///etc/passwd',
+            'https://allowed.example/b.png',
+          ]),
+        ),
+      ).rejects.toThrow(/^composition asset preload failed:/);
+      // No URL — including the otherwise-allowed `https:` ones — was
+      // fetched, because validation aborted before the network phase.
+      expect(calls).toEqual([]);
+    });
+  });
+
+  describe('post-redirect URL re-validation (security: redirect to disallowed scheme)', () => {
+    it('rejects when fetch follows a redirect into a disallowed scheme', async () => {
+      const fetchImpl: typeof globalThis.fetch = async () => {
+        // Fake a Response whose `.url` reports a final URL with a
+        // disallowed scheme — what fetch would do after following a
+        // 302 from https://allowed.example to file:///etc/passwd
+        // (`fetch` exposes the final URL on `response.url`).
+        const response = new Response(new ArrayBuffer(0), { status: 200 });
+        Object.defineProperty(response, 'url', {
+          value: 'file:///etc/passwd',
+        });
+        return response;
+      };
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      try {
+        await preload(buildScene('scene-a', ['https://allowed.example/a.png']));
+        expect.unreachable('expected redirect to disallowed scheme to throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toMatch(
+          /redirected to disallowed URL "file:\/\/\/etc\/passwd"/,
+        );
+      }
+    });
+
+    it('accepts a same-scheme redirect (https → https)', async () => {
+      const fetchImpl: typeof globalThis.fetch = async () => {
+        const response = new Response(new ArrayBuffer(0), { status: 200 });
+        Object.defineProperty(response, 'url', {
+          value: 'https://cdn.example.com/redirected/a.png',
+        });
+        return response;
+      };
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await expect(
+        preload(buildScene('scene-a', ['https://allowed.example/a.png'])),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('protocol-relative URLs (codex review: must not bypass scheme allowlist)', () => {
+    it('rejects // prefix when no baseUrl is configured', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      try {
+        await preload(buildScene('scene-a', ['//attacker.example/a.png']));
+        expect.unreachable('expected protocol-relative URL to be rejected without baseUrl');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toMatch(
+          /asset "\/\/attacker\.example\/a\.png": protocol-relative URL requires AssetPreloaderOptions\.baseUrl/,
+        );
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it('accepts // prefix once baseUrl is set (resolved scheme is validated)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'https://my-app.example/',
+      });
+      await preload(buildScene('scene-a', ['//cdn.example.com/a.png']));
+      // // resolved against an https: base yields https: scheme — allowed.
+      expect(calls.map((c) => c.input)).toEqual(['https://cdn.example.com/a.png']);
+    });
+  });
+
+  describe('error message includes resolved URL when different from declared', () => {
+    it('shows both declared and resolved URLs in failure messages', async () => {
+      const fetchImpl: typeof globalThis.fetch = async () =>
+        new Response(null, { status: 404, statusText: 'Not Found' });
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'https://cdn.example.com/scenes/',
+      });
+      try {
+        await preload(buildScene('scene-a', ['hero.png']));
+        expect.unreachable('expected 404 to throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toBe(
+          'asset "hero.png" → "https://cdn.example.com/scenes/hero.png": 404 Not Found',
+        );
+      }
     });
   });
 
