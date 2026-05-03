@@ -19,6 +19,13 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
+  # GitHub Actions workflow lint
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.11
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
   # =============================================================================
   # STAGE 2: Security
   # =============================================================================
@@ -28,3 +35,30 @@ repos:
     rev: v8.24.0
     hooks:
       - id: gitleaks
+
+  # =============================================================================
+  # STAGE 3: TypeScript checks (mirror CI). Local hooks; require pnpm in PATH.
+  # =============================================================================
+
+  - repo: local
+    hooks:
+      - id: biome-check
+        name: biome check (lint + format, write fixes)
+        entry: bash -c 'pnpm exec biome check --write "$@"' --
+        language: system
+        types_or: [ts, tsx, javascript, json]
+        exclude: ^(pnpm-lock\.yaml)$
+
+      - id: typecheck
+        name: tsc --noEmit
+        entry: bash -c 'pnpm typecheck'
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.ts|tests/.*\.ts|tsconfig.*\.json|package\.json|vite\.config\.ts|vitest\.config\.ts)$
+
+      - id: vitest
+        name: vitest run
+        entry: bash -c 'pnpm test'
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.ts|tests/.*\.ts|vitest\.config\.ts|package\.json)$
