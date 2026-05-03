@@ -198,6 +198,6 @@ export async function loadSceneNavigationTarget(
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
     runTimeline: options.runTimeline,
-    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 }
