@@ -164,9 +164,26 @@ describe('SceneModule contract (PUL-F001)', () => {
       expect(() => assertSceneModule(withField('defaultNext', undefined))).toThrow(/defaultNext/);
     });
 
-    it('accepts string defaultNext', () => {
+    it('accepts kebab-case string defaultNext', () => {
       expect(() => assertSceneModule(withField('defaultNext', 'next-scene'))).not.toThrow();
     });
+
+    it.each<[string, string]>([
+      ['empty string', ''],
+      ['uppercase', 'Scene-B'],
+      ['underscore', 'scene_b'],
+      ['leading hyphen', '-scene-b'],
+      ['trailing hyphen', 'scene-b-'],
+      ['consecutive hyphens', 'scene--b'],
+      ['whitespace', 'scene b'],
+      ['punctuation', 'scene.b'],
+      ['non-ASCII', 'séance'],
+    ])(
+      'rejects non-kebab-case defaultNext (%s) — defaultNext is a scene id reference (PUL-A007)',
+      (_label, value) => {
+        expect(() => assertSceneModule(withField('defaultNext', value))).toThrow(/defaultNext/);
+      },
+    );
 
     it('rejects non-boolean standalone', () => {
       expect(() => assertSceneModule(withField('standalone', 'yes'))).toThrow(/standalone/);
@@ -276,6 +293,58 @@ describe('SceneModule contract (PUL-F001)', () => {
 
     it('returns false for undefined', () => {
       expect(isSceneModule(undefined)).toBe(false);
+    });
+  });
+
+  describe('scene id format (PUL-A007)', () => {
+    describe('valid kebab-case ids', () => {
+      it.each(['a', 'scene-a', 'cold-open', 'a-b-c', 'intro1', '1', 'a1-b2', '9-9'])(
+        'accepts %j',
+        (id) => {
+          expect(() => assertSceneModule(withField('id', id))).not.toThrow();
+        },
+      );
+    });
+
+    describe('invalid id formats are rejected', () => {
+      it.each<[string, string]>([
+        ['empty string', ''],
+        ['uppercase letter', 'Scene-a'],
+        ['all uppercase', 'SCENE'],
+        ['mixed case in segment', 'a-A'],
+        ['underscore separator', 'scene_a'],
+        ['leading underscore', '_scene'],
+        ['underscore in segment', 'a_b'],
+        ['leading hyphen', '-scene'],
+        ['trailing hyphen', 'scene-'],
+        ['consecutive hyphens', 'a--b'],
+        ['leading consecutive hyphens', '--scene'],
+        ['hyphen only', '-'],
+        ['double hyphen only', '--'],
+        ['internal space', 'scene a'],
+        ['leading space', ' scene'],
+        ['trailing tab', 'scene\t'],
+        ['period', 'scene.a'],
+        ['slash', 'scene/a'],
+        ['at sign', 'scene@a'],
+        ['accented latin', 'séance'],
+        ['cedilla', 'café'],
+        ['CJK characters', '你好'],
+      ])('rejects %s (%j)', (_label, id) => {
+        expect(() => assertSceneModule(withField('id', id))).toThrow(/\bid\b/);
+      });
+    });
+
+    describe('error messages on bad ids', () => {
+      it('includes the offending id value when it is a string', () => {
+        expect(() => assertSceneModule(withField('id', 'Scene-A'))).toThrow(
+          /scene "Scene-A" is invalid: id /,
+        );
+      });
+
+      it('keys on the empty-string id when surfacing the error', () => {
+        expect(() => assertSceneModule(withField('id', ''))).toThrow(/scene "" is invalid: id /);
+      });
     });
   });
 
