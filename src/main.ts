@@ -8,7 +8,7 @@
 //  2. Build the scene and composition registries from the bundled
 //     scene/composition modules. Both registries are immutable after
 //     construction (ADR-008 #2 "manifests over flow control").
-//  3. Parse `window.location` once via
+//  3. Parse `globalThis.location` once via
 //     `resolveSceneNavigationTarget`. URL state is authoritative
 //     (ADR-013) — no localStorage / cookie fallback.
 //  4. When a navigation target resolves, record the addressed scene
@@ -54,16 +54,14 @@ const preloadAssets = createAssetPreloader();
 // when the timeline engine lands.
 const runTimeline: SceneTimelineRunner = () => undefined;
 
-(async () => {
-  let target: SceneNavigationTarget | null;
-  try {
-    target = resolveSceneNavigationTarget(window.location, sceneRegistry, compositionRegistry);
-  } catch (err) {
-    console.error(err);
-    return;
-  }
-  if (target === null) return;
+let target: SceneNavigationTarget | null = null;
+try {
+  target = resolveSceneNavigationTarget(globalThis.location, sceneRegistry, compositionRegistry);
+} catch (err) {
+  console.error(err);
+}
 
+if (target !== null) {
   stage?.setAttribute('data-pulsar-scene-target', target.scene.id);
   if (target.composition !== undefined) {
     stage?.setAttribute('data-pulsar-composition-target', target.composition.id);
@@ -78,4 +76,4 @@ const runTimeline: SceneTimelineRunner = () => undefined;
   } catch (err) {
     console.error(err);
   }
-})();
+}
