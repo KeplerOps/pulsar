@@ -56,10 +56,35 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
   createAssetPreloader({ init: { signal } });
 
 // Timeline runner placeholder. The composition resolver awaits the
-// runner before invoking `cleanup(ctx)`, so an empty runner cleanly
-// completes the lifecycle. ADR-003's GSAP runner replaces this slot
-// when the timeline engine lands.
-const runTimeline: SceneTimelineRunner = () => undefined;
+// runner before invoking `cleanup(ctx)`, so a runner that resolves
+// immediately would cause every URL-loaded scene to mount and clean
+// up in the same turn — the addressed scene would not stay on stage
+// after startup. The placeholder instead resolves only when the
+// per-navigation `AbortSignal` aborts (popstate, dispose, or a new
+// handle()), so each loaded scene remains active until the next
+// navigation. ADR-003's GSAP runner replaces this slot when the
+// timeline engine lands; until then this stand-in honors the
+// "scene stays loaded between navigations" workbench expectation.
+const runTimeline: SceneTimelineRunner = (input) =>
+  new Promise<void>((resolve) => {
+    if (input.signal === undefined) {
+      // No abort path was wired (e.g. test harness without a
+      // signal); treat as a no-op so we don't wait forever.
+      resolve();
+      return;
+    }
+    if (input.signal.aborted) {
+      resolve();
+      return;
+    }
+    input.signal.addEventListener(
+      'abort',
+      () => {
+        resolve();
+      },
+      { once: true },
+    );
+  });
 
 // Scene context carries the stage handle so scene lifecycle hooks
 // can mutate the DOM through an injected dependency rather than

@@ -213,14 +213,30 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
 
     const controller = new AbortController();
+    let preloadAssets: AssetPreloader;
+    try {
+      // Build the preloader against this navigation's abort signal
+      // so its underlying `fetch` calls cancel when the user clicks
+      // back/forward mid-preload. A synchronous failure here (e.g.
+      // a misconfigured preloader factory) MUST flow through the
+      // documented error path — the same as a resolver failure —
+      // rather than escaping `runOnce` and leaving partial scene-
+      // target attributes on the stage with a rejected queue
+      // promise.
+      preloadAssets = options.createPreloader(controller.signal);
+    } catch (err) {
+      // Roll back the success-state attrs we just wrote and surface
+      // the error so the stage doesn't lie about a half-loaded scene.
+      clearStageAttr(ATTR_SCENE);
+      clearStageAttr(ATTR_COMPOSITION);
+      surfaceError(err);
+      return;
+    }
     const load: InFlightLoad = {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
         ctx: options.ctx,
-        // Build the preloader against this navigation's abort
-        // signal so its underlying `fetch` calls cancel when the
-        // user clicks back/forward mid-preload.
-        preloadAssets: options.createPreloader(controller.signal),
+        preloadAssets,
         runTimeline: options.runTimeline,
         signal: controller.signal,
       }),

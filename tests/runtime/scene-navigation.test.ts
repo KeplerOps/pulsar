@@ -128,6 +128,27 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
       ).toThrow(/^scene navigation failed: composition "empty" is empty/);
     });
 
+    it('reports missing scene ids using ABSOLUTE composition indices, not slice-relative ones', () => {
+      // For composition-scene / composition-index targets, the slice
+      // starts mid-manifest. Diagnostic indices must reference the
+      // ORIGINAL composition's entry positions so the operator can
+      // navigate to the broken entry directly. Reporting slice-
+      // relative indices lies about which composition entry is gone.
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'broken', manifest: ['intro', 'middle', 'gone-a', 'gone-b'] },
+      ]);
+      // Slice from index 2 — the missing entries are at composition
+      // entries [2] and [3], NOT slice-relative [0] and [1].
+      expect(() =>
+        resolveSceneNavigation(compositionIndexTarget('broken', 2), { scenes, compositions }),
+      ).toThrow(
+        /scene\(s\) not in the scene registry: "gone-a" \(entry \[2\]\), "gone-b" \(entry \[3\]\)/,
+      );
+    });
+
     it('aggregates every missing scene id when the composition references unregistered scenes', () => {
       const intro = buildScene({ id: 'intro' });
       const scenes = createSceneRegistry([intro]);
@@ -333,6 +354,41 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
   });
 
   describe('snapshot immutability', () => {
+    it('deep-freezes object-form entries in the slice (does not rely on the composition registry to do it)', () => {
+      // The dispatcher accepts the `CompositionRegistry` interface,
+      // not a specific implementation. Even a registry that does NOT
+      // deep-freeze its stored manifests must produce a slice whose
+      // object-form entries are frozen, so a caller cannot mutate
+      // `manifestSlice[0].behavior` between resolve and lifecycle
+      // dispatch. Test by constructing the registry path with mutable
+      // sources and asserting the slice's entries come back frozen.
+      const middle = buildScene({ id: 'middle' });
+      const outro = buildScene({ id: 'outro' });
+      const scenes = createSceneRegistry([middle, outro]);
+      // Source manifest with mutable object-form entries; the
+      // composition registry (well-behaved here) deep-freezes on
+      // registration. The dispatcher's slice must also freeze, so
+      // that even if a future registry implementation ever skipped
+      // freezing, the slice remains immutable to the bridge.
+      const compositions = createCompositionRegistry([
+        {
+          id: 'mixed',
+          manifest: [
+            { id: 'middle', range: ['intro', 'hook'] },
+            { id: 'outro', behavior: { fade: { duration: 200 } } },
+          ],
+        },
+      ]);
+      const target = resolveSceneNavigation(compositionTarget('mixed'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+      const slice = target.composition?.manifestSlice as unknown as readonly unknown[];
+      expect(Object.isFrozen(slice)).toBe(true);
+      expect(Object.isFrozen(slice[0])).toBe(true);
+      expect(Object.isFrozen(slice[1])).toBe(true);
+    });
+
     it('manifestSlice and sceneSlice are frozen', () => {
       const intro = buildScene({ id: 'intro' });
       const middle = buildScene({ id: 'middle' });

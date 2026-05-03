@@ -72,11 +72,17 @@ function freezeManifest(manifest: CompositionManifest): CompositionManifest {
         : entry.range;
     }
     if (entry.behavior !== undefined) {
-      // Defensive copy then deep-freeze so caller-owned values cannot
-      // be mutated post-registration. The shallow `{ ...entry.behavior }`
-      // copy only protects the top-level keys; deep-freeze walks every
-      // nested object and array.
-      frozenEntry.behavior = deepFreeze({ ...entry.behavior });
+      // True deep snapshot via `structuredClone` then deep-freeze, so
+      // callers cannot mutate the registry's `behavior` value through
+      // any reference no matter how deep their nested objects are or
+      // whether they passed pre-frozen subgraphs (a shallow copy +
+      // deepFreeze chain still shares descendants because deepFreeze
+      // short-circuits on already-frozen values). `structuredClone`
+      // is platform-standard since Node 17 / all current browsers;
+      // behavior values are required to be structurally cloneable
+      // (`Readonly<Record<string, unknown>>` already excludes
+      // functions per ADR-008 #1's declarative-data invariant).
+      frozenEntry.behavior = deepFreeze(structuredClone(entry.behavior));
     }
     copy.push(Object.freeze(frozenEntry) as unknown as CompositionEntry);
   }

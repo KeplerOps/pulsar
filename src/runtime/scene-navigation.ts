@@ -38,6 +38,7 @@ import {
   resolveComposition,
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
+import { deepFreeze } from './object';
 import { type SceneRegistry, createSceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
@@ -129,26 +130,44 @@ const fail = (detail: string): never => {
  * registry. Pre-resolves every entry so the bridge does not re-resolve
  * by id later. Aggregates every missing scene id into a single error
  * so a manifest author / composition registrar fixes every gap in one
- * pass rather than chasing a sequence of "first miss" errors. Returns
- * a frozen slice.
+ * pass rather than chasing a sequence of "first miss" errors.
+ *
+ * Reported entry indices are ABSOLUTE positions in the original
+ * composition manifest (`originalStartIndex + slice-relative-index`),
+ * so the operator sees the same indices the composition author wrote.
+ * Slice-relative indices would lie about which composition entry was
+ * gone for `composition-scene` / `composition-index` targets where
+ * the slice starts mid-manifest.
  */
 function snapshotSceneSlice(
   manifestSlice: CompositionManifest,
+  originalStartIndex: number,
   scenes: SceneRegistry,
   compositionId: string,
 ): readonly SceneModule[] {
   const missing = findUnregisteredEntries(manifestSlice, (id) => scenes.has(id));
   if (missing.length > 0) {
-    const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
+    const list = missing
+      .map(({ id, index }) => `"${id}" (entry [${originalStartIndex + index}])`)
+      .join(', ');
     fail(`composition "${compositionId}" references scene(s) not in the scene registry: ${list}`);
   }
   return Object.freeze(manifestSlice.map((entry) => scenes.get(entryId(entry))));
 }
 
+/**
+ * Slice the manifest from `startIndex` and deep-freeze the resulting
+ * array — including object-form entries — so the dispatcher's snapshot
+ * is immutable regardless of whether the source `CompositionRegistry`
+ * implementation deep-froze its stored manifests. The
+ * `CompositionRegistry` interface allows alternative implementations,
+ * so the dispatcher does its own freezing rather than relying on a
+ * specific registry's deep-freeze policy.
+ */
 const sliceManifestFromIndex = (
   manifest: CompositionManifest,
   startIndex: number,
-): CompositionManifest => Object.freeze(manifest.slice(startIndex)) as readonly CompositionEntry[];
+): CompositionManifest => deepFreeze(manifest.slice(startIndex)) as readonly CompositionEntry[];
 
 function resolveCompositionManifest(
   compositionId: string,
@@ -170,7 +189,7 @@ function resolveCompositionFromStart(
     fail(`composition "${compositionId}" is empty — no scene to navigate to`);
   }
   const manifestSlice = sliceManifestFromIndex(manifest, 0);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
+  const sceneSlice = snapshotSceneSlice(manifestSlice, 0, scenes, compositionId);
   return { id: compositionId, manifestSlice, sceneSlice };
 }
 
@@ -205,7 +224,7 @@ function resolveCompositionAndScene(
     );
   }
   const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
+  const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
   return { id: compositionId, manifestSlice, sceneSlice };
 }
 
@@ -228,7 +247,7 @@ function resolveCompositionAndIndex(
     );
   }
   const manifestSlice = sliceManifestFromIndex(manifest, index);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
+  const sceneSlice = snapshotSceneSlice(manifestSlice, index, scenes, compositionId);
   return { id: compositionId, manifestSlice, sceneSlice };
 }
 

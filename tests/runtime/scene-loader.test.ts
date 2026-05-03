@@ -626,6 +626,40 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(surfaced).toBeDefined();
     });
 
+    it('routes synchronous `createPreloader` failures through onError and the stage error attribute', async () => {
+      // If `createPreloader(signal)` throws synchronously (e.g. the
+      // PUL-F005 factory rejects an invalid `init`), the loader must
+      // surface it through the documented error path — `onError` +
+      // `data-pulsar-navigation-error` — instead of letting the
+      // throw escape and leaving partial scene-target attributes on
+      // the stage with a rejected queue promise.
+      const captured: unknown[] = [];
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => {
+          throw new Error('preloader factory blew up');
+        },
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      // Error surfaced through the loader's documented hook.
+      expect(captured).toHaveLength(1);
+      expect((captured[0] as Error).message).toBe('preloader factory blew up');
+      // Stage advertises the error and is NOT lying about an
+      // already-loaded scene.
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBe('preloader factory blew up');
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+    });
+
     it('handle() after dispose() is a no-op', async () => {
       const log: string[] = [];
       const intro = buildScene({

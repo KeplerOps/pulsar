@@ -202,6 +202,37 @@ describe('createCompositionRegistry', () => {
       }).toThrow();
     });
 
+    it('snapshots `behavior` via deep-copy so mutating the original after registration cannot leak into the registry', () => {
+      // Without a true deep snapshot, the registry shares nested
+      // objects with the caller. A caller that registered a manifest,
+      // then mutated `behavior.fade.duration` on its OWN reference,
+      // would change what the registry returns. The registry must
+      // return a value the caller cannot mutate post-registration.
+      const fade = { duration: 200, ease: ['cubic', 'ease-out'] };
+      const flags = ['a', 'b'];
+      const callerBehavior = { fade, flags };
+      const manifest = [
+        { id: 'scene-a', behavior: callerBehavior },
+      ] as unknown as CompositionManifest;
+      const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
+      const before = registry.get('talk');
+
+      // Caller mutates THEIR view (which still has live references).
+      callerBehavior.fade.duration = 9999;
+      callerBehavior.flags.push('c');
+
+      const after = registry.get('talk');
+      const stored = after[0] as unknown as {
+        behavior: { fade: { duration: number; ease: string[] }; flags: string[] };
+      };
+      // The stored snapshot has the original values, not the
+      // post-registration mutations.
+      expect(stored.behavior.fade.duration).toBe(200);
+      expect(stored.behavior.flags).toEqual(['a', 'b']);
+      // And the snapshot stayed stable across re-fetch.
+      expect(after).toEqual(before);
+    });
+
     it('mutating the caller-owned manifest after registration does not affect what the registry returns', () => {
       const manifest: string[] = ['scene-a', 'scene-b'];
       const registry = createCompositionRegistry([
