@@ -7,12 +7,17 @@
 // collisions surface loudly.
 //
 // Scene id format is enforced here (PUL-A007): kebab-case lowercase
-// ASCII (`[a-z0-9]+(-[a-z0-9]+)*`). Id reuse across scenes is
-// enforced by the registry (PUL-F002) — the two clauses of PUL-A007
-// are split across this file (format) and ./registry.ts (uniqueness).
+// ASCII (`[a-z0-9]+(-[a-z0-9]+)*`). The regex itself lives in
+// ./identifier.ts because ADR-008 #1 makes the same rule binding on
+// scenes, compositions, beats, and assets — see `isKebabIdentifier`.
+// Id reuse across scenes is enforced by the registry (PUL-F002) —
+// the two clauses of PUL-A007 are split across this file (format)
+// and ./registry.ts (uniqueness).
 //
 // Downstream consumers (registry, composition resolver, exporter)
 // must call assertSceneModule rather than re-implementing checks.
+
+import { isKebabIdentifier } from './identifier';
 
 /**
  * Caption metadata. ADR-002 specifies `{ at: ms, text }`. The prompter,
@@ -96,13 +101,11 @@ const isCaption = (v: unknown): v is Caption =>
 const isCaptionArray = (v: unknown): v is readonly Caption[] =>
   Array.isArray(v) && v.every(isCaption);
 
-// Strict kebab-case per PUL-A007 + ADR-002 §Scene shape + ADR-008 #1:
-// non-empty lowercase alphanumeric segments separated by single hyphens.
-// Rejects empty strings, leading/trailing hyphens, consecutive hyphens,
-// uppercase, underscores, whitespace, punctuation, and non-ASCII.
-const SCENE_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
-const isSceneId = (v: unknown): v is string => typeof v === 'string' && SCENE_ID_PATTERN.test(v);
+// Scene ids share the kebab-case rule with all other Pulsar
+// identifiers per ADR-008 #1; the predicate lives in ./identifier.ts
+// so composition entries, beat labels, and future asset ids do not
+// each carry their own copy of the regex (PUL-A007 clause C1).
+const isSceneId = isKebabIdentifier;
 
 const isSceneIdOrNull = (v: unknown): v is string | null => v === null || isSceneId(v);
 

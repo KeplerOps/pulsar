@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/composition.ts` — `CompositionManifest`,
+  `CompositionEntry`, `CompositionEntryOverride`, `SubRange`, and
+  `BehaviorOverride` types plus `assertCompositionManifest` runtime
+  validator and `isCompositionManifest` predicate. Implements
+  PUL-F003 (the composition manifest format): a manifest is an
+  ordered array of entries; each entry is a bare kebab-case scene id
+  string or an object with `id` plus optional `range` (single beat
+  label or `[start, end]` label pair, per ADR-003 §Labels) and
+  `behavior` (per-entry override blob). Unknown override keys are
+  rejected so typos surface immediately. The validator owns the
+  *format* only — registry-existence and timeline-label-existence
+  checks belong to a later resolution requirement. Errors identify
+  the entry index and offending field/condition, matching the
+  `assertSceneModule` error grammar (PUL-Q005 spirit).
+- `src/runtime/identifier.ts` — `KEBAB_IDENTIFIER_PATTERN` and
+  `isKebabIdentifier`. Single source of truth for the kebab-case
+  identifier rule that ADR-008 #1 makes binding on scenes,
+  compositions, beats, and assets. Reused by `scene.ts` (scene id
+  validation) and `composition.ts` (entry id and beat label
+  validation).
+- `tests/runtime/composition.test.ts` — 103-test Vitest spec covering
+  every PUL-F003 clause (top-level array shape, bare-string entries
+  with kebab-case rule, object entries with `id` + `range` +
+  `behavior` overrides, unknown-key rejection per the codex
+  preflight guardrail), the AC1 mixed-entry contract using ADR-002's
+  literal `fullTalk` / `shortTalk` / `trailer` examples as fixtures,
+  AC2 actionable-error checks, and the `isCompositionManifest`
+  predicate.
+
+### Changed
+
+- `src/runtime/scene.ts` — sources the kebab-case identifier
+  predicate from the new `src/runtime/identifier.ts` instead of
+  carrying its own `SCENE_ID_PATTERN` constant. Behavior is
+  unchanged (same regex); the extraction keeps the ADR-008 #1 rule
+  in one place now that `composition.ts` is a second caller.
+
 - `docs/adrs/010-issue-tag-taxonomy.md` — defines a five-dimension,
   namespaced GitHub issue label taxonomy: type (`requirement` /
   `bug` / `enhancement` / `documentation` / `chore`),
