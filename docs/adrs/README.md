@@ -37,3 +37,4 @@ Each ADR includes:
 | [009](009-repo-layout-and-build-tooling.md) | Repo Layout and Build Tooling | Accepted |
 | [010](010-issue-tag-taxonomy.md) | GitHub Issue Tag Taxonomy | Accepted |
 | [011](011-composition-resolver-orchestration.md) | Composition Resolver as a Pure Orchestrator with Injected Adapters | Accepted |
+| [012](012-asset-preloader-fetch-and-drain.md) | Asset Preloader — Warm Bytes via Fetch + Drain; Decode-Complete is Future Work | Accepted |

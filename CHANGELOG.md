@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/asset-preloader.ts` — `createAssetPreloader` factory,
+  `AssetPreloaderOptions` interface, and `DEFAULT_ALLOWED_SCHEMES`
+  constant. Implements PUL-F005 clause (b): per scene, validate every
+  declared asset URL against a scheme allowlist, optionally resolve
+  relative paths against a configured `baseUrl`, fetch every URL in
+  parallel, stream-drain each successful response body via
+  `body.getReader()`, and re-validate the post-redirect URL against
+  the allowlist. Failures aggregate into a single `AggregateError`
+  whose `errors` array carries every failure in declaration order;
+  per-asset messages name the offending URL (and the resolved URL when
+  `baseUrl` differs) so multi-asset failures stay distinguishable.
+  Configurable via `AssetPreloaderOptions.{fetch, init, baseUrl,
+  allowedSchemes}`. Function signature
+  `(scene: SceneModule) => Promise<void>` plugs straight into PUL-F004's
+  `AssetPreloader` adapter slot — workbench bootstrap will pass
+  `createAssetPreloader()` to `resolveComposition({ preloadAssets, ... })`.
+  Clause (a) is satisfied by PUL-F001's `SceneModule.assets`. See
+  ADR-012 for the byte-warming-vs-decode-complete boundary, the SSRF
+  posture, and the cross-origin credential caveat.
+- `tests/runtime/asset-preloader.test.ts` — 34-case Vitest spec for
+  the preloader behaviors above; tests inject a fake `fetch` per case
+  (no global mutation, no MSW).
+- `docs/adrs/012-asset-preloader-fetch-and-drain.md` (also registered
+  in Ground Control via `gc_create_adr`); `docs/adrs/README.md` —
+  adds the ADR-012 row.
+
 - `src/runtime/composition-resolver.ts` — `resolveComposition` async
   function plus `ResolveCompositionOptions`, `AssetPreloader`,
   `SceneTimelineRunInput`, and `SceneTimelineRunner` types. Implements
