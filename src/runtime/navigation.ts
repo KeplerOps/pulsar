@@ -105,7 +105,7 @@ const GRAMMAR_KEYS = ['scene', 'composition', 'index', 'beat', 'mode'] as const;
 // zeros (e.g. `01`) are accepted because the ADR does not forbid
 // them. Negatives, signs, decimals, exponents, and non-decimal
 // notations are all rejected.
-const INDEX_PATTERN = /^[0-9]+$/;
+const INDEX_PATTERN = /^\d+$/;
 
 /**
  * The thrown-error grammar matches `assertSceneModule` /

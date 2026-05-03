@@ -10,7 +10,7 @@ import { bootstrapNavigation } from './runtime/navigation';
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
 
-const disposeNavigation = bootstrapNavigation(window);
+const disposeNavigation = bootstrapNavigation(globalThis);
 
 // Dev-only: when Vite HMR replaces this entry module, dispose the
 // previous popstate listener so re-evaluation does not stack
