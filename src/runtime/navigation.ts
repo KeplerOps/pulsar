@@ -237,8 +237,8 @@ export function parseNavigationSearch(input: URLSearchParams | string): Navigati
   if (sceneRaw !== null) validateKebab('scene', sceneRaw);
   if (compositionRaw !== null) validateKebab('composition', compositionRaw);
   if (beatRaw !== null) validateKebab('beat', beatRaw);
-  const index = indexRaw !== null ? parseIndex(indexRaw) : undefined;
-  const mode = modeRaw !== null ? parseMode(modeRaw) : undefined;
+  const index = indexRaw === null ? undefined : parseIndex(indexRaw);
+  const mode = modeRaw === null ? undefined : parseMode(modeRaw);
 
   const locator = buildLocator(sceneRaw ?? undefined, compositionRaw ?? undefined, index);
   const beat = beatRaw ?? undefined;
