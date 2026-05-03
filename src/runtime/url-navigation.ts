@@ -225,21 +225,30 @@ function resolveCompositionManifest(
  * registry. Pre-resolves every entry so the bridge does not re-
  * resolve by id later (codex review: re-resolving could substitute
  * scenes if a different registry maps the same id elsewhere).
+ *
+ * Aggregates every missing scene id into a single error so a manifest
+ * author fixes every gap in one pass rather than chasing a sequence of
+ * "first miss" errors. Mirrors the resolver's all-missing-ids preflight
+ * grammar (composition-resolver.ts: clause (a)).
  */
 function snapshotSceneSlice(
   manifestSlice: CompositionManifest,
   scenes: SceneRegistry,
   compositionId: string,
 ): readonly SceneModule[] {
+  const missing: { readonly index: number; readonly id: string }[] = [];
   const sceneSlice: SceneModule[] = [];
-  for (const entry of manifestSlice) {
+  for (const [index, entry] of manifestSlice.entries()) {
     const id = entryId(entry);
     if (!scenes.has(id)) {
-      fail(
-        `composition "${compositionId}" references scene "${id}" which is not in the scene registry`,
-      );
+      missing.push({ index, id });
+      continue;
     }
     sceneSlice.push(scenes.get(id));
+  }
+  if (missing.length > 0) {
+    const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
+    fail(`composition "${compositionId}" references scene(s) not in the scene registry: ${list}`);
   }
   return Object.freeze(sceneSlice);
 }
@@ -261,7 +270,11 @@ function resolveCompositionAndScene(
   if (startIndex < 0) {
     fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
   }
-  const manifestSlice: CompositionManifest = manifest.slice(startIndex);
+  // Freeze the slice so callers cannot mutate the verified target
+  // before the bridge runs (codex review: `manifest.slice()` is a
+  // mutable array; consumers shouldn't be able to reorder, drop, or
+  // append entries post-resolve).
+  const manifestSlice: CompositionManifest = Object.freeze(manifest.slice(startIndex));
   const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
   return { id: compositionId, manifestSlice, sceneSlice };
 }
@@ -281,7 +294,8 @@ function resolveCompositionFromStart(
   if (manifest.length === 0) {
     fail(`composition "${compositionId}" is empty — no scene to navigate to`);
   }
-  const manifestSlice: CompositionManifest = manifest.slice();
+  // Freeze the slice — see `resolveCompositionAndScene` for rationale.
+  const manifestSlice: CompositionManifest = Object.freeze(manifest.slice());
   const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
   return { id: compositionId, manifestSlice, sceneSlice };
 }

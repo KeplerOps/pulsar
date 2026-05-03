@@ -73,16 +73,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a registered target and gives `?composition=default&scene=
   placeholder` an end-to-end membership-validated path.
 - `src/main.ts` — workbench entry rewritten to wire PUL-F008
-  end-to-end. Builds the scene registry from `placeholderScene` and
-  the composition registry from `defaultComposition`, parses
-  `window.location` once via `resolveSceneNavigationTarget`, records
-  the resolved scene id (and composition id, when present) on
-  `#stage` via `data-pulsar-scene-target` /
-  `data-pulsar-composition-target`, and drives the lifecycle through
-  `loadSceneNavigationTarget` using the PUL-F005 asset preloader.
-  Errors at parse, lookup, or lifecycle phases are surfaced to the
-  console so reviewers and agents see invalid URLs and broken scenes
-  loudly per ADR-013's "no silent fallback" principle.
+  end-to-end through `WorkbenchNavigator`. Builds the scene registry
+  from `placeholderScene` and the composition registry from
+  `defaultComposition`, hands them to the navigator along with the
+  PUL-F005 asset preloader and a placeholder timeline runner, and
+  triggers the initial navigation. The navigator owns URL parsing at
+  startup and on `popstate` (ADR-007), abort-and-restart so back/
+  forward navigation runs the active scene's `cleanup(ctx)` before
+  the next one starts, and stage-attribute bookkeeping (data-
+  pulsar-scene-target, data-pulsar-composition-target,
+  data-pulsar-navigation-error) so reviewers, agents, and screenshot
+  automation can verify the runtime honored the URL — including
+  malformed URLs, which set `data-pulsar-navigation-error` rather
+  than silently no-op-ing.
+- `src/runtime/workbench-navigator.ts` —
+  `createWorkbenchNavigator(options)` factory. Encapsulates the
+  startup-and-popstate state machine PUL-F008 + ADR-007 require:
+  registers a `popstate` listener at construction, runs URL
+  resolution + lifecycle dispatch on every navigation, eagerly
+  aborts any in-flight load when a new navigation is enqueued (so
+  the user clicking back/forward doesn't wait for the current scene
+  to drain naturally), and serializes navigations through a
+  `pending` chain so attribute mutations on the stage element don't
+  race. Stage attributes are reset on every navigation so stale
+  state from the previous URL never leaks. `dispose()` removes the
+  listener and aborts any in-flight load (silently — no error UI).
+  The navigator depends only on injected `host` / `stage` surfaces,
+  which keeps the entire state machine unit-testable in Node's
+  vitest environment without DOM polyfills.
+- `tests/runtime/workbench-navigator.test.ts` — 10-test Vitest spec
+  pinning startup navigation (single scene, composition+scene,
+  no-op when neither parameter present); error surfacing
+  (unregistered scene, lifecycle-throw, stale-attribute reset);
+  popstate handling (listener registration, re-navigation on
+  popstate, mid-lifecycle abort with cleanup invariant preserved,
+  dispose abort).
 - `tests/runtime/url-navigation.test.ts` — 58-test Vitest spec
   covering every PUL-F008 clause and ADR-013 guardrail: input-shape
   coverage (URL, URLSearchParams, full URL string, bare search

@@ -1,37 +1,31 @@
 // Workbench entry — bootstraps Pulsar's runtime and activates URL
-// navigation per PUL-F008 + ADR-013.
+// navigation per PUL-F008 + ADR-013 + ADR-007.
 //
-// Lifecycle on every load:
+// Lifecycle:
 //
 //  1. Mark the `#stage` element so the placeholder background is
 //     visible while the runtime decides what (if anything) to load.
 //  2. Build the scene and composition registries from the bundled
 //     scene/composition modules. Both registries are immutable after
 //     construction (ADR-008 #2 "manifests over flow control").
-//  3. Parse `globalThis.location` once via
-//     `resolveSceneNavigationTarget`. URL state is authoritative
-//     (ADR-013) — no localStorage / cookie fallback.
-//  4. When a navigation target resolves, record the addressed scene
-//     id (and composition id, when present) on the stage so reviewers
-//     and agents can verify the URL was honored, then drive the scene
-//     through the existing composition resolver lifecycle via
-//     `loadSceneNavigationTarget`. PUL-F005's asset preloader provides
-//     the preload adapter; the timeline runner is a placeholder until
-//     ADR-003's GSAP runner lands.
-//  5. Surface any URL parse, registry-miss, or lifecycle error to the
-//     console so invalid URLs and broken scenes fail loudly per
-//     ADR-013's "no silent fallback" principle.
+//  3. Hand them to a `WorkbenchNavigator` along with the lifecycle
+//     adapters (PUL-F005 asset preloader; placeholder timeline runner
+//     until ADR-003's GSAP runner lands). The navigator owns URL
+//     parsing at startup AND on `popstate` (ADR-007), abort-and-
+//     restart coordination so back/forward navigation cleans up the
+//     active scene before the next one starts, and stage attribute
+//     bookkeeping so reviewers/agents/screenshot automation can
+//     observe what the runtime navigated to and any URL errors.
+//  4. Trigger the initial navigation. Subsequent navigations fire
+//     automatically via the popstate listener registered by the
+//     navigator.
 
 import { defaultComposition } from './compositions/default';
 import { createAssetPreloader } from './runtime/asset-preloader';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import type { SceneTimelineRunner } from './runtime/composition-resolver';
 import { createSceneRegistry } from './runtime/registry';
-import {
-  type SceneNavigationTarget,
-  loadSceneNavigationTarget,
-  resolveSceneNavigationTarget,
-} from './runtime/url-navigation';
+import { createWorkbenchNavigator } from './runtime/workbench-navigator';
 import { placeholderScene } from './scenes/placeholder';
 
 const stage = document.querySelector('#stage');
@@ -54,26 +48,14 @@ const preloadAssets = createAssetPreloader();
 // when the timeline engine lands.
 const runTimeline: SceneTimelineRunner = () => undefined;
 
-let target: SceneNavigationTarget | null = null;
-try {
-  target = resolveSceneNavigationTarget(globalThis.location, sceneRegistry, compositionRegistry);
-} catch (err) {
-  console.error(err);
-}
+const navigator = createWorkbenchNavigator({
+  host: window,
+  stage,
+  sceneRegistry,
+  compositionRegistry,
+  ctx: {},
+  preloadAssets,
+  runTimeline,
+});
 
-if (target !== null) {
-  stage?.setAttribute('data-pulsar-scene-target', target.scene.id);
-  if (target.composition !== undefined) {
-    stage?.setAttribute('data-pulsar-composition-target', target.composition.id);
-  }
-
-  try {
-    await loadSceneNavigationTarget(target, {
-      ctx: {},
-      preloadAssets,
-      runTimeline,
-    });
-  } catch (err) {
-    console.error(err);
-  }
-}
+await navigator.navigate();

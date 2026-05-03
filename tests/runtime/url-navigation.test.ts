@@ -492,6 +492,43 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
       ).toThrow(/^scene navigation failed: composition "missing-talk" is not registered$/);
     });
 
+    it('returns a frozen manifestSlice and sceneSlice so callers cannot mutate the snapshot', () => {
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const sceneRegistry = createSceneRegistry([intro, middle]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk',
+        sceneRegistry,
+        compositionRegistry,
+      ) as SceneNavigationTarget;
+
+      const slice = target.composition?.manifestSlice;
+      const scenes = target.composition?.sceneSlice;
+      expect(Object.isFrozen(slice)).toBe(true);
+      expect(Object.isFrozen(scenes)).toBe(true);
+      expect(() => (slice as unknown as string[]).push('extra')).toThrow();
+      expect(() => (scenes as unknown as SceneModule[]).push(intro)).toThrow();
+    });
+
+    it('aggregates every missing scene id (in order) when the composition references unregistered scenes', () => {
+      // Mirror the resolver's all-missing-ids preflight grammar
+      // (composition-resolver.ts) so URL navigation reports every gap
+      // in one error rather than failing on the first miss.
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'gone-a', 'gone-b'] },
+      ]);
+      expect(() =>
+        resolveSceneNavigationTarget('?composition=full-talk', sceneRegistry, compositionRegistry),
+      ).toThrow(
+        /^scene navigation failed: composition "full-talk" references scene\(s\) not in the scene registry: "gone-a" \(entry \[1\]\), "gone-b" \(entry \[2\]\)$/,
+      );
+    });
+
     it('throws when the addressed scene is not a member of the composition', () => {
       const intro = buildScene({ id: 'intro' });
       const middle = buildScene({ id: 'middle' });

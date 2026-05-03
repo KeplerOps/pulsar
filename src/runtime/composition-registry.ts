@@ -27,17 +27,39 @@ import {
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 
 /**
+ * Recursively freeze plain objects and arrays. Used to deep-freeze
+ * caller-supplied `behavior` overrides whose nested values
+ * (`{ fade: { duration: 200 } }`, `{ flags: [...] }`) would otherwise
+ * remain mutable after a single shallow `Object.freeze`. Returns the
+ * same value when it is a primitive or non-array object that cannot
+ * be safely structurally frozen (frozen functions, typed arrays).
+ */
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  // Already frozen — skip to avoid re-walking.
+  if (Object.isFrozen(value)) return value;
+  if (Array.isArray(value)) {
+    for (const element of value) deepFreeze(element);
+    return Object.freeze(value);
+  }
+  // Plain object: freeze each value recursively, then the object.
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    deepFreeze((value as Record<string, unknown>)[key]);
+  }
+  return Object.freeze(value);
+}
+
+/**
  * Deep-freeze a composition manifest so the stored copy cannot be
  * mutated by callers after registration. Freezes the array, each
- * object-form entry, and any nested `range` (tuple) and `behavior`
- * (record) values. Bare-string entries are immutable already.
+ * object-form entry, any nested `range` (tuple), and the entire
+ * `behavior` value graph (records and arrays at every depth).
+ * Bare-string entries are immutable already.
  *
  * Necessary because TypeScript's `readonly` modifier is a compile-time
  * declaration only; runtime mutation is what actually breaks the
- * immutable-registry contract (codex review: "the registry validates
- * once, then stores and returns the same manifest object graph;
- * callers can mutate order, membership, or overrides after
- * validation").
+ * immutable-registry contract (codex review: shallow `Object.freeze`
+ * leaves nested objects and arrays inside `behavior` mutable).
  */
 function freezeManifest(manifest: CompositionManifest): CompositionManifest {
   const copy: CompositionEntry[] = [];
@@ -53,7 +75,11 @@ function freezeManifest(manifest: CompositionManifest): CompositionManifest {
         : entry.range;
     }
     if (entry.behavior !== undefined) {
-      frozenEntry.behavior = Object.freeze({ ...entry.behavior });
+      // Defensive copy then deep-freeze so caller-owned values cannot
+      // be mutated post-registration. The shallow `{ ...entry.behavior }`
+      // copy only protects the top-level keys; deep-freeze walks every
+      // nested object and array.
+      frozenEntry.behavior = deepFreeze({ ...entry.behavior });
     }
     copy.push(Object.freeze(frozenEntry) as unknown as CompositionEntry);
   }

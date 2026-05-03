@@ -169,6 +169,39 @@ describe('createCompositionRegistry', () => {
       }).toThrow();
     });
 
+    it('deep-freezes nested objects and arrays inside `behavior`', () => {
+      // `behavior` is `Readonly<Record<string, unknown>>` at the type
+      // level, but the registry must defend at runtime: nested objects
+      // and arrays inside `behavior` must be frozen too, otherwise a
+      // caller can mutate verified values like `behavior.fade.duration`
+      // after registration (codex review: shallow Object.freeze leaves
+      // nested mutable).
+      const manifest = [
+        {
+          id: 'scene-a',
+          behavior: { fade: { duration: 200, ease: ['cubic', 'ease-out'] }, flags: ['a', 'b'] },
+        },
+      ] as unknown as CompositionManifest;
+      const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
+      const stored = registry.get('talk');
+      const entry = stored[0] as unknown as {
+        behavior: { fade: { duration: number; ease: string[] }; flags: string[] };
+      };
+      expect(Object.isFrozen(entry.behavior)).toBe(true);
+      expect(Object.isFrozen(entry.behavior.fade)).toBe(true);
+      expect(Object.isFrozen(entry.behavior.fade.ease)).toBe(true);
+      expect(Object.isFrozen(entry.behavior.flags)).toBe(true);
+      expect(() => {
+        entry.behavior.fade.duration = 500;
+      }).toThrow();
+      expect(() => {
+        entry.behavior.fade.ease.push('linear');
+      }).toThrow();
+      expect(() => {
+        entry.behavior.flags[0] = 'mutated';
+      }).toThrow();
+    });
+
     it('mutating the caller-owned manifest after registration does not affect what the registry returns', () => {
       const manifest: string[] = ['scene-a', 'scene-b'];
       const registry = createCompositionRegistry([

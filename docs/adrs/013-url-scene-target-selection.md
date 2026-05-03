@@ -67,8 +67,20 @@ If no `composition` is present, `scene` selects a single-scene
 navigation target. Positional `index` is a compatibility shim and
 must not become the identity source when `scene` is supplied.
 
+If no `scene` is present but `composition` is, the runtime navigates
+to the composition from its first scene (ADR-002 §Navigation: "load
+a composition from the start"). An empty composition is a navigation
+error — there is no scene to load.
+
 Workbench mode handling remains orthogonal. `mode` changes how the
 target runs; it does not change what scene id the URL addresses.
+
+URL parsing runs at runtime startup *and* on `popstate` (ADR-007).
+The runtime aborts any in-flight scene load before re-resolving the
+new URL so the previous scene's `cleanup(ctx)` always runs before
+the next scene's preload begins. Snapshots returned by the resolver
+(`manifestSlice`, `sceneSlice`) are deep-frozen so callers cannot
+mutate the verified target between resolve and lifecycle dispatch.
 
 ## Consequences
 
