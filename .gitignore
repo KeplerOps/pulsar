@@ -40,6 +40,8 @@ node_modules/
 dist/
 .turbo/
 *.tsbuildinfo
+coverage/
+.vite/
 
 # Vite
 *.local

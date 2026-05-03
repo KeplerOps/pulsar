@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Toolchain scaffold per ADR-009: TypeScript (strict), ESM, pnpm 9.15,
+  Vite 6, Vitest 3 (`@vitest/coverage-v8` for lcov), Biome 1.9, Node 22
+  LTS pinned via `.nvmrc` and `package.json` `engines` /
+  `packageManager`.
+- `package.json` scripts: `dev`, `build`, `preview`, `test`,
+  `test:watch`, `test:coverage`, `lint`, `format`, `typecheck`.
+- Source skeleton: `src/runtime/`, `src/scenes/`, `src/compositions/`,
+  `tests/`, `assets/` (all empty with `.gitkeep` except for the
+  workbench entry `src/main.ts` and a sentinel `tests/toolchain.test.ts`).
+- `index.html` workbench entry that Vite's dev server and bundler
+  consume.
+- Configs: `tsconfig.json` (strict, ESNext + Bundler resolution),
+  `vite.config.ts`, `vitest.config.ts`, `biome.json`.
+- Pre-commit additions: `actionlint` for workflow YAML; local `biome-check`,
+  `typecheck`, and `vitest` hooks gated by file regex (mirror CI).
+- CI workflow rewritten as six required-status-check jobs (`pre-commit`,
+  `typecheck`, `test`, `build`, `dependency-audit`, `sonarcloud`) on
+  Node 22 + pnpm 9.15, with pnpm caching via `actions/setup-node`.
+- SonarCloud wiring: `sonar-project.properties` and the `sonarcloud`
+  block in `.ground-control.yaml`. The `sonarcloud` CI job runs with
+  `-Dsonar.qualitygate.wait=true` so a RED gate fails the PR.
+- `.ground-control.yaml` `workflow.*` commands populated so
+  `/implement` exercises a real completion gate.
+
 ## [0.1.0] - 2026-04-30
 
 ### Added
