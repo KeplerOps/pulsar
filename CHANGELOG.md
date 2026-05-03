@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compositions, beats, and assets. Reused by `scene.ts` (scene id
   validation) and `composition.ts` (entry id and beat label
   validation).
+- `src/runtime/object.ts` — `isPlainRecord` predicate. Accepts only
+  `{ ... }` and `Object.create(null)` literals; rejects class
+  instances such as `Date`, `Map`, `Set`, `RegExp`, `Error`, and
+  user classes. Per ADR-008 #1 ("manifests are declarative data
+  only"), runtime payload validation must reject opaque object
+  instances that cannot be safely serialized, diffed, or treated as
+  records of keyed fields. Reused by both `scene.ts` (scene module
+  shape + caption shape) and `composition.ts` (entry shape +
+  behavior override).
 - `tests/runtime/composition.test.ts` — 103-test Vitest spec covering
   every PUL-F003 clause (top-level array shape, bare-string entries
   with kebab-case rule, object entries with `id` + `range` +
@@ -42,9 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `src/runtime/scene.ts` — sources the kebab-case identifier
   predicate from the new `src/runtime/identifier.ts` instead of
-  carrying its own `SCENE_ID_PATTERN` constant. Behavior is
-  unchanged (same regex); the extraction keeps the ADR-008 #1 rule
-  in one place now that `composition.ts` is a second caller.
+  carrying its own `SCENE_ID_PATTERN` constant. Object-shape
+  validation now uses the shared `isPlainRecord` predicate from
+  `src/runtime/object.ts`, which tightens the previous loose check
+  to reject class instances (`Date`, `Map`, `Set`, etc.) — same
+  ADR-008 #1 declarative-data invariant the composition validator
+  enforces. Existing scene fixtures (object literals) remain valid;
+  the change rejects opaque object instances that should never have
+  satisfied the scene contract.
 
 - `docs/adrs/010-issue-tag-taxonomy.md` — defines a five-dimension,
   namespaced GitHub issue label taxonomy: type (`requirement` /

@@ -18,6 +18,7 @@
 // must call assertSceneModule rather than re-implementing checks.
 
 import { isKebabIdentifier } from './identifier';
+import { isPlainRecord } from './object';
 
 /**
  * Caption metadata. ADR-002 specifies `{ at: ms, text }`. The prompter,
@@ -86,9 +87,6 @@ const REQUIRED_FIELDS = [
   'cleanup',
 ] as const satisfies readonly (keyof SceneModule)[];
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
 const isStringArray = (v: unknown): v is readonly string[] =>
   Array.isArray(v) && v.every((e) => typeof e === 'string');
 
@@ -96,7 +94,7 @@ const isValidDuration = (v: unknown): v is number | null =>
   v === null || (typeof v === 'number' && Number.isInteger(v) && Number.isFinite(v) && v >= 0);
 
 const isCaption = (v: unknown): v is Caption =>
-  isPlainObject(v) && typeof v.at === 'number' && typeof v.text === 'string';
+  isPlainRecord(v) && typeof v.at === 'number' && typeof v.text === 'string';
 
 const isCaptionArray = (v: unknown): v is readonly Caption[] =>
   Array.isArray(v) && v.every(isCaption);
@@ -188,7 +186,7 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
  * re-validating piecemeal.
  */
 export function assertSceneModule(value: unknown): asserts value is SceneModule {
-  if (!isPlainObject(value)) {
+  if (!isPlainRecord(value)) {
     throw new Error('scene ? is invalid: value must be a non-null object');
   }
 
