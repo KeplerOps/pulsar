@@ -164,9 +164,26 @@ describe('SceneModule contract (PUL-F001)', () => {
       expect(() => assertSceneModule(withField('defaultNext', undefined))).toThrow(/defaultNext/);
     });
 
-    it('accepts string defaultNext', () => {
+    it('accepts kebab-case string defaultNext', () => {
       expect(() => assertSceneModule(withField('defaultNext', 'next-scene'))).not.toThrow();
     });
+
+    it.each<[string, string]>([
+      ['empty string', ''],
+      ['uppercase', 'Scene-B'],
+      ['underscore', 'scene_b'],
+      ['leading hyphen', '-scene-b'],
+      ['trailing hyphen', 'scene-b-'],
+      ['consecutive hyphens', 'scene--b'],
+      ['whitespace', 'scene b'],
+      ['punctuation', 'scene.b'],
+      ['non-ASCII', 'séance'],
+    ])(
+      'rejects non-kebab-case defaultNext (%s) — defaultNext is a scene id reference (PUL-A007)',
+      (_label, value) => {
+        expect(() => assertSceneModule(withField('defaultNext', value))).toThrow(/defaultNext/);
+      },
+    );
 
     it('rejects non-boolean standalone', () => {
       expect(() => assertSceneModule(withField('standalone', 'yes'))).toThrow(/standalone/);

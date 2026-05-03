@@ -96,8 +96,6 @@ const isCaption = (v: unknown): v is Caption =>
 const isCaptionArray = (v: unknown): v is readonly Caption[] =>
   Array.isArray(v) && v.every(isCaption);
 
-const isStringOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';
-
 // Strict kebab-case per PUL-A007 + ADR-002 §Scene shape + ADR-008 #1:
 // non-empty lowercase alphanumeric segments separated by single hyphens.
 // Rejects empty strings, leading/trailing hyphens, consecutive hyphens,
@@ -105,6 +103,8 @@ const isStringOrNull = (v: unknown): v is string | null => v === null || typeof 
 const SCENE_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const isSceneId = (v: unknown): v is string => typeof v === 'string' && SCENE_ID_PATTERN.test(v);
+
+const isSceneIdOrNull = (v: unknown): v is string | null => v === null || isSceneId(v);
 
 const fail = (id: string | undefined, field: string, condition: string): never => {
   const idLabel = id === undefined ? '?' : `"${id}"`;
@@ -143,8 +143,9 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
   },
   {
     field: 'defaultNext',
-    check: (v) => isStringOrNull(v.defaultNext),
-    condition: 'must be a string or null',
+    check: (v) => isSceneIdOrNull(v.defaultNext),
+    condition:
+      'must be a kebab-case scene id ([a-z0-9] segments separated by single hyphens) or null',
   },
   {
     field: 'standalone',

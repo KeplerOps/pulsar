@@ -13,16 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kebab-case format on `scene.id`: non-empty lowercase ASCII segments
   (`[a-z0-9]+`) joined by single hyphens, rejecting empty strings,
   uppercase, underscores, leading/trailing/consecutive hyphens,
-  whitespace, punctuation, and non-ASCII. Implements clause C1 of
-  PUL-A007 (ADR-002 §Scene shape, ADR-008 #1 "stable, kebab-case ids").
-  Clause C2 (no id reuse across scenes) is already enforced by
-  `createSceneRegistry` (PUL-F002). Existing scene fixtures
-  (`'scene-a'`, `'intro'`, etc.) remain valid; the change tightens
-  what the validator rejects, not what it accepts in current use.
+  whitespace, punctuation, and non-ASCII. The same predicate is also
+  applied to `defaultNext` (which holds a scene id reference) so the
+  validator's notion of "scene id" is consistent across every field
+  that carries one. Implements clause C1 of PUL-A007 (ADR-002 §Scene
+  shape, ADR-008 #1 "stable, kebab-case ids"). Clause C2 (no id reuse
+  across scenes) is already enforced by `createSceneRegistry`
+  (PUL-F002). Existing scene fixtures (`'scene-a'`, `'next-scene'`,
+  etc.) remain valid; the change tightens what the validator rejects,
+  not what it accepts in current use.
 - `tests/runtime/scene.test.ts` — adds a `scene id format (PUL-A007)`
   describe block (32 tests): 8 valid kebab-case ids, 22 invalid id
   shapes covering every rejection class, and 2 error-message format
-  tests confirming the offending value is surfaced verbatim.
+  tests confirming the offending value is surfaced verbatim. Adds 9
+  more cases under field types covering kebab-case enforcement on
+  `defaultNext`.
 
 ### Added
 
