@@ -74,16 +74,15 @@ describe('SceneRegistry contract (PUL-F002)', () => {
       expect(() => createSceneRegistry([broken as unknown as SceneModule])).toThrow(/cleanup/);
     });
 
-    it('rejects a null element', () => {
-      expect(() => createSceneRegistry([null as unknown as SceneModule])).toThrow(/object/i);
-    });
-
-    it('rejects a non-object element', () => {
-      expect(() => createSceneRegistry(['scene-a' as unknown as SceneModule])).toThrow(/object/i);
-    });
-
-    it('rejects undefined element', () => {
-      expect(() => createSceneRegistry([undefined as unknown as SceneModule])).toThrow(/object/i);
+    it.each<[string, unknown]>([
+      ['null', null],
+      ['undefined', undefined],
+      ['a string', 'scene-a'],
+      ['a number', 42],
+      ['a boolean', true],
+      ['an array', []],
+    ])('rejects %s as a registry element', (_label, value) => {
+      expect(() => createSceneRegistry([value as SceneModule])).toThrow(/object/i);
     });
   });
 

@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registry / §Navigation, ADR-008 #2 "manifests over flow control"):
   scene id is the source of truth for addressability and the registry
   is the only navigation lookup path.
-- `tests/runtime/registry.test.ts` — 32-test Vitest spec covering both
+- `tests/runtime/registry.test.ts` — 35-test Vitest spec covering both
   clauses of PUL-F002: registry construction (happy paths over arrays,
   generators, sets), validation delegation to PUL-F001, duplicate-id
   rejection, lookup hits and misses, `has` semantics, insertion-order
