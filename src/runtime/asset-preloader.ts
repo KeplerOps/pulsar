@@ -57,6 +57,7 @@
 //  - ADR-012 — fetch + drain semantics; decode-complete deferred;
 //    SSRF and credential-leak posture.
 
+import { describeError } from './error';
 import type { SceneModule } from './scene';
 
 /**
@@ -287,7 +288,7 @@ async function fetchAndDrain(
     response =
       init === undefined ? await fetchImpl(resolvedUrl) : await fetchImpl(resolvedUrl, init);
   } catch (cause) {
-    throw new Error(`${label}: ${describeFailure(cause)}`, { cause });
+    throw new Error(`${label}: ${describeError(cause)}`, { cause });
   }
   // Re-validate the final URL after redirects. `response.url` is the
   // URL after any redirects fetch followed. A scene declared an
@@ -313,7 +314,7 @@ async function fetchAndDrain(
   try {
     await streamDrain(response);
   } catch (cause) {
-    throw new Error(`${label}: body drain failed: ${describeFailure(cause)}`, { cause });
+    throw new Error(`${label}: body drain failed: ${describeError(cause)}`, { cause });
   }
 }
 
@@ -340,9 +341,6 @@ async function streamDrain(response: Response): Promise<void> {
 
 const describeAsset = (asset: string, resolved: string): string =>
   asset === resolved ? `asset "${asset}"` : `asset "${asset}" → "${resolved}"`;
-
-const describeFailure = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
 
 async function cancelBodyQuietly(response: Response): Promise<void> {
   if (response.body === null) return;

@@ -27,6 +27,7 @@
 
 import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
+import { describeError } from './error';
 import type { SceneRegistry } from './registry';
 import { type SceneNavigationTarget, resolveSceneNavigationTarget } from './url-navigation';
 import { loadSceneNavigationTarget } from './url-navigation-bridge';
@@ -118,8 +119,6 @@ interface InFlightLoad {
   /** Set when `dispose()` aborted the load — suppresses error UI on dispose. */
   silent: boolean;
 }
-
-const describeError = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export function createWorkbenchNavigator(options: WorkbenchNavigatorOptions): WorkbenchNavigator {
   const { host, stage } = options;

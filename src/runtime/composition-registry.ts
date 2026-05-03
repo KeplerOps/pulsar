@@ -10,6 +10,9 @@
 // `assertCompositionManifest` (PUL-F003); the registry only enforces
 // id shape (kebab-case via `isKebabIdentifier`) and uniqueness.
 //
+// The id-keyed plumbing (Map, frozen snapshot, duplicate-id rejection,
+// miss-throws) is shared with the scene registry via `./id-registry.ts`.
+//
 // References:
 //  - ADR-002 §Navigation — composition addressability via id.
 //  - ADR-008 #1 — kebab-case identity rule shared with scenes,
@@ -24,30 +27,25 @@ import {
   type CompositionManifest,
   assertCompositionManifest,
 } from './composition';
+import { type IdRegistry, createIdRegistry } from './id-registry';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
+import { deepFreeze } from './object';
+
+/** A composition registration: (kebab-case id, validated manifest). */
+export interface CompositionRegistryEntry {
+  readonly id: string;
+  readonly manifest: CompositionManifest;
+}
 
 /**
- * Recursively freeze plain objects and arrays. Used to deep-freeze
- * caller-supplied `behavior` overrides whose nested values
- * (`{ fade: { duration: 200 } }`, `{ flags: [...] }`) would otherwise
- * remain mutable after a single shallow `Object.freeze`. Returns the
- * same value when it is a primitive or non-array object that cannot
- * be safely structurally frozen (frozen functions, typed arrays).
+ * Id-keyed registry of composition manifests. Mirrors {@link
+ * SceneRegistry}'s shape so URL navigation, presenter controls, and
+ * any future composition-aware feature dispatch through the same
+ * lookup surface. Built once via {@link createCompositionRegistry};
+ * the surface is intentionally small — lookup by id only — and the
+ * returned registry is frozen.
  */
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value;
-  // Already frozen — skip to avoid re-walking.
-  if (Object.isFrozen(value)) return value;
-  if (Array.isArray(value)) {
-    for (const element of value) deepFreeze(element);
-    return Object.freeze(value);
-  }
-  // Plain object: freeze each value recursively, then the object.
-  for (const key of Object.keys(value as Record<string, unknown>)) {
-    deepFreeze((value as Record<string, unknown>)[key]);
-  }
-  return Object.freeze(value);
-}
+export type CompositionRegistry = IdRegistry<CompositionManifest>;
 
 /**
  * Deep-freeze a composition manifest so the stored copy cannot be
@@ -58,8 +56,7 @@ function deepFreeze<T>(value: T): T {
  *
  * Necessary because TypeScript's `readonly` modifier is a compile-time
  * declaration only; runtime mutation is what actually breaks the
- * immutable-registry contract (codex review: shallow `Object.freeze`
- * leaves nested objects and arrays inside `behavior` mutable).
+ * immutable-registry contract.
  */
 function freezeManifest(manifest: CompositionManifest): CompositionManifest {
   const copy: CompositionEntry[] = [];
@@ -86,31 +83,6 @@ function freezeManifest(manifest: CompositionManifest): CompositionManifest {
   return Object.freeze(copy) as CompositionManifest;
 }
 
-/** A composition registration: (kebab-case id, validated manifest). */
-export interface CompositionRegistryEntry {
-  readonly id: string;
-  readonly manifest: CompositionManifest;
-}
-
-/**
- * Id-keyed registry of composition manifests. Mirrors {@link
- * SceneRegistry}'s shape so URL navigation, presenter controls, and
- * any future composition-aware feature dispatch through the same
- * lookup surface. Built once via {@link createCompositionRegistry};
- * the surface is intentionally small — lookup by id only — and the
- * returned registry is frozen.
- */
-export interface CompositionRegistry {
-  /** Look up a manifest by id. Throws if no composition is registered with that id. */
-  get(id: string): CompositionManifest;
-  /** Check whether a composition is registered with the given id. */
-  has(id: string): boolean;
-  /** Snapshot of registered ids in insertion order. The returned array is detached from the registry. */
-  ids(): readonly string[];
-  /** Number of registered compositions. */
-  readonly size: number;
-}
-
 /**
  * Build a {@link CompositionRegistry} from a collection of (id,
  * manifest) entries.
@@ -121,49 +93,39 @@ export interface CompositionRegistry {
  *     (PUL-F003).
  *  3. Ids must be unique within the registry — registration is by id.
  *
- * The returned registry is frozen and exposes only id-based lookup.
+ * Stored manifests are deep-frozen so caller-side mutation of the
+ * original array (or of nested override objects) cannot leak into the
+ * registry. The returned registry is frozen and exposes only id-based
+ * lookup.
  */
 export function createCompositionRegistry(
   entries: Iterable<CompositionRegistryEntry>,
 ): CompositionRegistry {
-  const byId = new Map<string, CompositionManifest>();
-  const order: string[] = [];
-
-  for (const entry of entries) {
-    if (!isKebabIdentifier(entry.id)) {
-      throw new Error(
-        `composition registry: id "${entry.id}" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
-      );
-    }
-    if (byId.has(entry.id)) {
-      throw new Error(`composition registry: duplicate id "${entry.id}"`);
-    }
-    assertCompositionManifest(entry.manifest);
-    // Deep-freeze a defensive copy so callers cannot mutate the
-    // stored manifest (or the array they passed in) after
-    // construction.
-    byId.set(entry.id, freezeManifest(entry.manifest));
-    order.push(entry.id);
-  }
-
-  const registry: CompositionRegistry = {
-    get(id: string): CompositionManifest {
-      const manifest = byId.get(id);
-      if (manifest === undefined) {
-        throw new Error(`composition registry: no composition registered with id "${id}"`);
+  // `assertCompositionManifest` runs before the generic sees the
+  // entry so a malformed manifest raises with the PUL-F003 grammar
+  // (`composition manifest is invalid: ...`) rather than a generic
+  // registry error. The generic itself handles id-shape rejection
+  // (`composition registry: id "<id>" must be ...`) and duplicate-id
+  // rejection. Storage uses `freezeManifest` as the transform so the
+  // generic is still single-purpose.
+  return createIdRegistry(
+    (function* mapToEntries() {
+      for (const entry of entries) {
+        assertCompositionManifest(entry.manifest);
+        yield { id: entry.id, value: entry.manifest };
       }
-      return manifest;
+    })(),
+    {
+      label: 'composition registry',
+      subject: 'composition',
+      validateId: (id) => {
+        if (!isKebabIdentifier(id)) {
+          throw new Error(
+            `composition registry: id "${id}" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
+          );
+        }
+      },
+      transform: freezeManifest,
     },
-    has(id: string): boolean {
-      return byId.has(id);
-    },
-    ids(): readonly string[] {
-      return Object.freeze(order.slice());
-    },
-    get size(): number {
-      return byId.size;
-    },
-  };
-
-  return Object.freeze(registry);
+  );
 }

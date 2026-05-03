@@ -163,30 +163,24 @@ function readSingletonParam(params: URLSearchParams, name: string): string | nul
 
 /**
  * Resolve the named composition manifest, validating shape and
- * existence, and centralizing the "composition registry must exist
- * when `composition` is supplied" guard. Used by both the
- * composition+scene path and the composition-only path.
+ * existence. The "composition registry must exist when `composition`
+ * is supplied" guard lives at the public boundary
+ * ({@link resolveSceneNavigationTarget}) so this helper takes a
+ * non-optional `CompositionRegistry` and never has to narrow.
  */
 function resolveCompositionManifest(
   compositionId: string,
-  compositions: CompositionRegistry | undefined,
+  compositions: CompositionRegistry,
 ): CompositionManifest {
-  if (compositions === undefined) {
-    fail(
-      'composition registry was not provided to the navigation resolver — pass a `CompositionRegistry` when `composition` is supplied',
-    );
-  }
-  // `compositions` narrowed to defined by the throw above.
-  const compRegistry = compositions as CompositionRegistry;
   if (!isKebabIdentifier(compositionId)) {
     fail(
       `composition id "${compositionId}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`,
     );
   }
-  if (!compRegistry.has(compositionId)) {
+  if (!compositions.has(compositionId)) {
     fail(`composition "${compositionId}" is not registered`);
   }
-  return compRegistry.get(compositionId);
+  return compositions.get(compositionId);
 }
 
 /**
@@ -223,7 +217,7 @@ function resolveCompositionAndScene(
   compositionId: string,
   sceneId: string,
   scenes: SceneRegistry,
-  compositions: CompositionRegistry | undefined,
+  compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
   const manifest = resolveCompositionManifest(compositionId, compositions);
   const startIndex = manifest.findIndex((entry) => entryId(entry) === sceneId);
@@ -248,7 +242,7 @@ function resolveCompositionAndScene(
 function resolveCompositionFromStart(
   compositionId: string,
   scenes: SceneRegistry,
-  compositions: CompositionRegistry | undefined,
+  compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
   const manifest = resolveCompositionManifest(compositionId, compositions);
   if (manifest.length === 0) {
@@ -304,21 +298,25 @@ export function resolveSceneNavigationTarget(
     fail(`scene id "${sceneId}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`);
   }
 
-  if (compositionId !== null && sceneId !== null) {
-    // Composition-scoped scene navigation. Composition is resolved
-    // first so composition-level errors (registry missing, malformed
-    // id, unknown composition, scene not a member) surface before any
-    // scene-only validation that could mask them.
-    const composition = resolveCompositionAndScene(compositionId, sceneId, scenes, compositions);
-    return {
-      scene: composition.sceneSlice[0] as SceneModule,
-      composition,
-    };
-  }
-
   if (compositionId !== null) {
-    // Composition-only navigation: load from start (ADR-002).
-    const composition = resolveCompositionFromStart(compositionId, scenes, compositions);
+    // Any URL that supplies `composition` requires the composition
+    // registry. Centralize the guard here so the helpers below get a
+    // non-optional `CompositionRegistry` and never have to narrow.
+    if (compositions === undefined) {
+      fail(
+        'composition registry was not provided to the navigation resolver — pass a `CompositionRegistry` when `composition` is supplied',
+      );
+    }
+    const compRegistry = compositions as CompositionRegistry;
+    const composition =
+      sceneId !== null
+        ? // Composition-scoped scene navigation. Composition is resolved
+          // first so composition-level errors (malformed id, unknown
+          // composition, scene not a member) surface before any
+          // scene-only validation that could mask them.
+          resolveCompositionAndScene(compositionId, sceneId, scenes, compRegistry)
+        : // Composition-only navigation: load from start (ADR-002).
+          resolveCompositionFromStart(compositionId, scenes, compRegistry);
     return {
       scene: composition.sceneSlice[0] as SceneModule,
       composition,

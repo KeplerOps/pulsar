@@ -47,6 +47,7 @@ import {
   entryId,
   findUnregisteredEntries,
 } from './composition';
+import { describeError } from './error';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
@@ -148,9 +149,6 @@ export interface ResolveCompositionOptions {
    */
   readonly signal?: AbortSignal;
 }
-
-const describe = (value: unknown): string =>
-  value instanceof Error ? value.message : String(value);
 
 /**
  * Render a kebab id (scene id, manifest entry id, etc.) for inclusion
@@ -353,7 +351,7 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
   try {
     await preloadAssets(scene);
   } catch (cause) {
-    throw fail(`scene ${quoteId(scene.id)} preloadAssets threw: ${describe(cause)}`, cause);
+    throw fail(`scene ${quoteId(scene.id)} preloadAssets threw: ${describeError(cause)}`, cause);
   }
 }
 
@@ -427,14 +425,20 @@ function finalizeSceneFailure(
 ): void {
   if (phaseFailed && cleanupFailed) {
     throw failAggregate(
-      `scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
+      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)} (cleanup also failed: ${describeError(cleanupError)})`,
       [phaseError, cleanupError],
     );
   }
   if (phaseFailed) {
-    throw fail(`scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)}`, phaseError);
+    throw fail(
+      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)}`,
+      phaseError,
+    );
   }
   if (cleanupFailed) {
-    throw fail(`scene ${quoteId(scene.id)} cleanup threw: ${describe(cleanupError)}`, cleanupError);
+    throw fail(
+      `scene ${quoteId(scene.id)} cleanup threw: ${describeError(cleanupError)}`,
+      cleanupError,
+    );
   }
 }

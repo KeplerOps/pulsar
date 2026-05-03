@@ -125,6 +125,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   URL navigation slice snapshot both consume; reduces duplication
   and keeps the report-every-gap behavior uniform across
   subsystems.
+- `src/runtime/id-registry.ts` — generic `createIdRegistry<T>`
+  factory plus `IdRegistry<T>` and `IdRegistryEntry<T>` shapes.
+  Centralizes the id-keyed plumbing both `createSceneRegistry`
+  (PUL-F002) and `createCompositionRegistry` (PUL-F008's companion)
+  share: Map + insertion-order array, duplicate-id rejection,
+  miss-throws, frozen `ids()` snapshot, frozen registry surface.
+  Per-domain concerns (id-shape validation, value-shape validation,
+  defensive transforms like manifest deep-freeze) plug in via
+  `validateId` and `transform` hooks. The two existing registries
+  become thin wrappers (~30 LOC each) that delegate plumbing here
+  and keep their domain-specific error grammars.
+- `src/runtime/error.ts` — shared `describeError(value)` helper.
+  Folds an unknown thrown value into a human-readable string for
+  diagnostic messages (`Error.message` for native errors, `String()`
+  otherwise). Replaces three local copies (`composition-resolver.ts`'s
+  `describe`, `asset-preloader.ts`'s `describeFailure`,
+  `workbench-navigator.ts`'s local `describeError`) so any future
+  rendering rule (truncation, redaction, structured-cause unwrap)
+  lands once.
 - `tests/runtime/workbench-navigator.test.ts` — 10-test Vitest spec
   pinning startup navigation (single scene, composition+scene,
   no-op when neither parameter present); error surfacing
@@ -334,6 +353,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate.
 
 ### Changed
+
+- `src/runtime/registry.ts` — `createSceneRegistry` is now a thin
+  wrapper over the new generic `createIdRegistry<T>` from
+  `./id-registry.ts`. Public surface (`SceneRegistry`,
+  `createSceneRegistry`) and error grammar (`scene registry: ...`)
+  are unchanged; the change is internal plumbing share with the
+  composition registry.
+- `src/runtime/composition-registry.ts` — `createCompositionRegistry`
+  now delegates to `createIdRegistry<T>` and consumes the shared
+  `deepFreeze` from `./object.ts`. Public surface
+  (`CompositionRegistry`, `CompositionRegistryEntry`,
+  `createCompositionRegistry`) and error grammar
+  (`composition registry: ...`, `composition manifest is invalid: ...`)
+  are unchanged.
+- `src/runtime/object.ts` — adds `deepFreeze<T>(value)` next to
+  `isPlainRecord` so the recursive-freeze utility lives with the
+  other "what counts as a plain structure" predicates rather than
+  hidden inside `composition-registry.ts`.
 
 - `src/runtime/scene.ts` — sources the kebab-case identifier
   predicate from the new `src/runtime/identifier.ts` instead of
