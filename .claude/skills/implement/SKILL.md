@@ -17,7 +17,9 @@ This skill handles the ENTIRE lifecycle: plan, implement, verify, commit, push, 
 
 ### Step 1: Resolve the Issue and Branch
 
-Do NOT enter plan mode for this skill. Planning happens in Step 4 without a user-approval gate; the plan is published to the GitHub issue as a comment and the skill proceeds to TDD.
+Do NOT call `EnterPlanMode` in this skill. Planning happens in Step 4 without a user-approval gate; the plan is published to the GitHub issue as a comment and the skill proceeds to TDD. The Step 4b plan working file lives in `/tmp/`, never in `~/.claude/plans/`, so this skill cannot leave plan-mode orphans of its own.
+
+**Harness state-leak recovery.** If a system-reminder at the start of the run says you are already in plan mode (e.g., "Re-entering Plan Mode" because a stale file exists in `~/.claude/plans/`), STOP and tell the user: a previous run left a plan file behind that is auto-tripping plan mode. Ask them to either `/clear` and re-invoke, or accept one `ExitPlanMode` call so you can delete the orphan. Do NOT silently call `EnterPlanMode` and do NOT silently push through the approval gate — the user explicitly opted out of the plan-approval gate when they edited this skill.
 
 1. Run `pwd` to capture the absolute repository root.
 
