@@ -13,29 +13,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SceneNavigationCompositionContext` interfaces,
   `resolveSceneNavigationTarget` parser, and
   `loadSceneNavigationTarget` lifecycle bridge. Implements PUL-F008
-  end-to-end (the `scene` URL parameter, including the
-  `?composition=X&scene=Y` combination from ADR-002 §Navigation):
-  parse `scene` and `composition` once via `URLSearchParams.getAll`
-  at the runtime boundary, reject repeated/conflicting values for
-  either parameter, validate identifier shapes with the shared
-  `isKebabIdentifier` rule from `./identifier.ts`, resolve scene
-  existence via `SceneRegistry.has` / `.get`, resolve composition
-  existence via `CompositionRegistry.has` / `.get`, verify the
-  addressed scene is a member of the named composition, and surface
-  malformed / unknown / non-member combinations as navigation errors
-  prefixed `scene navigation failed: …` before any scene lifecycle
-  hook runs. For `?composition=X&scene=Y`, the resolver snapshots
-  the manifest slice from the addressed scene onwards plus the
-  matching scene modules; the bridge plays that snapshot through
-  `resolveComposition` so the URL path inherits PUL-F004's preload
-  → create → timeline → cleanup ordering and PUL-F006's
-  mandatory-cleanup invariant. Per-entry `range` and `behavior`
-  overrides survive slicing intact and forward to the runner adapter
-  unchanged (ADR-011). Accepts `URL`, `URLSearchParams`, raw search
-  strings, and `Location`-like `{ search }` objects so the same
-  parser works in browser bootstrap and in Node-side tooling. No
-  localStorage / cookie fallback — URL state is authoritative
-  (ADR-013).
+  end-to-end (the `scene` URL parameter plus the
+  `?composition=X&scene=Y` and `?composition=X` shapes from ADR-002
+  §Navigation): parse `scene` and `composition` once via
+  `URLSearchParams.getAll` at the runtime boundary, reject
+  repeated/conflicting values for either parameter, validate
+  identifier shapes with the shared `isKebabIdentifier` rule from
+  `./identifier.ts`, resolve scene existence via `SceneRegistry.has`
+  / `.get`, resolve composition existence via
+  `CompositionRegistry.has` / `.get`, verify the addressed scene is
+  a member of the named composition (when both supplied), and
+  surface malformed / unknown / non-member / empty-composition cases
+  as navigation errors prefixed `scene navigation failed: …` before
+  any scene lifecycle hook runs. Three navigation shapes are
+  supported: (a) `?scene=Y` — single-scene navigation, (b)
+  `?composition=X&scene=Y` — composition-scoped scene navigation,
+  (c) `?composition=X` — composition-from-start (the navigation
+  target is the composition's first scene). For shapes (b) and (c),
+  the resolver snapshots the manifest slice from the addressed
+  scene onwards plus the matching scene modules; the bridge plays
+  that snapshot through `resolveComposition` so the URL path
+  inherits PUL-F004's preload → create → timeline → cleanup
+  ordering and PUL-F006's mandatory-cleanup invariant. Per-entry
+  `range` and `behavior` overrides survive slicing intact and
+  forward to the runner adapter unchanged (ADR-011). The bridge
+  de-duplicates scene modules by id when synthesizing its scene
+  registry so manifests with repeated scene ids (which
+  `resolveComposition` legitimately supports) are not rejected by
+  the registry's duplicate-id guard. Accepts `URL`,
+  `URLSearchParams`, raw search strings, and `Location`-like `{
+  search }` objects so the same parser works in browser bootstrap
+  and in Node-side tooling. No localStorage / cookie fallback —
+  URL state is authoritative (ADR-013).
 - `src/runtime/composition-registry.ts` — `CompositionRegistry`
   interface, `CompositionRegistryEntry` shape, and
   `createCompositionRegistry` factory. Mirrors PUL-F002's scene
@@ -43,9 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`get` / `has` / `ids` / `size`), validation delegated to
   `assertCompositionManifest` (PUL-F003), kebab-case ids enforced
   via `isKebabIdentifier`, duplicate-id rejection, and the returned
-  registry is frozen with no add / remove / positional API. The
-  composition registry is the addressability path the
-  `?composition=X` URL parameter consults.
+  registry is frozen with no add / remove / positional API.
+  Manifests are deep-frozen on registration (array, each
+  object-form entry, and any nested `range` tuple / `behavior`
+  record) so callers cannot mutate stored compositions after
+  validation, and the registry stores a defensive copy so caller-
+  side mutation of the original array does not leak into the
+  registry. The composition registry is the addressability path
+  the `?composition=X` URL parameter consults.
 - `src/scenes/placeholder.ts` — first registered scene in the
   workbench. Minimal scene module that satisfies the PUL-F001
   contract (id, title, duration, tags, assets, captions,

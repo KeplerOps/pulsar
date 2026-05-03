@@ -19,8 +19,46 @@
 //    consults this registry to resolve composition existence and
 //    membership before any scene lifecycle hook runs.
 
-import { type CompositionManifest, assertCompositionManifest } from './composition';
+import {
+  type CompositionEntry,
+  type CompositionManifest,
+  assertCompositionManifest,
+} from './composition';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
+
+/**
+ * Deep-freeze a composition manifest so the stored copy cannot be
+ * mutated by callers after registration. Freezes the array, each
+ * object-form entry, and any nested `range` (tuple) and `behavior`
+ * (record) values. Bare-string entries are immutable already.
+ *
+ * Necessary because TypeScript's `readonly` modifier is a compile-time
+ * declaration only; runtime mutation is what actually breaks the
+ * immutable-registry contract (codex review: "the registry validates
+ * once, then stores and returns the same manifest object graph;
+ * callers can mutate order, membership, or overrides after
+ * validation").
+ */
+function freezeManifest(manifest: CompositionManifest): CompositionManifest {
+  const copy: CompositionEntry[] = [];
+  for (const entry of manifest) {
+    if (typeof entry === 'string') {
+      copy.push(entry);
+      continue;
+    }
+    const frozenEntry: { id: string; range?: unknown; behavior?: unknown } = { id: entry.id };
+    if (entry.range !== undefined) {
+      frozenEntry.range = Array.isArray(entry.range)
+        ? Object.freeze(entry.range.slice())
+        : entry.range;
+    }
+    if (entry.behavior !== undefined) {
+      frozenEntry.behavior = Object.freeze({ ...entry.behavior });
+    }
+    copy.push(Object.freeze(frozenEntry) as unknown as CompositionEntry);
+  }
+  return Object.freeze(copy) as CompositionManifest;
+}
 
 /** A composition registration: (kebab-case id, validated manifest). */
 export interface CompositionRegistryEntry {
@@ -75,7 +113,10 @@ export function createCompositionRegistry(
       throw new Error(`composition registry: duplicate id "${entry.id}"`);
     }
     assertCompositionManifest(entry.manifest);
-    byId.set(entry.id, entry.manifest);
+    // Deep-freeze a defensive copy so callers cannot mutate the
+    // stored manifest (or the array they passed in) after
+    // construction.
+    byId.set(entry.id, freezeManifest(entry.manifest));
     order.push(entry.id);
   }
 

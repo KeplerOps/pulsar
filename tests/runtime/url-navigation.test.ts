@@ -135,7 +135,7 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
       expect(resolveSceneNavigationTarget('', registry)).toBeNull();
     });
 
-    it('returns null for a URL with only unrelated parameters', () => {
+    it('returns null for a URL with only unrelated parameters (no `scene`, no `composition`)', () => {
       const registry = createSceneRegistry([buildScene({ id: 'intro' })]);
       const target = resolveSceneNavigationTarget(
         'https://workbench.test/?mode=screenshot&beat=hook',
@@ -520,6 +520,65 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
       );
     });
 
+    it('resolves `?composition=X` with no `scene` to composition-from-start (ADR-002 §Navigation)', () => {
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const sceneRegistry = createSceneRegistry([intro, middle]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk',
+        sceneRegistry,
+        compositionRegistry,
+      );
+
+      expect(target?.scene).toBe(intro);
+      expect(target?.composition?.id).toBe('full-talk');
+      expect(target?.composition?.manifestSlice).toEqual(['intro', 'middle']);
+      expect(target?.composition?.sceneSlice).toEqual([intro, middle]);
+    });
+
+    it('throws when `?composition=X` (alone) names an empty composition (no scene to navigate to)', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([{ id: 'empty', manifest: [] }]);
+      expect(() =>
+        resolveSceneNavigationTarget('?composition=empty', sceneRegistry, compositionRegistry),
+      ).toThrow(
+        /^scene navigation failed: composition "empty" is empty — no scene to navigate to$/,
+      );
+    });
+
+    it('throws when `?composition=X` (alone) names an unregistered composition', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([]);
+      expect(() =>
+        resolveSceneNavigationTarget('?composition=missing', sceneRegistry, compositionRegistry),
+      ).toThrow(/^scene navigation failed: composition "missing" is not registered$/);
+    });
+
+    it('throws when `?composition=` (alone, empty value)', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro'] },
+      ]);
+      expect(() =>
+        resolveSceneNavigationTarget('?composition=', sceneRegistry, compositionRegistry),
+      ).toThrow(/^scene navigation failed: composition id "" is not a valid kebab-case/);
+    });
+
+    it('throws when `?composition=X` is supplied without a composition registry', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      expect(() => resolveSceneNavigationTarget('?composition=full-talk', sceneRegistry)).toThrow(
+        /^scene navigation failed: composition registry was not provided to the navigation resolver/,
+      );
+    });
+
     it('does not invoke any lifecycle hook on any composition-error path', () => {
       const calls: string[] = [];
       const intro = buildScene({
@@ -832,6 +891,76 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       });
 
       expect(log).toEqual(['real-intro:create', 'real-outro:create']);
+    });
+
+    it('runs a composition with repeated scene ids end-to-end (no duplicate-id registry error)', async () => {
+      // `resolveComposition` allows repeated scene ids in the
+      // manifest (the resolver runs the same scene module twice). The
+      // URL bridge must not reject that case via its synthesized
+      // single-scene registry: it should de-duplicate scene modules
+      // by id when building the registry while leaving the manifest
+      // slice untouched so each occurrence still plays.
+      const log: string[] = [];
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          log.push('create');
+        },
+        cleanup: () => {
+          log.push('cleanup');
+        },
+      });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'loop-once', manifest: ['intro', 'intro'] },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=loop-once',
+        sceneRegistry,
+        compositionRegistry,
+      ) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: () => undefined,
+      });
+
+      // Two iterations, one per manifest entry.
+      expect(log).toEqual(['create', 'cleanup', 'create', 'cleanup']);
+    });
+
+    it('runs a composition addressed via `?composition=X` (no scene) end-to-end', async () => {
+      const log: string[] = [];
+      const make = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`${id}:create`);
+          },
+          cleanup: () => {
+            log.push(`${id}:cleanup`);
+          },
+        });
+      const intro = make('intro');
+      const middle = make('middle');
+      const sceneRegistry = createSceneRegistry([intro, middle]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk',
+        sceneRegistry,
+        compositionRegistry,
+      ) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: () => undefined,
+      });
+
+      expect(log).toEqual(['intro:create', 'intro:cleanup', 'middle:create', 'middle:cleanup']);
     });
 
     it('forwards per-entry overrides (range, behavior) to the runner adapter', async () => {

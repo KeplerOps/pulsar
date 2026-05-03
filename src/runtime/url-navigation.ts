@@ -193,17 +193,15 @@ function readSingletonParam(params: URLSearchParams, name: string): string | nul
 }
 
 /**
- * Build the composition context for a `?composition=X&scene=Y` URL:
- * verify the composition exists, verify the scene is a member, and
- * snapshot the manifest slice + matching scene modules from the
- * addressed scene onwards.
+ * Resolve the named composition manifest, validating shape and
+ * existence, and centralizing the "composition registry must exist
+ * when `composition` is supplied" guard. Used by both the
+ * composition+scene path and the composition-only path.
  */
-function resolveCompositionContext(
+function resolveCompositionManifest(
   compositionId: string,
-  sceneId: string,
-  scenes: SceneRegistry,
   compositions: CompositionRegistry | undefined,
-): SceneNavigationCompositionContext {
+): CompositionManifest {
   if (compositions === undefined) {
     fail(
       'composition registry was not provided to the navigation resolver — pass a `CompositionRegistry` when `composition` is supplied',
@@ -219,12 +217,20 @@ function resolveCompositionContext(
   if (!compRegistry.has(compositionId)) {
     fail(`composition "${compositionId}" is not registered`);
   }
-  const manifest = compRegistry.get(compositionId);
-  const startIndex = manifest.findIndex((entry) => entryId(entry) === sceneId);
-  if (startIndex < 0) {
-    fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
-  }
-  const manifestSlice: CompositionManifest = manifest.slice(startIndex);
+  return compRegistry.get(compositionId);
+}
+
+/**
+ * Snapshot a manifest slice's scene modules from the input scene
+ * registry. Pre-resolves every entry so the bridge does not re-
+ * resolve by id later (codex review: re-resolving could substitute
+ * scenes if a different registry maps the same id elsewhere).
+ */
+function snapshotSceneSlice(
+  manifestSlice: CompositionManifest,
+  scenes: SceneRegistry,
+  compositionId: string,
+): readonly SceneModule[] {
   const sceneSlice: SceneModule[] = [];
   for (const entry of manifestSlice) {
     const id = entryId(entry);
@@ -235,29 +241,76 @@ function resolveCompositionContext(
     }
     sceneSlice.push(scenes.get(id));
   }
-  return {
-    id: compositionId,
-    manifestSlice,
-    sceneSlice: Object.freeze(sceneSlice),
-  };
+  return Object.freeze(sceneSlice);
+}
+
+/**
+ * Build the composition context for a `?composition=X&scene=Y` URL:
+ * verify the composition exists, verify the scene is a member, and
+ * snapshot the manifest slice + matching scene modules from the
+ * addressed scene onwards.
+ */
+function resolveCompositionAndScene(
+  compositionId: string,
+  sceneId: string,
+  scenes: SceneRegistry,
+  compositions: CompositionRegistry | undefined,
+): SceneNavigationCompositionContext {
+  const manifest = resolveCompositionManifest(compositionId, compositions);
+  const startIndex = manifest.findIndex((entry) => entryId(entry) === sceneId);
+  if (startIndex < 0) {
+    fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
+  }
+  const manifestSlice: CompositionManifest = manifest.slice(startIndex);
+  const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
+  return { id: compositionId, manifestSlice, sceneSlice };
+}
+
+/**
+ * Build the composition context for a `?composition=X` URL with no
+ * `scene` parameter (ADR-002 §Navigation: load composition from
+ * start). Verifies the composition exists and is non-empty, then
+ * snapshots the full manifest plus matching scene modules.
+ */
+function resolveCompositionFromStart(
+  compositionId: string,
+  scenes: SceneRegistry,
+  compositions: CompositionRegistry | undefined,
+): SceneNavigationCompositionContext {
+  const manifest = resolveCompositionManifest(compositionId, compositions);
+  if (manifest.length === 0) {
+    fail(`composition "${compositionId}" is empty — no scene to navigate to`);
+  }
+  const manifestSlice: CompositionManifest = manifest.slice();
+  const sceneSlice = snapshotSceneSlice(manifestSlice, scenes, compositionId);
+  return { id: compositionId, manifestSlice, sceneSlice };
 }
 
 /**
  * Resolves URL navigation parameters into a
- * {@link SceneNavigationTarget}. Returns `null` when the `scene`
- * parameter is absent — the caller decides whether to fall through to
- * other URL routing logic.
+ * {@link SceneNavigationTarget}. Returns `null` when neither `scene`
+ * nor `composition` is supplied — the caller decides whether to fall
+ * through to other URL routing logic.
  *
- * When `?composition=X` is also present, `compositions` MUST be
- * supplied; the resolver uses it to verify the composition exists and
- * to capture the manifest slice from the addressed scene onwards.
+ * Three URL navigation shapes are supported (ADR-002 §Navigation +
+ * ADR-013):
+ *  - `?scene=Y` — single-scene navigation against the scene registry.
+ *  - `?composition=X` — composition from start; the navigation target
+ *    is the composition's first scene.
+ *  - `?composition=X&scene=Y` — composition-scoped navigation; the
+ *    target is `Y` *within* `X`, with the manifest slice from `Y`
+ *    onwards snapshot for the bridge.
+ *
+ * For any URL that supplies `composition`, `compositions` MUST be
+ * supplied; the resolver uses it to verify the composition exists.
  *
  * Throws an `Error` whose message starts with `scene navigation
  * failed:` for any of:
  *  - `scene` repeated, malformed, or unregistered
- *  - `composition` repeated, malformed, unregistered, or supplied
- *    without a composition registry
+ *  - `composition` repeated, malformed, empty, unregistered, or
+ *    supplied without a composition registry
  *  - addressed scene not a member of the named composition
+ *  - `composition` (alone) names an empty composition
  *
  * No lifecycle hook is invoked on any error path.
  */
@@ -269,36 +322,47 @@ export function resolveSceneNavigationTarget(
   const params = toSearchParams(input);
 
   const sceneId = readSingletonParam(params, 'scene');
-  if (sceneId === null) return null;
-
   const compositionId = readSingletonParam(params, 'composition');
 
-  if (!isKebabIdentifier(sceneId)) {
+  if (sceneId === null && compositionId === null) return null;
+
+  if (sceneId !== null && !isKebabIdentifier(sceneId)) {
     fail(`scene id "${sceneId}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`);
   }
 
-  if (compositionId !== null) {
-    // Composition-scoped navigation. Composition is resolved first so
-    // composition-level errors (registry missing, malformed id, unknown
-    // composition, scene not a member) are surfaced before any
+  if (compositionId !== null && sceneId !== null) {
+    // Composition-scoped scene navigation. Composition is resolved
+    // first so composition-level errors (registry missing, malformed
+    // id, unknown composition, scene not a member) surface before any
     // scene-only validation that could mask them.
-    const compositionContext = resolveCompositionContext(
-      compositionId,
-      sceneId,
-      scenes,
-      compositions,
-    );
+    const composition = resolveCompositionAndScene(compositionId, sceneId, scenes, compositions);
     return {
-      scene: compositionContext.sceneSlice[0] as SceneModule,
-      composition: compositionContext,
+      scene: composition.sceneSlice[0] as SceneModule,
+      composition,
+    };
+  }
+
+  if (compositionId !== null) {
+    // Composition-only navigation: load from start (ADR-002).
+    const composition = resolveCompositionFromStart(compositionId, scenes, compositions);
+    return {
+      scene: composition.sceneSlice[0] as SceneModule,
+      composition,
     };
   }
 
   // Plain `?scene=Y` navigation.
-  if (!scenes.has(sceneId)) {
-    fail(`scene "${sceneId}" is not registered`);
+  // sceneId is guaranteed non-null here: at the top we returned null
+  // when both ids were null, the composition+scene branch covers
+  // sceneId !== null && compositionId !== null, and the
+  // composition-only branch covers compositionId !== null && sceneId
+  // === null. The remaining case is sceneId !== null && compositionId
+  // === null.
+  const id = sceneId as string;
+  if (!scenes.has(id)) {
+    fail(`scene "${id}" is not registered`);
   }
-  return { scene: scenes.get(sceneId) };
+  return { scene: scenes.get(id) };
 }
 
 /**
@@ -336,8 +400,16 @@ export async function loadSceneNavigationTarget(
   const manifest: CompositionManifest =
     composition === undefined ? [target.scene.id] : composition.manifestSlice;
 
+  // De-duplicate scene modules by id so a manifest slice with
+  // repeated scene ids (which `resolveComposition` legitimately
+  // supports per PUL-F004) does not crash the synthesized registry's
+  // duplicate-id guard. Same id always resolves to the same module
+  // because `snapshotSceneSlice` pulled both from the same scene
+  // registry, so dedupe is identity-preserving.
+  const uniqueScenes = Array.from(new Map(scenes.map((s) => [s.id, s])).values());
+
   await resolveComposition({
-    registry: createSceneRegistry(scenes),
+    registry: createSceneRegistry(uniqueScenes),
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
