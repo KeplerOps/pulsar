@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Implement: $ARGUMENTS
 
-This skill handles the ENTIRE lifecycle: plan, implement, verify, commit, push, PR, CI, reviews, fix, merge, cleanup. The user's only checkpoint is plan approval.
+This skill handles the ENTIRE lifecycle: plan, implement, verify, commit, push, PR, CI, reviews, fix, merge, cleanup. The skill runs end-to-end without a plan-approval gate — the plan is recorded as a comment on the GitHub issue (Step 4) and the skill proceeds directly to TDD. The only times to pause for the user are (a) genuinely subtle design decisions you cannot resolve from context (use `AskUserQuestion`), or (b) the explicit STOP conditions named throughout this skill.
 
 **Every run is driven by a GitHub issue.** The issue is the durable artifact that records why the change is being made, what requirements are in scope (if any), and how completion is reviewed. `$ARGUMENTS` may be either a GitHub issue number OR a Ground Control requirement UID; in the UID case the skill finds or creates the matching issue and runs against it. Bug fixes, refactors, dependency updates, and other requirement-free work enter the same workflow via an issue with zero requirements in scope.
 
@@ -17,20 +17,20 @@ This skill handles the ENTIRE lifecycle: plan, implement, verify, commit, push, 
 
 ### Step 1: Resolve the Issue and Branch
 
-1. Enter plan mode.
+Do NOT enter plan mode for this skill. Planning happens in Step 4 without a user-approval gate; the plan is published to the GitHub issue as a comment and the skill proceeds to TDD.
 
-2. Run `pwd` to capture the absolute repository root.
+1. Run `pwd` to capture the absolute repository root.
 
-3. Call the `gc_get_repo_ground_control_context` MCP tool with:
+2. Call the `gc_get_repo_ground_control_context` MCP tool with:
    - `repo_path`: absolute path from `pwd`
 
-4. If the tool does NOT return `status: "ok"`:
+3. If the tool does NOT return `status: "ok"`:
    - Stop immediately.
    - Tell the user the repository is missing a valid `.ground-control.yaml` at its root.
    - Include the tool's `suggested_ground_control_yaml` in your response and ask the user to create the file before using `/implement`.
    - Do NOT guess the Ground Control project.
 
-5. If the tool returns `status: "ok"`, cache the following fields for use throughout the rest of the workflow:
+4. If the tool returns `status: "ok"`, cache the following fields for use throughout the rest of the workflow:
    - `project` — used in all Ground Control MCP calls
    - `workflow.test_command` — used as the test suite command
    - `workflow.completion_command` — used as the full completion gate (falls back to test_command if null)
@@ -39,38 +39,40 @@ This skill handles the ENTIRE lifecycle: plan, implement, verify, commit, push, 
    - `sonarcloud` — if set, used by `/ship` later; if null, SonarCloud is skipped
    - `rules.plan_rules_content` — if non-null, treated as mandatory plan constraints in Step 4
 
-6. **Classify `$ARGUMENTS` as either an issue reference or a requirement UID**:
+5. **Classify `$ARGUMENTS` as either an issue reference or a requirement UID**:
    - **Issue reference**: a plain integer (`123`), a `#`-prefixed integer (`#123`), or a form like `issue:123`. In all cases, strip to the integer and treat it as the GitHub issue number.
    - **Requirement UID**: anything matching the pattern `<letters>-<letters/digits>` (examples: `PUL-F001`, `PUL-Q014`, `PUL-A001`). Treat the entire string as the UID exactly as provided. Do NOT synthesize or rewrite a project prefix.
    - If the input fits neither pattern, stop and ask the user for disambiguation.
 
-7. **If the input was a requirement UID**, resolve it to a GitHub issue:
+6. **If the input was a requirement UID**, resolve it to a GitHub issue:
    1. Use `gc_get_requirement` with the UID and the cached `project`. If the requirement does not exist, stop and report it.
    2. Use `gc_get_traceability` with the requirement's UUID. Look for a link with `artifact_type: GITHUB_ISSUE`.
    3. If such a link exists, note the issue number from its `artifact_identifier`.
    4. If no link exists, use `gc_create_github_issue` with the UID and `project` to create an issue and auto-link it. Note the new issue number.
    - From this point forward, treat the resolved issue number as the authoritative input. The requirement UID becomes a single entry in the `in_scope_requirements[]` list computed below.
 
-8. **Fetch the issue** via `gh issue view <issue-number> --json number,title,body,labels,url`. Cache the full body text.
+7. **Fetch the issue** via `gh issue view <issue-number> --json number,title,body,labels,url`. Cache the full body text.
 
-9. **Parse the `in_scope_requirements[]` list from the issue body.** The convention is a Markdown section whose heading is exactly `## Requirements` (case-insensitive match on the word `Requirements`, any heading level from `##` to `####`). The section contains a bulleted list where each bullet is a Ground Control requirement UID (matching the `<letters>-<letters/digits>` pattern), optionally followed by prose explanation.
+8. **Parse the `in_scope_requirements[]` list from the issue body.** The convention is a Markdown section whose heading is exactly `## Requirements` (case-insensitive match on the word `Requirements`, any heading level from `##` to `####`). The section contains a bulleted list where each bullet is a Ground Control requirement UID (matching the `<letters>-<letters/digits>` pattern), optionally followed by prose explanation.
    - If the section is present and non-empty, every valid UID bullet becomes an entry in `in_scope_requirements[]`.
    - If the section is present and empty, `in_scope_requirements[]` is empty — this is a bug/refactor/maintenance run with no formal requirements.
    - If the section is absent entirely, `in_scope_requirements[]` is empty.
    - If a UID in the section fails to resolve via `gc_get_requirement`, stop and report the broken reference.
-   - If the input was a requirement UID (Step 7), ensure that UID is in `in_scope_requirements[]` — add it if missing, which also means updating the issue body to include a Requirements section.
+   - If the input was a requirement UID (Step 6), ensure that UID is in `in_scope_requirements[]` — add it if missing, which also means updating the issue body to include a Requirements section.
 
-10. **For each UID in `in_scope_requirements[]`**, fetch the full requirement via `gc_get_requirement` and cache its UUID, title, statement, status, and wave. You will use these for clause verification (Step 4.5), status transitions (Step 15), and traceability reconciliation (Step 16).
+9. **For each UID in `in_scope_requirements[]`**, fetch the full requirement via `gc_get_requirement` and cache its UUID, title, statement, status, and wave. You will use these for clause verification (Step 4.5), status transitions (Step 15), and traceability reconciliation (Step 16).
 
-11. **Fetch the existing traceability links for the issue** via `gc_get_traceability_by_artifact` with `artifact_type: GITHUB_ISSUE` and `artifact_identifier: <issue-number>`. Cache the result — you will need it to reconcile the issue's relationship to requirements in Step 16.
+10. **Fetch the existing traceability links for the issue** via `gc_get_traceability_by_artifact` with `artifact_type: GITHUB_ISSUE` and `artifact_identifier: <issue-number>`. Cache the result — you will need it to reconcile the issue's relationship to requirements in Step 16.
 
-12. **Switch to the issue's feature branch**: run `gh issue develop <issue-number> --checkout --base dev`. If the branch already exists, `gh` reuses it.
+11. **Switch to the issue's feature branch**: run `gh issue develop <issue-number> --checkout --base dev`. If the branch already exists, `gh` reuses it.
 
 ### Step 2: Read the Issue and Gather Context
 
 The issue body was cached in Step 1, but re-read it carefully now for labels, comments, and any user discussion. Run `gh issue view <issue-number> --comments` to pull the comment thread too. The issue is the authoritative description of the work; everything downstream (plan, clause verification, review scope) anchors on it.
 
 ### Step 2.5: Run Codex Architecture Preflight
+
+**Preflight is a hard prerequisite for Step 4 (Plan).** You MUST complete every preflight call described below — and read the guardrails — before producing the plan. Planning without preflight context is forbidden because the codex guardrails frequently shape the plan (deferred subsystems, mandated reuse, anti-patterns to avoid). Skipping or running preflight in parallel with planning produces drift between the recorded plan and the architectural intent.
 
 Preflight MUST cover every in-scope requirement, not just the first one. The preflight tool loads exactly one requirement payload per call, so grouped issues that carry multiple UIDs need one call per UID — otherwise codex never sees the statements, rationale, or existing traceability for every requirement after the first, and the returned guardrails will be incomplete.
 
@@ -107,7 +109,17 @@ Explore the codebase to determine whether the work described in the issue is alr
 
 ### Step 4: Plan or Report
 
-- **If the work is NOT yet complete**: Plan the implementation. Identify which files need to be created or modified, what tests to write, and what approach to take. Enter plan mode.
+Step 2.5 (preflight) MUST already be complete before you start this step. Do NOT enter plan mode and do NOT ask the user to approve the plan — the plan is published to the GitHub issue and the skill proceeds directly to TDD.
+
+#### Step 4a: Produce the plan
+
+- **If the work is NOT yet complete**: Plan the implementation. Identify which files need to be created or modified, what tests to write, and what approach to take. The plan must include:
+  - **Context** — why the change is being made (the in-scope requirement statement(s) or the bug/refactor/maintenance trigger from the issue body).
+  - **Approach** — the concrete steps you will take, in order, with file paths and the names of any helpers/types you will add or reuse.
+  - **Critical files** — the files you will modify or create.
+  - **Reused existing patterns / helpers** — the cross-cutting concerns you inventoried in Step 3, with `file:line` references.
+  - **Clause-by-clause verification preview** — for each in-scope requirement clause and each acceptance criterion, the file the implementation will live in (Step 4.5 then pins the exact `file:line` after the code is written).
+  - **Verification** — the commands to prove the change works end-to-end (test command, completion gate, any manual verification the change demands).
 - When `in_scope_requirements[]` is non-empty, the plan must cover every clause of every in-scope requirement. When it is empty, the plan must fully address every acceptance criterion in the issue body and any user clarifications in comments.
 - Your plans must respect the coding standards.
 - You must add or update ADRs as appropriate.
@@ -117,12 +129,41 @@ Explore the codebase to determine whether the work described in the issue is alr
 - Address the concerns a senior engineer would have around security, performance, reliability, and scalability.
 - Avoid reinventing the wheel — use existing libraries and frameworks where appropriate.
 - Code should be easy to understand, test, and maintain. Simple is better than complex.
-- If Step 1.3 returned non-null `rules.plan_rules_content`, treat every bullet in that content as a mandatory plan constraint for this implementation. These are repo-specific "plans MUST..." rules (e.g., framework-specific migration rules, ADR conformance checks). Apply all of them in addition to the general principles above.
-- **If the work is ALREADY complete**: Report that the issue is satisfied and identify which code satisfies it. If `in_scope_requirements[]` is non-empty, verify each requirement is already linked and ACTIVE; if not, continue to Steps 15–16 (transition then reconciliation) to fix the Ground Control state without re-implementing the code.
+- If Step 1 returned non-null `rules.plan_rules_content`, treat every bullet in that content as a mandatory plan constraint for this implementation. These are repo-specific "plans MUST..." rules (e.g., framework-specific migration rules, ADR conformance checks). Apply all of them in addition to the general principles above.
+
+#### Step 4b: Post the plan to the GitHub issue (mandatory)
+
+The plan MUST be recorded on the issue before you start writing code. The issue is the durable artifact — chat transcripts are not.
+
+1. Compose the plan as a single Markdown comment body. Use a stable header so the comment is identifiable in the thread:
+
+   ```
+   ## /implement plan (<UTC timestamp, e.g. 2026-05-03T14:30:00Z>)
+
+   <plan body — Context, Approach, Critical files, Reused patterns, Clause-by-clause verification preview, Verification>
+   ```
+
+2. Post it via:
+
+   ```
+   gh issue comment <issue-number> --body-file <path-to-temporary-plan-file>
+   ```
+
+   Use `--body-file` (not `--body`) so multi-line Markdown formatting survives shell quoting. Write the plan to a temporary file (e.g. `/tmp/implement-plan-<issue>.md`), post, then delete the file.
+
+3. Cache the comment URL `gh` returns. Reference it in the final report (Step 19).
+
+4. If `gh issue comment` fails (auth, network, rate limit), STOP and surface the error. Do not start writing code without the plan recorded on the issue.
+
+5. **Pause for genuinely subtle questions only.** If preflight, codebase coverage, or planning surfaced a design decision you cannot resolve from context (architectural fork, conflicting ADRs, ambiguous requirement scope), use `AskUserQuestion` BEFORE posting the plan and finalize the plan with the user's answer. The default is to proceed without asking.
+
+#### Step 4c: Already-complete branch
+
+- **If the work is ALREADY complete**: Skip the plan-comment step and instead post a *completion report* to the issue using the same `gh issue comment` mechanism. The report identifies which code satisfies the requirement(s) (with `file:line` references) and notes that no implementation work is needed. If `in_scope_requirements[]` is non-empty, verify each requirement is already linked and ACTIVE; if not, continue to Steps 15–16 (transition then reconciliation) to fix the Ground Control state without re-implementing the code.
 
 ### Step 4.4: Test-Driven Development (mandatory)
 
-After plan approval, implement using **TDD**. This is not optional:
+Once Step 4b has posted the plan to the issue, implement using **TDD**. This is not optional:
 
 1. **Write the failing test first.** For each clause of each in-scope requirement AND each acceptance criterion in the issue body, write a unit test that exercises the new behavior. Run the test and confirm it fails for the right reason (missing code, not a typo / wiring issue). A test you never saw fail is not a test — it's a guess.
 2. **Write the minimum production code to make the test pass.** No premature abstraction, no scope creep, no "while I'm here" cleanups. Just enough to flip the failing assertion green.
@@ -172,7 +213,7 @@ Traceability reconciliation (IMPLEMENTS / TESTS links) and the `DRAFT → ACTIVE
 
 Implementation is NOT ready for commit until ALL of the following are verified:
 
-1. **Completion gate passes** — run the `workflow.completion_command` cached in Step 1.3. If that field is null, fall back to `workflow.test_command`. If both are null, ask the user what the completion gate command should be for this repo (do not guess). Confirm the command exits successfully.
+1. **Completion gate passes** — run the `workflow.completion_command` cached in Step 1. If that field is null, fall back to `workflow.test_command`. If both are null, ask the user what the completion gate command should be for this repo (do not guess). Confirm the command exits successfully.
 2. **CHANGELOG.md updated** — verify it is in `git diff --name-only` if any source files changed.
 3. **Step 4.5 clause mapping was completed** — if you skipped it, go back and do it now.
 
@@ -229,13 +270,13 @@ If any check fails, fix it before proceeding. Do NOT move to Phase C until every
 
 ### Step 11: SonarCloud
 
-**Skip this step entirely if `sonarcloud` was null in the Step 1.3 config.** Log "SonarCloud skipped — no sonarcloud block in .ground-control.yaml" and proceed to Step 12.
+**Skip this step entirely if `sonarcloud` was null in the Step 1 config.** Log "SonarCloud skipped — no sonarcloud block in .ground-control.yaml" and proceed to Step 12.
 
 This step runs AFTER Step 10 (CI Monitor) reports green. A green CI run does not imply a clean SonarCloud — the quality gate and the issue list are separate from CI conclusions and must be checked independently.
 
 Otherwise:
 1. Wait 60 seconds for SonarCloud analysis to propagate after the CI run.
-2. Use `get_project_quality_gate_status` with the `sonarcloud.project_key` cached in Step 1.3 to check the quality gate status for the current pull request.
+2. Use `get_project_quality_gate_status` with the `sonarcloud.project_key` cached in Step 1 to check the quality gate status for the current pull request.
 3. **Pull the full open-issues list for the current PR using `$SONAR_TOKEN`.** The MCP `search_sonar_issues_in_projects` surface is the preferred interface; if it is unavailable or returns partial results, fall back to the REST API directly using the environment token:
 
    ```
@@ -460,6 +501,7 @@ Close the GitHub issue now via `gh issue close <issue-number>`. The work is done
 
 Provide a final summary:
 - Issue number and title
+- Plan-comment URL (the `gh issue comment` URL cached in Step 4b — the durable record of the plan)
 - `in_scope_requirements[]` — each UID + title, with its new status
 - Files created, modified, renamed, or deleted
 - Traceability reconciliation summary — how many links were added, deleted, updated, and which requirements gained coverage
