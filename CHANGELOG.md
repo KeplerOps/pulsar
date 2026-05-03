@@ -9,49 +9,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `src/runtime/url-navigation.ts` — `SceneNavigationTarget` interface,
-  `resolveSceneNavigationTarget` parser, and `loadSceneNavigationTarget`
-  lifecycle bridge. Implements PUL-F008 (the `scene` URL parameter):
-  parse `scene` once via `URLSearchParams.getAll('scene')` at the
-  runtime boundary, reject repeated/conflicting values, validate the
-  identifier shape with the shared `isKebabIdentifier` rule from
-  `./identifier.ts`, resolve existence via `SceneRegistry.has` /
-  `.get`, and surface malformed or unknown ids as navigation errors
+- `src/runtime/url-navigation.ts` — `SceneNavigationTarget` /
+  `SceneNavigationCompositionContext` interfaces,
+  `resolveSceneNavigationTarget` parser, and
+  `loadSceneNavigationTarget` lifecycle bridge. Implements PUL-F008
+  end-to-end (the `scene` URL parameter, including the
+  `?composition=X&scene=Y` combination from ADR-002 §Navigation):
+  parse `scene` and `composition` once via `URLSearchParams.getAll`
+  at the runtime boundary, reject repeated/conflicting values for
+  either parameter, validate identifier shapes with the shared
+  `isKebabIdentifier` rule from `./identifier.ts`, resolve scene
+  existence via `SceneRegistry.has` / `.get`, resolve composition
+  existence via `CompositionRegistry.has` / `.get`, verify the
+  addressed scene is a member of the named composition, and surface
+  malformed / unknown / non-member combinations as navigation errors
   prefixed `scene navigation failed: …` before any scene lifecycle
-  hook runs. The optional `loadSceneNavigationTarget` convenience
-  builds a single-entry composition manifest from the resolved target
-  and delegates to `resolveComposition` so the URL navigation path
-  inherits PUL-F004's preload → create → timeline → cleanup ordering
-  and PUL-F006's mandatory-cleanup invariant rather than introducing a
-  parallel single-scene runner. Accepts `URL`, `URLSearchParams`,
-  raw search strings, and `Location`-like `{ search }` objects so the
-  same parser works in browser bootstrap and in Node-side tooling.
-  No localStorage / cookie fallback — URL state is authoritative
-  (ADR-013). `scene` is orthogonal to `mode`/`composition`/`index`/
-  `beat`; this module reads only `scene` and leaves the rest to
-  future requirements.
-- `tests/runtime/url-navigation.test.ts` — 43-test Vitest spec
+  hook runs. For `?composition=X&scene=Y`, the resolver snapshots
+  the manifest slice from the addressed scene onwards plus the
+  matching scene modules; the bridge plays that snapshot through
+  `resolveComposition` so the URL path inherits PUL-F004's preload
+  → create → timeline → cleanup ordering and PUL-F006's
+  mandatory-cleanup invariant. Per-entry `range` and `behavior`
+  overrides survive slicing intact and forward to the runner adapter
+  unchanged (ADR-011). Accepts `URL`, `URLSearchParams`, raw search
+  strings, and `Location`-like `{ search }` objects so the same
+  parser works in browser bootstrap and in Node-side tooling. No
+  localStorage / cookie fallback — URL state is authoritative
+  (ADR-013).
+- `src/runtime/composition-registry.ts` — `CompositionRegistry`
+  interface, `CompositionRegistryEntry` shape, and
+  `createCompositionRegistry` factory. Mirrors PUL-F002's scene
+  registry contract for compositions: id-keyed lookup
+  (`get` / `has` / `ids` / `size`), validation delegated to
+  `assertCompositionManifest` (PUL-F003), kebab-case ids enforced
+  via `isKebabIdentifier`, duplicate-id rejection, and the returned
+  registry is frozen with no add / remove / positional API. The
+  composition registry is the addressability path the
+  `?composition=X` URL parameter consults.
+- `src/scenes/placeholder.ts` — first registered scene in the
+  workbench. Minimal scene module that satisfies the PUL-F001
+  contract (id, title, duration, tags, assets, captions,
+  defaultNext, standalone, trailerSafe, create / timeline / cleanup)
+  and tags `#stage` with `data-pulsar-scene-lifecycle` so reviewers
+  and screenshot tests can verify each lifecycle phase ran.
+  Lifecycle hooks guard against `document` being undefined so the
+  module is also safe to import in Node-side tests.
+- `src/compositions/default.ts` — first registered composition,
+  containing only the placeholder scene. Gives `?composition=default`
+  a registered target and gives `?composition=default&scene=
+  placeholder` an end-to-end membership-validated path.
+- `src/main.ts` — workbench entry rewritten to wire PUL-F008
+  end-to-end. Builds the scene registry from `placeholderScene` and
+  the composition registry from `defaultComposition`, parses
+  `window.location` once via `resolveSceneNavigationTarget`, records
+  the resolved scene id (and composition id, when present) on
+  `#stage` via `data-pulsar-scene-target` /
+  `data-pulsar-composition-target`, and drives the lifecycle through
+  `loadSceneNavigationTarget` using the PUL-F005 asset preloader.
+  Errors at parse, lookup, or lifecycle phases are surfaced to the
+  console so reviewers and agents see invalid URLs and broken scenes
+  loudly per ADR-013's "no silent fallback" principle.
+- `tests/runtime/url-navigation.test.ts` — 58-test Vitest spec
   covering every PUL-F008 clause and ADR-013 guardrail: input-shape
-  coverage (URL, URLSearchParams, full URL string, bare search string,
-  Location-like object); scene-absent → null; repeated-parameter
-  rejection (different values, same value, three-way); 13 malformed
-  identifier shapes; unknown-id registry-miss errors; sentinel
-  registry assertions that `has` / `get` are NOT called on the early
-  failure paths; lifecycle never touched on parse-failure paths;
-  orthogonality with `mode`, `composition`, `index`, `beat`,
-  combinations thereof, and the explicit `?scene=middle&index=0`
-  identity-precedence test from ADR-013; lifecycle integration via
+  coverage (URL, URLSearchParams, full URL string, bare search
+  string, Location-like `{ search }` object); scene-absent → null;
+  repeated-`scene` rejection (different values, same value,
+  three-way); 13 malformed identifier shapes; unknown-id registry-
+  miss errors; sentinel registry assertions that `has` / `get` are
+  NOT called on the early failure paths; lifecycle never touched on
+  parse-failure paths; orthogonality with `mode`, `index`, `beat`,
+  and combinations thereof; the explicit `?scene=middle&index=0`
+  identity-precedence test from ADR-013; full composition+scene
+  resolution path including manifest-slice snapshot, override
+  preservation, first-entry / last-entry slice boundaries,
+  repeated-`composition` rejection, malformed / empty composition id,
+  unregistered composition, non-member scene, and missing
+  composition registry; lifecycle integration via
   `loadSceneNavigationTarget` × `resolveComposition` covering
-  preload-to-cleanup ordering, create-throws-still-cleans-up
-  (mandatory cleanup), preload-throws-aborts-before-create, and ctx
-  pass-through.
-- `docs/adrs/013-url-scene-target-selection.md` — added by codex
-  preflight; ADR-013 records the decision that the `scene` URL
-  parameter is a navigation target selector that resolves through the
-  scene registry and never bypasses the runtime lifecycle. ADR-013
-  also enumerates the URL-parsing risks (`URLSearchParams.get` silent
-  selection, dynamic-import temptation, default-fallback temptation)
-  and the mitigations PUL-F008 implements.
+  preload-to-cleanup ordering for both single-scene and
+  composition+scene paths, identity guarantee against decoy
+  registries, mandatory cleanup, preload-aborts-before-create, ctx
+  pass-through, and override forwarding to the runner adapter.
+- `tests/runtime/composition-registry.test.ts` — 13-test Vitest spec
+  covering empty / single / multi composition construction; generator
+  inputs; id-shape validation (kebab-case, empty, whitespace);
+  manifest-shape delegation to `assertCompositionManifest`; duplicate-
+  id rejection; lookup hits and misses; `has` semantics; insertion-
+  order listing with frozen-snapshot detachment; and registry
+  frozenness.
+- `src/runtime/composition.ts` — exported `entryId` helper centralizes
+  "extract the scene id from a composition entry" (bare string vs.
+  `{ id, ... }` object). Single source of truth for composition-entry
+  identity, reused by the resolver and the URL navigation slice
+  builder.
+- `docs/adrs/013-url-scene-target-selection.md` — registers the
+  decision that the `scene` URL parameter is a navigation target
+  selector that resolves through the scene registry and never
+  bypasses the runtime lifecycle, plus the
+  `?composition=X&scene=Y` semantics: composition is resolved via
+  `CompositionRegistry.has` / `.get`, membership is verified, and
+  the manifest slice is snapshotted to defend against mid-flight
+  registry substitution.
 - `docs/adrs/README.md` — registers ADR-013 in the index.
 
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`

@@ -19,6 +19,7 @@
 //    scene resolution.
 
 import { describe, expect, it } from 'vitest';
+import { createCompositionRegistry } from '../../src/runtime/composition-registry';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
 import {
@@ -335,64 +336,222 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
     });
   });
 
-  describe('composition+scene combination — explicit rejection (ADR-013)', () => {
-    // ADR-013 promises that `?composition=X&scene=Y` selects scene Y
-    // *within* composition X. Composition handling lands with a future
-    // requirement; for now the resolver rejects the combination so the
-    // gap fails loudly rather than producing a single-scene target that
-    // ignores the composition context.
-    it('throws when both `scene` and `composition` are present', () => {
+  describe('composition+scene combination (ADR-002 §Navigation)', () => {
+    // ADR-013 + ADR-002: `?composition=X&scene=Y` selects scene Y as
+    // the navigation target *within* composition X. The resolver
+    // resolves composition X via the composition registry, validates
+    // scene Y is a member, and snapshots the manifest slice from Y
+    // onwards plus the matching scene modules so the bridge can run
+    // the slice through `resolveComposition` without re-resolving by
+    // id (which would let a different registry substitute scenes).
+
+    it('resolves the addressed scene within the composition and snapshots the slice from that scene onwards', () => {
       const intro = buildScene({ id: 'intro' });
-      const registry = createSceneRegistry([intro]);
-      expect(() =>
-        resolveSceneNavigationTarget('?scene=intro&composition=full-talk', registry),
-      ).toThrow(
-        /^scene navigation failed: `scene` combined with `composition` is not yet supported/,
+      const middle = buildScene({ id: 'middle' });
+      const outro = buildScene({ id: 'outro' });
+      const sceneRegistry = createSceneRegistry([intro, middle, outro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
+      ]);
+
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk&scene=middle',
+        sceneRegistry,
+        compositionRegistry,
       );
+
+      expect(target?.scene).toBe(middle);
+      expect(target?.composition?.id).toBe('full-talk');
+      expect(target?.composition?.manifestSlice).toEqual(['middle', 'outro']);
+      expect(target?.composition?.sceneSlice).toEqual([middle, outro]);
     });
 
-    it('throws even when `composition` is empty-valued', () => {
+    it('preserves per-entry override objects in the slice', () => {
+      // Entry overrides (range, behavior) on object-form composition
+      // entries must survive slicing so the runner adapter still
+      // receives sub-range and behavior overrides for entries inside
+      // the slice. Bare-string entries stay bare strings.
       const intro = buildScene({ id: 'intro' });
-      const registry = createSceneRegistry([intro]);
-      expect(() => resolveSceneNavigationTarget('?scene=intro&composition=', registry)).toThrow(
-        /scene navigation failed: `scene` combined with `composition` is not yet supported/,
+      const middle = buildScene({ id: 'middle' });
+      const outro = buildScene({ id: 'outro' });
+      const sceneRegistry = createSceneRegistry([intro, middle, outro]);
+      const compositionRegistry = createCompositionRegistry([
+        {
+          id: 'trailer',
+          manifest: [
+            { id: 'intro', range: 'hook' },
+            'middle',
+            { id: 'outro', behavior: { fade: true } },
+          ],
+        },
+      ]);
+
+      const target = resolveSceneNavigationTarget(
+        '?composition=trailer&scene=middle',
+        sceneRegistry,
+        compositionRegistry,
       );
+
+      expect(target?.composition?.manifestSlice).toEqual([
+        'middle',
+        { id: 'outro', behavior: { fade: true } },
+      ]);
     });
 
-    it('rejects regardless of additional `mode` / `index` / `beat` parameters', () => {
+    it('returns the full manifest as the slice when the addressed scene is the first entry', () => {
       const intro = buildScene({ id: 'intro' });
-      const registry = createSceneRegistry([intro]);
+      const middle = buildScene({ id: 'middle' });
+      const sceneRegistry = createSceneRegistry([intro, middle]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk&scene=intro',
+        sceneRegistry,
+        compositionRegistry,
+      );
+
+      expect(target?.composition?.manifestSlice).toEqual(['intro', 'middle']);
+      expect(target?.composition?.sceneSlice).toEqual([intro, middle]);
+    });
+
+    it('returns a single-entry slice when the addressed scene is the last entry', () => {
+      const intro = buildScene({ id: 'intro' });
+      const outro = buildScene({ id: 'outro' });
+      const sceneRegistry = createSceneRegistry([intro, outro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'outro'] },
+      ]);
+
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk&scene=outro',
+        sceneRegistry,
+        compositionRegistry,
+      );
+
+      expect(target?.composition?.manifestSlice).toEqual(['outro']);
+      expect(target?.composition?.sceneSlice).toEqual([outro]);
+    });
+
+    it('throws when `composition` is repeated', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro'] },
+      ]);
       expect(() =>
         resolveSceneNavigationTarget(
-          '?scene=intro&composition=full-talk&index=2&beat=hook&mode=loop',
-          registry,
+          '?composition=full-talk&composition=trailer&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow(/^scene navigation failed: `composition` URL parameter appears 2 times/);
+    });
+
+    it('throws when the composition id is malformed', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro'] },
+      ]);
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=Full-Talk&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow(/^scene navigation failed: composition id "Full-Talk" is not a valid kebab-case/);
+    });
+
+    it('throws when the composition value is empty', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro'] },
+      ]);
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow(/^scene navigation failed: composition id "" is not a valid kebab-case/);
+    });
+
+    it('throws when the composition is not registered', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([]);
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=missing-talk&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow(/^scene navigation failed: composition "missing-talk" is not registered$/);
+    });
+
+    it('throws when the addressed scene is not a member of the composition', () => {
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const sceneRegistry = createSceneRegistry([intro, middle]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro'] },
+      ]);
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=full-talk&scene=middle',
+          sceneRegistry,
+          compositionRegistry,
         ),
       ).toThrow(
-        /scene navigation failed: `scene` combined with `composition` is not yet supported/,
+        /^scene navigation failed: scene "middle" is not a member of composition "full-talk"$/,
       );
     });
 
-    it('does not look up the registry when `composition` is also present', () => {
-      // The combination is rejected at the URL-parse boundary; the
-      // registry is never consulted, so even an unknown scene id throws
-      // the composition-combination error rather than the registry-miss
-      // error.
-      const calls: string[] = [];
-      const sentinel = {
-        has: (id: string) => {
-          calls.push(`has(${id})`);
-          return false;
-        },
-        get: (id: string) => {
-          calls.push(`get(${id})`);
-          throw new Error('unreachable');
-        },
-        ids: () => [],
-        size: 0,
-      } as const;
+    it('throws when `composition` is supplied but no composition registry was passed', () => {
+      const intro = buildScene({ id: 'intro' });
+      const sceneRegistry = createSceneRegistry([intro]);
       expect(() =>
-        resolveSceneNavigationTarget('?scene=missing&composition=full-talk', sentinel),
-      ).toThrow(/composition.*not yet supported/);
+        resolveSceneNavigationTarget('?composition=full-talk&scene=intro', sceneRegistry),
+      ).toThrow(
+        /^scene navigation failed: composition registry was not provided to the navigation resolver/,
+      );
+    });
+
+    it('does not invoke any lifecycle hook on any composition-error path', () => {
+      const calls: string[] = [];
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          calls.push('create');
+        },
+        timeline: () => {
+          calls.push('timeline');
+        },
+        cleanup: () => {
+          calls.push('cleanup');
+        },
+      });
+      const sceneRegistry = createSceneRegistry([intro]);
+      const compositionRegistry = createCompositionRegistry([]);
+
+      // Each error path that involves composition handling.
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=Bad-Id&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow();
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?composition=missing&scene=intro',
+          sceneRegistry,
+          compositionRegistry,
+        ),
+      ).toThrow();
       expect(calls).toEqual([]);
     });
   });
@@ -566,5 +725,152 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
     });
 
     expect(log).toEqual(['resolved-create']);
+  });
+
+  describe('composition+scene execution', () => {
+    it('runs the manifest slice from the addressed scene through the lifecycle, in order', async () => {
+      const log: string[] = [];
+      const make = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`${id}:create`);
+          },
+          timeline: () => {
+            log.push(`${id}:timeline`);
+            return `${id}-timeline`;
+          },
+          cleanup: () => {
+            log.push(`${id}:cleanup`);
+          },
+        });
+      const intro = make('intro');
+      const middle = make('middle');
+      const outro = make('outro');
+      const sceneRegistry = createSceneRegistry([intro, middle, outro]);
+      const compositionRegistry = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk&scene=middle',
+        sceneRegistry,
+        compositionRegistry,
+      ) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: (scene) => {
+          log.push(`${scene.id}:preload`);
+        },
+        runTimeline: ({ scene, timeline }) => {
+          log.push(`${scene.id}:runTimeline:${String(timeline)}`);
+        },
+      });
+
+      // intro is upstream of the addressed scene and is NOT played.
+      expect(log).toEqual([
+        'middle:preload',
+        'middle:create',
+        'middle:timeline',
+        'middle:runTimeline:middle-timeline',
+        'middle:cleanup',
+        'outro:preload',
+        'outro:create',
+        'outro:timeline',
+        'outro:runTimeline:outro-timeline',
+        'outro:cleanup',
+      ]);
+    });
+
+    it('runs the resolved scene modules even when a sibling registry maps the same ids elsewhere', async () => {
+      // Identity guarantee for the composition path: the bridge runs
+      // the snapshot the resolver captured, not the modules `options`
+      // might point at.
+      const log: string[] = [];
+      const realIntro = buildScene({
+        id: 'intro',
+        create: () => {
+          log.push('real-intro:create');
+        },
+      });
+      const realOutro = buildScene({
+        id: 'outro',
+        create: () => {
+          log.push('real-outro:create');
+        },
+      });
+      const realScenes = createSceneRegistry([realIntro, realOutro]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'outro'] },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=full-talk&scene=intro',
+        realScenes,
+        compositions,
+      ) as SceneNavigationTarget;
+      // A separate registry with the same ids would resolve different
+      // modules; the bridge must NOT consult it.
+      void createSceneRegistry([
+        buildScene({
+          id: 'intro',
+          create: () => {
+            log.push('decoy-intro:create');
+          },
+        }),
+        buildScene({
+          id: 'outro',
+          create: () => {
+            log.push('decoy-outro:create');
+          },
+        }),
+      ]);
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: () => undefined,
+      });
+
+      expect(log).toEqual(['real-intro:create', 'real-outro:create']);
+    });
+
+    it('forwards per-entry overrides (range, behavior) to the runner adapter', async () => {
+      const seenInputs: { id: string; range?: unknown; behavior?: unknown }[] = [];
+      const intro = buildScene({ id: 'intro', timeline: () => 'intro-tl' });
+      const outro = buildScene({ id: 'outro', timeline: () => 'outro-tl' });
+      const sceneRegistry = createSceneRegistry([intro, outro]);
+      const compositionRegistry = createCompositionRegistry([
+        {
+          id: 'mixed',
+          manifest: [
+            { id: 'intro', range: 'hook' },
+            { id: 'outro', behavior: { fade: true } },
+          ],
+        },
+      ]);
+      const target = resolveSceneNavigationTarget(
+        '?composition=mixed&scene=intro',
+        sceneRegistry,
+        compositionRegistry,
+      ) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { id: string; range?: unknown; behavior?: unknown } = {
+            id: input.scene.id,
+          };
+          if ('range' in input) captured.range = input.range;
+          if ('behavior' in input) captured.behavior = input.behavior;
+          seenInputs.push(captured);
+        },
+      });
+
+      expect(seenInputs).toEqual([
+        { id: 'intro', range: 'hook' },
+        { id: 'outro', behavior: { fade: true } },
+      ]);
+    });
   });
 });

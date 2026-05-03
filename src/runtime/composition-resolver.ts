@@ -41,10 +41,10 @@
 
 import {
   type BehaviorOverride,
-  type CompositionEntry,
   type CompositionManifest,
   type SubRange,
   assertCompositionManifest,
+  entryId,
 } from './composition';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
@@ -147,8 +147,6 @@ export interface ResolveCompositionOptions {
    */
   readonly signal?: AbortSignal;
 }
-
-const entryId = (entry: CompositionEntry): string => (typeof entry === 'string' ? entry : entry.id);
 
 const describe = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);

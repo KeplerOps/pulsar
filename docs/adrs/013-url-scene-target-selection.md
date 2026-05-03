@@ -46,11 +46,26 @@ When `scene` is present:
 - Keep URL state authoritative. Do not persist the selected scene in
   localStorage, cookies, or hidden global state.
 
-If `composition` is also present, `scene` names the target scene within
-that composition per ADR-002. If no `composition` is present, `scene`
-selects a single-scene navigation target. Positional `index` is a
-compatibility shim and must not become the identity source when
-`scene` is supplied.
+If `composition` is also present, `scene` names the target scene
+within that composition per ADR-002. The runtime then:
+
+- Parses the composition id at the same boundary as `scene`, with the
+  same kebab-case validation rule.
+- Resolves composition existence through `CompositionRegistry.has` /
+  `CompositionRegistry.get`. Composition is the same shape contract as
+  the scene registry: id-keyed, immutable after construction, no
+  positional dispatch.
+- Verifies the addressed scene is a member of the named composition
+  (by id) before any lifecycle hook runs. Non-member combinations are
+  navigation errors.
+- Snapshots the manifest slice from the addressed scene onwards plus
+  the matching scene modules at resolve time, then plays the slice
+  through the existing composition resolver. Per-entry `range` and
+  `behavior` overrides survive slicing intact.
+
+If no `composition` is present, `scene` selects a single-scene
+navigation target. Positional `index` is a compatibility shim and
+must not become the identity source when `scene` is supplied.
 
 Workbench mode handling remains orthogonal. `mode` changes how the
 target runs; it does not change what scene id the URL addresses.
@@ -83,6 +98,8 @@ target runs; it does not change what scene id the URL addresses.
 | `scene` and `index` disagree | Prefer stable scene id identity; `index` is only meaningful as a composition-position helper. |
 | Scene ids become dynamic import paths | Never derive import paths, module specifiers, or DOM HTML from the raw query value. |
 | Invalid URLs fall back to a default scene | Surface an explicit navigation error; do not silently load another scene. |
+| `composition`+`scene` re-resolves modules and substitutes scenes mid-flight | Snapshot the manifest slice and the matching scene modules at resolve time; the bridge plays the snapshot, never re-resolving by id against an outside registry. |
+| `composition`+`scene` plays a scene that was never in the composition | Verify membership at the URL boundary; non-member combinations are navigation errors before any lifecycle hook runs. |
 
 ## Related ADRs
 

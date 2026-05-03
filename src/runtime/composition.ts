@@ -165,3 +165,12 @@ export function isCompositionManifest(value: unknown): value is CompositionManif
     return false;
   }
 }
+
+/**
+ * Extract the scene id from a composition entry. Bare string entries
+ * are the scene id verbatim; object entries carry the id under `id`.
+ * Centralized so resolver, URL navigation, and any future consumer
+ * read entry identity through one helper.
+ */
+export const entryId = (entry: CompositionEntry): string =>
+  typeof entry === 'string' ? entry : entry.id;

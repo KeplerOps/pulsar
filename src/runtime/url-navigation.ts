@@ -1,35 +1,39 @@
 // URL navigation — PUL-F008.
 //
-// Owns the `scene` URL parameter contract:
+// Owns the `scene` and `composition` URL parameter contracts:
 //
-//  1. Parse `scene` once from `URLSearchParams` at the runtime boundary.
-//  2. Validate the identifier shape via the shared `isKebabIdentifier`
-//     rule from `./identifier.ts` (ADR-013 forbids a URL-only regex).
-//  3. Resolve existence through {@link SceneRegistry.has} / `.get`
-//     (ADR-002 §Navigation: the registry is the only addressability
-//     mechanism; ADR-013 forbids array scans, dynamic imports, or
-//     conditional dispatch).
-//  4. Treat malformed or unknown scene ids as navigation errors before
-//     any scene lifecycle hook runs.
-//  5. Preserve the existing lifecycle contract — the optional
-//     {@link loadSceneNavigationTarget} convenience routes the resolved
-//     target through {@link resolveComposition} so the URL path inherits
-//     PUL-F004's preload → create → timeline → cleanup ordering and
-//     PUL-F006's mandatory-cleanup invariant rather than reinventing
-//     them.
-//  6. URL state is authoritative — this module never reads from
+//  1. Parse `scene` (and optionally `composition`) once from
+//     `URLSearchParams` at the runtime boundary.
+//  2. Validate identifier shapes via the shared `isKebabIdentifier`
+//     rule from `./identifier.ts` (ADR-013 forbids URL-only regexes).
+//  3. Resolve scene existence through {@link SceneRegistry.has} /
+//     `.get`, and composition existence through
+//     {@link CompositionRegistry.has} / `.get` (ADR-002 §Navigation:
+//     registries are the only addressability path; ADR-013 forbids
+//     array scans, dynamic imports, or conditional dispatch).
+//  4. When both `scene` and `composition` are present (ADR-002 +
+//     ADR-013): `scene` names a target *within* that composition.
+//     The resolver verifies the addressed scene is a member of the
+//     composition, snapshots the manifest slice from that scene
+//     onwards, and pre-resolves the matching scene modules so the
+//     bridge can run the slice without re-resolving by id (which
+//     would let a different registry substitute scenes mid-flight).
+//  5. Treat malformed or unknown ids, unregistered compositions, and
+//     non-member scenes as navigation errors before any scene
+//     lifecycle hook runs.
+//  6. Preserve the existing lifecycle contract — the optional
+//     {@link loadSceneNavigationTarget} convenience routes the
+//     resolved target through {@link resolveComposition} so the URL
+//     path inherits PUL-F004's preload → create → timeline → cleanup
+//     ordering and PUL-F006's mandatory-cleanup invariant rather than
+//     reinventing them.
+//  7. URL state is authoritative — this module never reads from
 //     localStorage, cookies, or any cached state.
-//  7. `scene` is orthogonal to `mode`; the resolver does not interpret
-//     `mode`, `index`, or `beat` (those parameters are owned by future
-//     requirements). `composition` is *not* orthogonal: per ADR-013,
-//     when both `scene` and `composition` are present `scene` names a
-//     target *within* that composition, which requires composition
-//     handling that this requirement does not implement. The resolver
-//     therefore rejects the combination explicitly so the gap fails
-//     loudly rather than silently producing a single-scene navigation
-//     target that ignores the composition.
-//  8. Repeated/conflicting `scene` parameters fail loudly because
-//     `URLSearchParams.get()` silently picks one value.
+//  8. `scene` is orthogonal to `mode`, `index`, and `beat`; the
+//     resolver does not interpret those parameters (they are owned by
+//     future requirements).
+//  9. Repeated/conflicting `scene` or `composition` parameters fail
+//     loudly because `URLSearchParams.get()` silently picks one value.
 //
 // References:
 //  - PUL-F008 — when `scene` is present, load the addressed scene as
@@ -42,6 +46,8 @@
 //  - ADR-011 — composition resolver as a pure orchestrator with
 //    injected adapters; reused by {@link loadSceneNavigationTarget}.
 
+import { type CompositionManifest, entryId } from './composition';
+import type { CompositionRegistry } from './composition-registry';
 import {
   type AssetPreloader,
   type SceneTimelineRunner,
@@ -52,28 +58,60 @@ import { type SceneRegistry, createSceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
 /**
+ * Composition context carried by a {@link SceneNavigationTarget} when
+ * the URL also supplied a `composition` parameter.
+ *
+ * `manifestSlice` and `sceneSlice` are snapshots taken at resolve time:
+ * the bridge runs them as-is, with no further registry lookups, so
+ * the lifecycle is guaranteed to play exactly the modules the resolver
+ * verified existed in the registry. `sceneSlice[0]` is always the
+ * addressed scene; subsequent entries are the composition entries that
+ * follow it.
+ */
+export interface SceneNavigationCompositionContext {
+  /** Composition id from the URL. */
+  readonly id: string;
+  /**
+   * Manifest entries from the addressed scene onwards, preserving
+   * per-entry `range` / `behavior` overrides intact. Bare-string
+   * entries stay bare strings; object entries stay object entries.
+   */
+  readonly manifestSlice: CompositionManifest;
+  /**
+   * Scene modules referenced by `manifestSlice`, in the same order.
+   * Snapshotted at resolve time so the bridge does not re-resolve by
+   * id (codex review: re-resolving could substitute scenes if a
+   * different registry maps the same id elsewhere).
+   */
+  readonly sceneSlice: readonly SceneModule[];
+}
+
+/**
  * The runtime's resolved view of "which scene the URL addresses".
  *
- * For PUL-F008 the only field is `scene`. Future URL parameters
- * (`composition`, `beat`, `mode`) extend the navigation target shape;
- * the scene resolver owns the `scene` field exclusively.
+ *  - `scene`: the addressed scene module (already validated and
+ *    pulled from the scene registry).
+ *  - `composition`: optional; present only when the URL supplied
+ *    `?composition=X` alongside `?scene=Y`. Carries the snapshot the
+ *    bridge needs to play the composition slice end-to-end.
  */
 export interface SceneNavigationTarget {
   /** The registered scene module the URL addresses. */
   readonly scene: SceneModule;
+  /** Composition context, if `?composition=X` was supplied. */
+  readonly composition?: SceneNavigationCompositionContext;
 }
 
 /**
  * Inputs the {@link loadSceneNavigationTarget} bridge needs to drive
- * the existing composition resolver lifecycle for one scene.
+ * the existing composition resolver lifecycle.
  *
- * Note that `registry` is intentionally absent: the bridge synthesizes
- * a single-scene registry from `target.scene` directly so the lifecycle
- * is guaranteed to run *the resolved scene module*, not whatever module
- * a passed-in registry happens to map the same id to. Decoupling the
- * bridge from the original registry rules out an entire class of
- * identity bugs (codex review: "passing a different registry with the
- * same id runs a different module than the resolved target").
+ * Note that no scene/composition registry is required: the bridge
+ * synthesizes a fresh registry from the snapshot inside `target` so
+ * the lifecycle is guaranteed to run *exactly* the modules the
+ * resolver returned, not whatever modules a passed-in registry
+ * happens to map the same ids to (codex review: re-resolving by id
+ * could substitute scenes).
  */
 export interface LoadSceneNavigationTargetOptions {
   /** Opaque scene context forwarded to every lifecycle hook. */
@@ -136,74 +174,152 @@ function toSearchParams(input: SceneUrlInput): URLSearchParams {
 }
 
 /**
- * Resolves the `scene` URL parameter against the registry and returns a
- * {@link SceneNavigationTarget}. Returns `null` when the parameter is
- * absent — the caller decides whether to fall through to other URL
- * routing logic (composition, default home, etc.).
- *
- * Throws an `Error` whose message starts with `scene navigation failed:`
- * when the parameter is repeated, malformed, or names a scene that is
- * not in the registry. No lifecycle hook is invoked on any error path.
+ * Read a singleton string parameter — return `null` when absent, the
+ * value when present exactly once, and throw the navigation-failed
+ * error when the parameter appears more than once. Centralizes the
+ * "URLSearchParams.get silently picks one" defense (ADR-013) for
+ * `scene` and `composition`.
  */
-export function resolveSceneNavigationTarget(
-  input: SceneUrlInput,
-  registry: SceneRegistry,
-): SceneNavigationTarget | null {
-  const params = toSearchParams(input);
-  const values = params.getAll('scene');
-
+function readSingletonParam(params: URLSearchParams, name: string): string | null {
+  const values = params.getAll(name);
   if (values.length === 0) return null;
-
   if (values.length > 1) {
-    // Render every observed value verbatim so the error names the
-    // exact strings the caller submitted (helps diagnose proxies that
-    // append duplicates and tooling that produces multi-valued URLs).
     const rendered = values.map((v) => `"${v}"`).join(', ');
     fail(
-      `\`scene\` URL parameter appears ${values.length} times (${rendered}); expected exactly one`,
+      `\`${name}\` URL parameter appears ${values.length} times (${rendered}); expected exactly one`,
     );
   }
-
-  // Per ADR-013, when both `scene` and `composition` are present, `scene`
-  // names a target *within* that composition (ADR-002 §Navigation). That
-  // semantic requires composition handling, which lands with a separate
-  // requirement. Reject the combination explicitly so the gap fails loudly
-  // rather than silently producing a single-scene navigation target that
-  // ignores the composition context.
-  if (params.has('composition')) {
-    fail(
-      '`scene` combined with `composition` is not yet supported — composition-scoped scene navigation lands with a future requirement',
-    );
-  }
-
-  const id = values[0] as string;
-
-  if (!isKebabIdentifier(id)) {
-    fail(`scene id "${id}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`);
-  }
-
-  if (!registry.has(id)) {
-    fail(`scene "${id}" is not registered`);
-  }
-
-  return { scene: registry.get(id) };
+  return values[0] as string;
 }
 
 /**
- * Drives the addressed scene through the existing composition resolver
- * lifecycle so the URL navigation path inherits PUL-F004's preload →
- * create → timeline → cleanup ordering and PUL-F006's mandatory-cleanup
- * invariant.
+ * Build the composition context for a `?composition=X&scene=Y` URL:
+ * verify the composition exists, verify the scene is a member, and
+ * snapshot the manifest slice + matching scene modules from the
+ * addressed scene onwards.
+ */
+function resolveCompositionContext(
+  compositionId: string,
+  sceneId: string,
+  scenes: SceneRegistry,
+  compositions: CompositionRegistry | undefined,
+): SceneNavigationCompositionContext {
+  if (compositions === undefined) {
+    fail(
+      'composition registry was not provided to the navigation resolver — pass a `CompositionRegistry` when `composition` is supplied',
+    );
+  }
+  // `compositions` narrowed to defined by the throw above.
+  const compRegistry = compositions as CompositionRegistry;
+  if (!isKebabIdentifier(compositionId)) {
+    fail(
+      `composition id "${compositionId}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`,
+    );
+  }
+  if (!compRegistry.has(compositionId)) {
+    fail(`composition "${compositionId}" is not registered`);
+  }
+  const manifest = compRegistry.get(compositionId);
+  const startIndex = manifest.findIndex((entry) => entryId(entry) === sceneId);
+  if (startIndex < 0) {
+    fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
+  }
+  const manifestSlice: CompositionManifest = manifest.slice(startIndex);
+  const sceneSlice: SceneModule[] = [];
+  for (const entry of manifestSlice) {
+    const id = entryId(entry);
+    if (!scenes.has(id)) {
+      fail(
+        `composition "${compositionId}" references scene "${id}" which is not in the scene registry`,
+      );
+    }
+    sceneSlice.push(scenes.get(id));
+  }
+  return {
+    id: compositionId,
+    manifestSlice,
+    sceneSlice: Object.freeze(sceneSlice),
+  };
+}
+
+/**
+ * Resolves URL navigation parameters into a
+ * {@link SceneNavigationTarget}. Returns `null` when the `scene`
+ * parameter is absent — the caller decides whether to fall through to
+ * other URL routing logic.
  *
- * Synthesizes a single-scene registry from `target.scene` directly and
- * delegates to {@link resolveComposition} with a one-entry manifest.
- * Building the registry from the resolved scene module guarantees the
- * lifecycle runs *that exact module*, removing any chance for a passed-
- * in registry to substitute a different scene at the same id (codex
- * review). ADR-013 mandates that a scene URL not bypass the resolver
- * lifecycle; the synthesized manifest is the smallest path that
- * satisfies that invariant without inventing a parallel single-scene
- * runner.
+ * When `?composition=X` is also present, `compositions` MUST be
+ * supplied; the resolver uses it to verify the composition exists and
+ * to capture the manifest slice from the addressed scene onwards.
+ *
+ * Throws an `Error` whose message starts with `scene navigation
+ * failed:` for any of:
+ *  - `scene` repeated, malformed, or unregistered
+ *  - `composition` repeated, malformed, unregistered, or supplied
+ *    without a composition registry
+ *  - addressed scene not a member of the named composition
+ *
+ * No lifecycle hook is invoked on any error path.
+ */
+export function resolveSceneNavigationTarget(
+  input: SceneUrlInput,
+  scenes: SceneRegistry,
+  compositions?: CompositionRegistry,
+): SceneNavigationTarget | null {
+  const params = toSearchParams(input);
+
+  const sceneId = readSingletonParam(params, 'scene');
+  if (sceneId === null) return null;
+
+  const compositionId = readSingletonParam(params, 'composition');
+
+  if (!isKebabIdentifier(sceneId)) {
+    fail(`scene id "${sceneId}" is not a valid kebab-case identifier (${KEBAB_IDENTIFIER_FORM})`);
+  }
+
+  if (compositionId !== null) {
+    // Composition-scoped navigation. Composition is resolved first so
+    // composition-level errors (registry missing, malformed id, unknown
+    // composition, scene not a member) are surfaced before any
+    // scene-only validation that could mask them.
+    const compositionContext = resolveCompositionContext(
+      compositionId,
+      sceneId,
+      scenes,
+      compositions,
+    );
+    return {
+      scene: compositionContext.sceneSlice[0] as SceneModule,
+      composition: compositionContext,
+    };
+  }
+
+  // Plain `?scene=Y` navigation.
+  if (!scenes.has(sceneId)) {
+    fail(`scene "${sceneId}" is not registered`);
+  }
+  return { scene: scenes.get(sceneId) };
+}
+
+/**
+ * Drives the addressed scene (or composition slice, when present)
+ * through the existing composition resolver lifecycle so the URL
+ * navigation path inherits PUL-F004's preload → create → timeline →
+ * cleanup ordering and PUL-F006's mandatory-cleanup invariant.
+ *
+ * Synthesizes a fresh scene registry from the snapshot inside
+ * `target` so the lifecycle is guaranteed to run *that exact module
+ * sequence*, removing any chance for a passed-in registry to
+ * substitute scenes at the same ids (codex review).
+ *
+ *  - For a single-scene target (`target.composition === undefined`):
+ *    the bridge runs a one-entry manifest containing just the
+ *    addressed scene.
+ *  - For a composition+scene target: the bridge runs
+ *    `target.composition.manifestSlice` against a registry built from
+ *    `target.composition.sceneSlice`. Per-entry `range` and `behavior`
+ *    overrides are preserved and forwarded to the runner adapter
+ *    unchanged (ADR-011).
  *
  * Resolves when the lifecycle has run end-to-end; rejects with the
  * resolver's own wrapping error (`composition resolution failed: ...`)
@@ -214,10 +330,14 @@ export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
-  const registry = createSceneRegistry([target.scene]);
-  const manifest = [target.scene.id] as const;
+  const composition = target.composition;
+  const scenes =
+    composition === undefined ? [target.scene] : (composition.sceneSlice as SceneModule[]);
+  const manifest: CompositionManifest =
+    composition === undefined ? [target.scene.id] : composition.manifestSlice;
+
   await resolveComposition({
-    registry,
+    registry: createSceneRegistry(scenes),
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,

@@ -1,35 +1,81 @@
-// Workbench entry — parses URL navigation parameters at runtime startup
-// per ADR-007 ("the runtime parses URL parameters at startup") and
-// activates PUL-F008's `scene` URL parameter contract.
+// Workbench entry — bootstraps Pulsar's runtime and activates URL
+// navigation per PUL-F008 + ADR-013.
 //
-// The lifecycle adapters (asset preloader factory, timeline runner)
-// and the rest of the workbench mount land with PUL-A008's mode
-// dispatch; until then, scene targets resolve against the (currently
-// empty) registry and the resolved id is recorded on the `#stage`
-// element via `data-pulsar-scene-target` so reviewers can verify the
-// runtime parsed the URL. Parse / lookup errors are surfaced to the
-// console so invalid URLs fail loudly per ADR-013's
-// "no silent fallback" principle.
+// Lifecycle on every load:
+//
+//  1. Mark the `#stage` element so the placeholder background is
+//     visible while the runtime decides what (if anything) to load.
+//  2. Build the scene and composition registries from the bundled
+//     scene/composition modules. Both registries are immutable after
+//     construction (ADR-008 #2 "manifests over flow control").
+//  3. Parse `window.location` once via
+//     `resolveSceneNavigationTarget`. URL state is authoritative
+//     (ADR-013) — no localStorage / cookie fallback.
+//  4. When a navigation target resolves, record the addressed scene
+//     id (and composition id, when present) on the stage so reviewers
+//     and agents can verify the URL was honored, then drive the scene
+//     through the existing composition resolver lifecycle via
+//     `loadSceneNavigationTarget`. PUL-F005's asset preloader provides
+//     the preload adapter; the timeline runner is a placeholder until
+//     ADR-003's GSAP runner lands.
+//  5. Surface any URL parse, registry-miss, or lifecycle error to the
+//     console so invalid URLs and broken scenes fail loudly per
+//     ADR-013's "no silent fallback" principle.
 
+import { defaultComposition } from './compositions/default';
+import { createAssetPreloader } from './runtime/asset-preloader';
+import { createCompositionRegistry } from './runtime/composition-registry';
+import type { SceneTimelineRunner } from './runtime/composition-resolver';
 import { createSceneRegistry } from './runtime/registry';
-import { resolveSceneNavigationTarget } from './runtime/url-navigation';
+import {
+  type SceneNavigationTarget,
+  loadSceneNavigationTarget,
+  resolveSceneNavigationTarget,
+} from './runtime/url-navigation';
+import { placeholderScene } from './scenes/placeholder';
 
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
 
-// Empty until scene modules register in future requirements; the
-// runtime still parses the URL on every startup so an invalid `scene`
-// parameter surfaces immediately.
-const registry = createSceneRegistry([]);
+const sceneRegistry = createSceneRegistry([placeholderScene]);
+const compositionRegistry = createCompositionRegistry([
+  { id: 'default', manifest: defaultComposition },
+]);
 
-try {
-  const target = resolveSceneNavigationTarget(window.location, registry);
-  if (target !== null) {
-    stage?.setAttribute('data-pulsar-scene-target', target.scene.id);
+// PUL-F005 asset preloader. The placeholder scene declares no assets,
+// so the preloader is a structural no-op today; once scenes start
+// declaring URLs the same wire-up validates schemes, fetches, and
+// stream-drains them ahead of `create(ctx)`.
+const preloadAssets = createAssetPreloader();
+
+// Timeline runner placeholder. The composition resolver awaits the
+// runner before invoking `cleanup(ctx)`, so an empty runner cleanly
+// completes the lifecycle. ADR-003's GSAP runner replaces this slot
+// when the timeline engine lands.
+const runTimeline: SceneTimelineRunner = () => undefined;
+
+(async () => {
+  let target: SceneNavigationTarget | null;
+  try {
+    target = resolveSceneNavigationTarget(window.location, sceneRegistry, compositionRegistry);
+  } catch (err) {
+    console.error(err);
+    return;
   }
-} catch (err) {
-  // Surface URL parse / lookup errors so reviewers and agents notice
-  // malformed, repeated, or unknown `scene` values rather than landing
-  // on a silently-default-rendered stage.
-  console.error(err);
-}
+  if (target === null) return;
+
+  stage?.setAttribute('data-pulsar-scene-target', target.scene.id);
+  if (target.composition !== undefined) {
+    stage?.setAttribute('data-pulsar-composition-target', target.composition.id);
+  }
+
+  try {
+    await loadSceneNavigationTarget(target, {
+      ctx: {},
+      preloadAssets,
+      runTimeline,
+    });
+  } catch (err) {
+    console.error(err);
+  }
+})();
