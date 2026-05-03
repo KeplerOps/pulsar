@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/scene.ts` — `SceneModule`, `Caption`, `SceneContext`,
+  `SceneLifecycleFn` types plus `assertSceneModule` runtime validator
+  and `isSceneModule` predicate. Implements the canonical scene-module
+  contract per PUL-F001 (and ADR-002 / ADR-008): presence + shape of
+  the 12 fields, `duration` strict (non-negative integer ms or `null`,
+  rejecting `undefined`, `NaN`, `Infinity`, floats, negatives, strings,
+  booleans). Errors identify the scene id and offending field/condition,
+  laying the foundation for PUL-Q005 (validation actionability).
+- `tests/runtime/scene.test.ts` — 62-test Vitest spec covering every
+  clause of PUL-F001 (presence, duration rules, field types, caption
+  element shape, happy paths, `isSceneModule` predicate, and error
+  message format).
 - `src/runtime/version.ts` exporting `PULSAR_RUNTIME_VERSION` plus a
   Vitest spec covering it. First runtime symbol the test runner exercises.
 - Toolchain scaffold per ADR-009: TypeScript (strict), ESM, pnpm 9.15,
