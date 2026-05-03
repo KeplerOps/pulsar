@@ -20,12 +20,12 @@
 //     automatically via the popstate listener registered by the
 //     navigator.
 
-import { defaultComposition } from './compositions/default';
+import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
 import { createAssetPreloader } from './runtime/asset-preloader';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import type { SceneTimelineRunner } from './runtime/composition-resolver';
 import { createSceneRegistry } from './runtime/registry';
-import { createWorkbenchNavigator } from './runtime/workbench-navigator';
+import { type WorkbenchSceneCtx, createWorkbenchNavigator } from './runtime/workbench-navigator';
 import { placeholderScene } from './scenes/placeholder';
 
 const stage = document.querySelector('#stage');
@@ -33,7 +33,7 @@ stage?.setAttribute('data-pulsar', 'placeholder');
 
 const sceneRegistry = createSceneRegistry([placeholderScene]);
 const compositionRegistry = createCompositionRegistry([
-  { id: 'default', manifest: defaultComposition },
+  { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
 ]);
 
 // PUL-F005 asset preloader. The placeholder scene declares no assets,
@@ -48,12 +48,18 @@ const preloadAssets = createAssetPreloader();
 // when the timeline engine lands.
 const runTimeline: SceneTimelineRunner = () => undefined;
 
+// Scene context carries the stage handle so scene lifecycle hooks
+// can mutate the DOM through an injected dependency rather than
+// reaching for the global `document` (ADR-008 #2 — explicit
+// dependencies over ambient globals).
+const ctx: WorkbenchSceneCtx = { stage };
+
 const navigator = createWorkbenchNavigator({
   host: window,
   stage,
   sceneRegistry,
   compositionRegistry,
-  ctx: {},
+  ctx,
   preloadAssets,
   runTimeline,
 });

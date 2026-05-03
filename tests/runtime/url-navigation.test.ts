@@ -24,9 +24,9 @@ import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
 import {
   type SceneNavigationTarget,
-  loadSceneNavigationTarget,
   resolveSceneNavigationTarget,
 } from '../../src/runtime/url-navigation';
+import { loadSceneNavigationTarget } from '../../src/runtime/url-navigation-bridge';
 
 interface BuildSceneOpts {
   readonly id?: string;

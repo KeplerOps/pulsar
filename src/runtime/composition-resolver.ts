@@ -45,6 +45,7 @@ import {
   type SubRange,
   assertCompositionManifest,
   entryId,
+  findUnregisteredEntries,
 } from './composition';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
@@ -328,22 +329,17 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
  * mutating the caller's manifest array (codex review).
  */
 function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): readonly PlanStep[] {
-  const missing: { readonly index: number; readonly id: string }[] = [];
-  const plan: PlanStep[] = [];
-  for (const [index, entry] of manifest.entries()) {
-    const id = entryId(entry);
-    if (!registry.has(id)) {
-      missing.push({ index, id });
-      continue;
-    }
-    const scene = registry.get(id);
-    const range = typeof entry === 'string' ? undefined : entry.range;
-    const behavior = typeof entry === 'string' ? undefined : entry.behavior;
-    plan.push({ scene, range, behavior });
-  }
+  const missing = findUnregisteredEntries(manifest, (id) => registry.has(id));
   if (missing.length > 0) {
     const list = missing.map(({ id, index }) => `${quoteId(id)} (entry [${index}])`).join(', ');
     throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  }
+  const plan: PlanStep[] = [];
+  for (const entry of manifest) {
+    const scene = registry.get(entryId(entry));
+    const range = typeof entry === 'string' ? undefined : entry.range;
+    const behavior = typeof entry === 'string' ? undefined : entry.behavior;
+    plan.push({ scene, range, behavior });
   }
   return Object.freeze(plan);
 }

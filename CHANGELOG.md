@@ -87,20 +87,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   malformed URLs, which set `data-pulsar-navigation-error` rather
   than silently no-op-ing.
 - `src/runtime/workbench-navigator.ts` —
-  `createWorkbenchNavigator(options)` factory. Encapsulates the
-  startup-and-popstate state machine PUL-F008 + ADR-007 require:
-  registers a `popstate` listener at construction, runs URL
-  resolution + lifecycle dispatch on every navigation, eagerly
-  aborts any in-flight load when a new navigation is enqueued (so
-  the user clicking back/forward doesn't wait for the current scene
-  to drain naturally), and serializes navigations through a
-  `pending` chain so attribute mutations on the stage element don't
-  race. Stage attributes are reset on every navigation so stale
-  state from the previous URL never leaks. `dispose()` removes the
-  listener and aborts any in-flight load (silently — no error UI).
-  The navigator depends only on injected `host` / `stage` surfaces,
-  which keeps the entire state machine unit-testable in Node's
-  vitest environment without DOM polyfills.
+  `createWorkbenchNavigator(options)` factory plus
+  `WorkbenchSceneCtx`, `WorkbenchHost`, and `StageElement`
+  interfaces. Encapsulates the startup-and-popstate state machine
+  PUL-F008 + ADR-007 require: registers a `popstate` listener at
+  construction, runs URL resolution + lifecycle dispatch on every
+  navigation, eagerly aborts any in-flight load when a new
+  navigation is enqueued (so the user clicking back/forward doesn't
+  wait for the current scene to drain naturally), and serializes
+  navigations through a `pending` chain so attribute mutations on
+  the stage element don't race. Stage attributes are reset on every
+  navigation so stale state from the previous URL never leaks.
+  `dispose()` removes the listener and aborts any in-flight load
+  (silently — no error UI). Errors at parse / lookup / lifecycle
+  flow through the optional `onError` hook (defaults to
+  `console.error`) so headless harnesses and tests observe failures
+  without monkey-patching `console`. The navigator depends only on
+  injected `host` / `stage` surfaces, which keeps the entire state
+  machine unit-testable in Node's vitest environment without DOM
+  polyfills. `WorkbenchSceneCtx` is the scene-context shape the
+  workbench passes to every lifecycle hook (`{ stage: StageElement |
+  null }`); future requirements extend it with `gsap`, `audio`, and
+  `mode` per ADR-003 / ADR-004 / ADR-007.
+- `src/runtime/url-navigation-bridge.ts` — `loadSceneNavigationTarget`
+  + `LoadSceneNavigationTargetOptions` extracted out of
+  `url-navigation.ts` so the URL parser stays a pure "URL → target"
+  module with no dependency on `composition-resolver` or
+  `registry`. The bridge is the only place that synthesizes a scene
+  registry from the resolver snapshot and forwards it to
+  `resolveComposition`. Move surfaced after refactor review found
+  the original module mixed parsing and lifecycle responsibilities
+  in one >400-LOC file.
+- `src/runtime/composition.ts` — exported `findUnregisteredEntries`
+  helper (returns `MissingEntry[]` in iteration order). Centralizes
+  the "report every missing scene id, not just the first"
+  preflight-aggregation pattern that the composition resolver and
+  URL navigation slice snapshot both consume; reduces duplication
+  and keeps the report-every-gap behavior uniform across
+  subsystems.
 - `tests/runtime/workbench-navigator.test.ts` — 10-test Vitest spec
   pinning startup navigation (single scene, composition+scene,
   no-op when neither parameter present); error surfacing

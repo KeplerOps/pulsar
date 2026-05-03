@@ -28,11 +28,8 @@
 import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
 import type { SceneRegistry } from './registry';
-import {
-  type SceneNavigationTarget,
-  loadSceneNavigationTarget,
-  resolveSceneNavigationTarget,
-} from './url-navigation';
+import { type SceneNavigationTarget, resolveSceneNavigationTarget } from './url-navigation';
+import { loadSceneNavigationTarget } from './url-navigation-bridge';
 
 /** The minimal subset of `window` the navigator needs. */
 export interface WorkbenchHost {
@@ -46,6 +43,25 @@ export interface WorkbenchHost {
 export interface StageElement {
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
+}
+
+/**
+ * The opaque-to-the-resolver scene context the workbench passes to
+ * every lifecycle hook. Carries the stage handle so scenes can
+ * mutate the DOM through an injected dependency rather than reaching
+ * for the global `document`. ADR-008 #2 (manifests over flow control)
+ * pushes "explicit dependency" over "ambient global" — passing the
+ * stage in `ctx` keeps scenes pure of `document` lookups and
+ * Node-test-friendly without `typeof document === 'undefined'` guards.
+ *
+ * Future requirements (timeline engine, audio engine, mode dispatch)
+ * extend this shape with `gsap`, `audio`, `mode`, etc. Per ADR-003 /
+ * ADR-004 / ADR-007. The runtime resolver itself never inspects
+ * ctx — it is purely a scene-to-environment carrier.
+ */
+export interface WorkbenchSceneCtx {
+  /** The workbench stage element, or `null` when the runtime has no stage. */
+  readonly stage: StageElement | null;
 }
 
 /**
@@ -63,6 +79,14 @@ export interface WorkbenchNavigatorOptions {
   readonly ctx: unknown;
   readonly preloadAssets: AssetPreloader;
   readonly runTimeline: SceneTimelineRunner;
+  /**
+   * Sink for navigation errors (URL parse failure, registry miss,
+   * lifecycle phase throw). Defaults to `console.error` in production
+   * but is injectable so tests can observe error logging without
+   * monkey-patching `console`. Errors are still surfaced to the stage
+   * via `data-pulsar-navigation-error` regardless of this hook.
+   */
+  readonly onError?: (err: unknown) => void;
 }
 
 /**
@@ -99,6 +123,7 @@ const describeError = (err: unknown): string => (err instanceof Error ? err.mess
 
 export function createWorkbenchNavigator(options: WorkbenchNavigatorOptions): WorkbenchNavigator {
   const { host, stage } = options;
+  const onError = options.onError ?? ((err) => console.error(err));
   let inFlight: InFlightLoad | null = null;
   // `pending` chains every `navigate()` so popstate-fired and direct
   // calls run in submission order without overlapping.
@@ -144,7 +169,7 @@ export function createWorkbenchNavigator(options: WorkbenchNavigatorOptions): Wo
         options.compositionRegistry,
       );
     } catch (err) {
-      console.error(err);
+      onError(err);
       setStageAttr(ATTR_ERROR, describeError(err));
       return;
     }
@@ -175,7 +200,7 @@ export function createWorkbenchNavigator(options: WorkbenchNavigatorOptions): Wo
       // Don't surface an error caused by our own abort — the new
       // navigation that triggered it owns the visible state.
       if (!load.silent && !load.controller.signal.aborted) {
-        console.error(err);
+        onError(err);
         setStageAttr(ATTR_ERROR, describeError(err));
       }
     } finally {

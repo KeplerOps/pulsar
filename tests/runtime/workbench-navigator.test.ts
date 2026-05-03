@@ -171,6 +171,38 @@ describe('createWorkbenchNavigator (PUL-F008 + ADR-007)', () => {
   });
 
   describe('error surfacing — ADR-013 no silent fallback', () => {
+    it('routes navigation errors through the injected `onError` hook (no console.error monkey-patching)', async () => {
+      // The navigator defaults to `console.error` but accepts an
+      // `onError` option so tests and headless harnesses can capture
+      // navigation failures without monkey-patching `console`.
+      const captured: unknown[] = [];
+      const stage = buildStage();
+      const fakeHost = buildHost('?scene=missing');
+      const navigator = createWorkbenchNavigator({
+        host: fakeHost.host,
+        stage: stage.element,
+        sceneRegistry: createSceneRegistry([buildScene({ id: 'intro' })]),
+        compositionRegistry: createCompositionRegistry([]),
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await navigator.navigate();
+
+      expect(captured).toHaveLength(1);
+      expect((captured[0] as Error).message).toMatch(
+        /scene navigation failed: scene "missing" is not registered/,
+      );
+      // Stage attribute is still set regardless of the hook.
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
+        /scene navigation failed: scene "missing" is not registered/,
+      );
+    });
+
     it('sets `data-pulsar-navigation-error` when the URL names an unregistered scene', async () => {
       const stage = buildStage();
       const fakeHost = buildHost('?scene=missing');
