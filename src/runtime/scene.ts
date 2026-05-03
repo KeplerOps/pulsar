@@ -1,10 +1,15 @@
-// Scene module contract — PUL-F001.
+// Scene module contract — PUL-F001 + PUL-A007.
 //
 // Single source of truth for the shape every scene module exports.
 // Per ADR-002 the scene/composition model treats this object as the
 // scene's canonical metadata; per ADR-008 the runtime validates the
 // shape before mounting so cleanup leaks, dangling assets, and id
 // collisions surface loudly.
+//
+// Scene id format is enforced here (PUL-A007): kebab-case lowercase
+// ASCII (`[a-z0-9]+(-[a-z0-9]+)*`). Id reuse across scenes is
+// enforced by the registry (PUL-F002) — the two clauses of PUL-A007
+// are split across this file (format) and ./registry.ts (uniqueness).
 //
 // Downstream consumers (registry, composition resolver, exporter)
 // must call assertSceneModule rather than re-implementing checks.
@@ -93,6 +98,14 @@ const isCaptionArray = (v: unknown): v is readonly Caption[] =>
 
 const isStringOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';
 
+// Strict kebab-case per PUL-A007 + ADR-002 §Scene shape + ADR-008 #1:
+// non-empty lowercase alphanumeric segments separated by single hyphens.
+// Rejects empty strings, leading/trailing hyphens, consecutive hyphens,
+// uppercase, underscores, whitespace, punctuation, and non-ASCII.
+const SCENE_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+const isSceneId = (v: unknown): v is string => typeof v === 'string' && SCENE_ID_PATTERN.test(v);
+
 const fail = (id: string | undefined, field: string, condition: string): never => {
   const idLabel = id === undefined ? '?' : `"${id}"`;
   throw new Error(`scene ${idLabel} is invalid: ${field} ${condition}`);
@@ -105,7 +118,12 @@ interface FieldGuard {
 }
 
 const FIELD_GUARDS: readonly FieldGuard[] = [
-  { field: 'id', check: (v) => typeof v.id === 'string', condition: 'must be a string' },
+  {
+    field: 'id',
+    check: (v) => isSceneId(v.id),
+    condition:
+      'must be a non-empty lowercase kebab-case string ([a-z0-9] segments separated by single hyphens)',
+  },
   { field: 'title', check: (v) => typeof v.title === 'string', condition: 'must be a string' },
   {
     field: 'duration',
