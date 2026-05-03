@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/navigation.ts` — `parseNavigationSearch`,
+  `subscribeNavigation`, `bootstrapNavigation`, the `NAVIGATION_MODES`
+  tuple, the `PULSAR_NAVIGATE_EVENT_TYPE` /
+  `PULSAR_NAVIGATE_ERROR_EVENT_TYPE` event-type constants, and the
+  `NavigationTarget` / `NavigationLocator` / `NavigationMode` /
+  `NavigationEventTarget` / `NavigationSubscriptionOptions` types.
+  `src/main.ts` now calls `bootstrapNavigation(window)` at runtime
+  entry so URL parameters are parsed at startup and on every
+  `popstate`. The startup parse is deferred to a microtask so
+  subscribers registered after `bootstrapNavigation` returns observe
+  the initial event. Successful parses are published as
+  `CustomEvent<NavigationTarget>` on `window` under
+  `'pulsar:navigate'`; parse errors as `CustomEvent<Error>` under
+  `'pulsar:navigate-error'`. `subscribeNavigation` accepts an optional
+  `deferStartup` flag (default `false`); `bootstrapNavigation` opts
+  in. Vite HMR re-evaluating the entry module disposes the previous
+  popstate listener via `import.meta.hot.dispose`.
+  Implements PUL-F007: the runtime accepts the five URL parameters
+  `scene`, `composition`, `index`, `beat`, `mode`, parses combinations
+  per ADR-013's five valid target shapes, and wires startup + `popstate`
+  through the same parser path with the same error semantics. The
+  parser is a boundary adapter only — it does not resolve scenes,
+  inspect composition manifests, or mutate browser history. Identifier
+  validation reuses `isKebabIdentifier` from `src/runtime/identifier.ts`
+  per ADR-008 #1; the seven workbench modes are the ADR-007 set
+  (`present`, `standalone`, `loop`, `paused`, `scrub`, `screenshot`,
+  `prompter`). Repeated grammar keys are rejected; unknown keys are
+  ignored. `index` is base-10, zero-based, non-negative, and a JS safe
+  integer. `subscribeNavigation` accepts a minimal injected
+  `Window`-like surface so tests do not depend on jsdom and runtime
+  callers can swap in stricter test doubles.
+- `tests/runtime/navigation.test.ts` — 80-test suite covering the
+  per-key grammar, the five valid / four invalid combination shapes,
+  repeated-key rejection, unknown-key tolerance, frozen target output,
+  the boundary discipline (no scene-existence validation), startup +
+  `popstate` parser routing, error routing, identical error semantics
+  across triggers, and dispose semantics.
+- `docs/adrs/013-url-navigation-grammar-boundary.md` — new ADR
+  recording the URL parsing boundary rules (target shapes, identifier
+  reuse, `popstate` semantics, "URL search string is the source of
+  truth" invariant). Indexed in `docs/adrs/README.md`.
+
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
   field on both `ResolveCompositionOptions` and
   `SceneTimelineRunInput`. Implements PUL-F006's "skip rest of
