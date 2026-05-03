@@ -327,7 +327,15 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   };
 
   win.addEventListener('popstate', handle);
+  // The disposed flag is captured by the queued startup so a caller
+  // that disposes before the microtask runs cannot still observe the
+  // initial event. Without it, an aborted bootstrap (e.g. Vite HMR
+  // swapping the entry module synchronously) would dispatch a stale
+  // startup navigation/error after teardown.
+  let disposed = false;
   const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
     win.removeEventListener('popstate', handle);
   };
 
@@ -343,6 +351,7 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   // `subscribeNavigation` has already returned), but the popstate
   // listener is still removed.
   const startup = (): void => {
+    if (disposed) return;
     try {
       handle();
     } catch (err) {

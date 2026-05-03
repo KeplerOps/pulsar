@@ -473,6 +473,35 @@ describe('subscribeNavigation — clause 2: parse at startup and on popstate', (
     expect(fake.removeEventListener).toHaveBeenCalledWith('popstate', handler);
   });
 
+  it('deferStartup + dispose() before microtask flush suppresses the queued startup', async () => {
+    // Without the disposed flag, an HMR swap that disposes the old
+    // subscription before its queued microtask runs would still
+    // dispatch a stale startup event. Codex review (cycle 4) flagged
+    // this race; this test pins the contract.
+    const fake = buildFakeWindow('?scene=intro');
+    const dispose = subscribeNavigation({
+      window: fake,
+      onNavigate,
+      onError,
+      deferStartup: true,
+    });
+    dispose();
+
+    await Promise.resolve();
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(fake.removeEventListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispose() is idempotent — removeEventListener is called at most once', () => {
+    const fake = buildFakeWindow('?scene=intro');
+    const dispose = subscribeNavigation(buildOptions(fake));
+    dispose();
+    dispose();
+    dispose();
+    expect(fake.removeEventListener).toHaveBeenCalledTimes(1);
+  });
+
   it('deferStartup: defers the startup parse to a microtask but registers popstate immediately', async () => {
     // Subscribers registered AFTER subscribeNavigation returns can
     // still observe the initial event when deferStartup is true. The
