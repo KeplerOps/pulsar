@@ -1,21 +1,35 @@
-// Workbench entry. PUL-F007 wires the URL navigation grammar parser
-// into the browser runtime so parameter combinations are parsed at
-// startup and on `popstate`. The full workbench bootstrap (scene
-// registration per PUL-F001, mode dispatch per PUL-A008, composition
-// orchestration) consumes the `'pulsar:navigate'` /
-// `'pulsar:navigate-error'` events emitted by `bootstrapNavigation`
-// once those requirements land.
-import { bootstrapNavigation } from './runtime/navigation';
+// Workbench entry — parses URL navigation parameters at runtime startup
+// per ADR-007 ("the runtime parses URL parameters at startup") and
+// activates PUL-F008's `scene` URL parameter contract.
+//
+// The lifecycle adapters (asset preloader factory, timeline runner)
+// and the rest of the workbench mount land with PUL-A008's mode
+// dispatch; until then, scene targets resolve against the (currently
+// empty) registry and the resolved id is recorded on the `#stage`
+// element via `data-pulsar-scene-target` so reviewers can verify the
+// runtime parsed the URL. Parse / lookup errors are surfaced to the
+// console so invalid URLs fail loudly per ADR-013's
+// "no silent fallback" principle.
+
+import { createSceneRegistry } from './runtime/registry';
+import { resolveSceneNavigationTarget } from './runtime/url-navigation';
 
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
 
-const disposeNavigation = bootstrapNavigation(globalThis);
+// Empty until scene modules register in future requirements; the
+// runtime still parses the URL on every startup so an invalid `scene`
+// parameter surfaces immediately.
+const registry = createSceneRegistry([]);
 
-// Dev-only: when Vite HMR replaces this entry module, dispose the
-// previous popstate listener so re-evaluation does not stack
-// duplicate listeners and emit duplicate navigation events.
-// `import.meta.hot` is undefined in production builds.
-import.meta.hot?.dispose(() => {
-  disposeNavigation();
-});
+try {
+  const target = resolveSceneNavigationTarget(window.location, registry);
+  if (target !== null) {
+    stage?.setAttribute('data-pulsar-scene-target', target.scene.id);
+  }
+} catch (err) {
+  // Surface URL parse / lookup errors so reviewers and agents notice
+  // malformed, repeated, or unknown `scene` values rather than landing
+  // on a silently-default-rendered stage.
+  console.error(err);
+}

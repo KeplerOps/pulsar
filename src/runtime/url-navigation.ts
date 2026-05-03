@@ -19,10 +19,15 @@
 //     them.
 //  6. URL state is authoritative — this module never reads from
 //     localStorage, cookies, or any cached state.
-//  7. `scene` is orthogonal to `mode`; this module does not interpret
-//     `mode`, `composition`, `index`, or `beat` (those parameters are
-//     owned by future requirements). Callers that hand a multi-parameter
-//     URL receive a target derived solely from the `scene` value.
+//  7. `scene` is orthogonal to `mode`; the resolver does not interpret
+//     `mode`, `index`, or `beat` (those parameters are owned by future
+//     requirements). `composition` is *not* orthogonal: per ADR-013,
+//     when both `scene` and `composition` are present `scene` names a
+//     target *within* that composition, which requires composition
+//     handling that this requirement does not implement. The resolver
+//     therefore rejects the combination explicitly so the gap fails
+//     loudly rather than silently producing a single-scene navigation
+//     target that ignores the composition.
 //  8. Repeated/conflicting `scene` parameters fail loudly because
 //     `URLSearchParams.get()` silently picks one value.
 //
@@ -43,7 +48,7 @@ import {
   resolveComposition,
 } from './composition-resolver';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
-import type { SceneRegistry } from './registry';
+import { type SceneRegistry, createSceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
 /**
@@ -60,15 +65,17 @@ export interface SceneNavigationTarget {
 
 /**
  * Inputs the {@link loadSceneNavigationTarget} bridge needs to drive
- * the existing composition resolver lifecycle for one scene. Mirrors
- * the lifecycle-relevant fields of
- * `ResolveCompositionOptions`; the `manifest` field is intentionally
- * absent because the bridge synthesizes a single-entry manifest from
- * the navigation target.
+ * the existing composition resolver lifecycle for one scene.
+ *
+ * Note that `registry` is intentionally absent: the bridge synthesizes
+ * a single-scene registry from `target.scene` directly so the lifecycle
+ * is guaranteed to run *the resolved scene module*, not whatever module
+ * a passed-in registry happens to map the same id to. Decoupling the
+ * bridge from the original registry rules out an entire class of
+ * identity bugs (codex review: "passing a different registry with the
+ * same id runs a different module than the resolved target").
  */
 export interface LoadSceneNavigationTargetOptions {
-  /** Registry the resolver consults — must contain `target.scene`. */
-  readonly registry: SceneRegistry;
   /** Opaque scene context forwarded to every lifecycle hook. */
   readonly ctx: unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
@@ -157,6 +164,18 @@ export function resolveSceneNavigationTarget(
     );
   }
 
+  // Per ADR-013, when both `scene` and `composition` are present, `scene`
+  // names a target *within* that composition (ADR-002 §Navigation). That
+  // semantic requires composition handling, which lands with a separate
+  // requirement. Reject the combination explicitly so the gap fails loudly
+  // rather than silently producing a single-scene navigation target that
+  // ignores the composition context.
+  if (params.has('composition')) {
+    fail(
+      '`scene` combined with `composition` is not yet supported — composition-scoped scene navigation lands with a future requirement',
+    );
+  }
+
   const id = values[0] as string;
 
   if (!isKebabIdentifier(id)) {
@@ -176,11 +195,15 @@ export function resolveSceneNavigationTarget(
  * create → timeline → cleanup ordering and PUL-F006's mandatory-cleanup
  * invariant.
  *
- * Constructs a single-entry composition manifest from
- * `target.scene.id` and delegates to {@link resolveComposition}. ADR-013
- * mandates that a scene URL not bypass the resolver lifecycle; the
- * synthesized manifest is the smallest path that satisfies that
- * invariant without inventing a parallel single-scene runner.
+ * Synthesizes a single-scene registry from `target.scene` directly and
+ * delegates to {@link resolveComposition} with a one-entry manifest.
+ * Building the registry from the resolved scene module guarantees the
+ * lifecycle runs *that exact module*, removing any chance for a passed-
+ * in registry to substitute a different scene at the same id (codex
+ * review). ADR-013 mandates that a scene URL not bypass the resolver
+ * lifecycle; the synthesized manifest is the smallest path that
+ * satisfies that invariant without inventing a parallel single-scene
+ * runner.
  *
  * Resolves when the lifecycle has run end-to-end; rejects with the
  * resolver's own wrapping error (`composition resolution failed: ...`)
@@ -191,9 +214,10 @@ export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
+  const registry = createSceneRegistry([target.scene]);
   const manifest = [target.scene.id] as const;
   await resolveComposition({
-    registry: options.registry,
+    registry,
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,

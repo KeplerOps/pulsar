@@ -102,16 +102,24 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
       expect(target?.scene).toBe(intro);
     });
 
-    it('accepts a Location-like object (anything URLSearchParams can read)', () => {
+    it('accepts a Location-like object (`{ search }` shape)', () => {
+      // Pin the `{ search: string }` branch of `SceneUrlInput`. The
+      // browser bootstrap calls this with `window.location`, which is a
+      // `Location` not a `URL` / `URLSearchParams`; using a plain
+      // `{ search }` literal guarantees the parser handles that branch
+      // independently of any DOM lib types.
       const intro = buildScene({ id: 'intro' });
       const registry = createSceneRegistry([intro]);
 
-      const params = new URLSearchParams();
-      params.set('scene', 'intro');
-
-      const target = resolveSceneNavigationTarget(params, registry);
+      const target = resolveSceneNavigationTarget({ search: '?scene=intro' }, registry);
 
       expect(target?.scene).toBe(intro);
+    });
+
+    it('accepts a Location-like object whose `search` is empty', () => {
+      const intro = buildScene({ id: 'intro' });
+      const registry = createSceneRegistry([intro]);
+      expect(resolveSceneNavigationTarget({ search: '' }, registry)).toBeNull();
     });
   });
 
@@ -301,17 +309,13 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
     });
   });
 
-  describe('orthogonality — other URL parameters do not affect scene resolution', () => {
+  describe('orthogonality — `mode`, `index`, `beat` do not affect scene resolution', () => {
     it.each<[label: string, query: string]>([
       ['mode=screenshot', '?scene=intro&mode=screenshot'],
       ['mode=loop', '?scene=intro&mode=loop'],
       ['beat=hook', '?scene=intro&beat=hook'],
       ['index=2', '?scene=intro&index=2'],
-      ['composition=full-talk', '?scene=intro&composition=full-talk'],
-      [
-        'composition+index+beat+mode',
-        '?scene=intro&composition=full-talk&index=2&beat=hook&mode=loop',
-      ],
+      ['index+beat+mode', '?scene=intro&index=2&beat=hook&mode=loop'],
     ])('returns the same navigation target with %s alongside scene', (_label, query) => {
       const intro = buildScene({ id: 'intro' });
       const registry = createSceneRegistry([intro]);
@@ -328,6 +332,68 @@ describe('resolveSceneNavigationTarget (PUL-F008)', () => {
       const registry = createSceneRegistry([intro, middle]);
       const target = resolveSceneNavigationTarget('?scene=middle&index=0', registry);
       expect(target?.scene).toBe(middle);
+    });
+  });
+
+  describe('composition+scene combination — explicit rejection (ADR-013)', () => {
+    // ADR-013 promises that `?composition=X&scene=Y` selects scene Y
+    // *within* composition X. Composition handling lands with a future
+    // requirement; for now the resolver rejects the combination so the
+    // gap fails loudly rather than producing a single-scene target that
+    // ignores the composition context.
+    it('throws when both `scene` and `composition` are present', () => {
+      const intro = buildScene({ id: 'intro' });
+      const registry = createSceneRegistry([intro]);
+      expect(() =>
+        resolveSceneNavigationTarget('?scene=intro&composition=full-talk', registry),
+      ).toThrow(
+        /^scene navigation failed: `scene` combined with `composition` is not yet supported/,
+      );
+    });
+
+    it('throws even when `composition` is empty-valued', () => {
+      const intro = buildScene({ id: 'intro' });
+      const registry = createSceneRegistry([intro]);
+      expect(() => resolveSceneNavigationTarget('?scene=intro&composition=', registry)).toThrow(
+        /scene navigation failed: `scene` combined with `composition` is not yet supported/,
+      );
+    });
+
+    it('rejects regardless of additional `mode` / `index` / `beat` parameters', () => {
+      const intro = buildScene({ id: 'intro' });
+      const registry = createSceneRegistry([intro]);
+      expect(() =>
+        resolveSceneNavigationTarget(
+          '?scene=intro&composition=full-talk&index=2&beat=hook&mode=loop',
+          registry,
+        ),
+      ).toThrow(
+        /scene navigation failed: `scene` combined with `composition` is not yet supported/,
+      );
+    });
+
+    it('does not look up the registry when `composition` is also present', () => {
+      // The combination is rejected at the URL-parse boundary; the
+      // registry is never consulted, so even an unknown scene id throws
+      // the composition-combination error rather than the registry-miss
+      // error.
+      const calls: string[] = [];
+      const sentinel = {
+        has: (id: string) => {
+          calls.push(`has(${id})`);
+          return false;
+        },
+        get: (id: string) => {
+          calls.push(`get(${id})`);
+          throw new Error('unreachable');
+        },
+        ids: () => [],
+        size: 0,
+      } as const;
+      expect(() =>
+        resolveSceneNavigationTarget('?scene=missing&composition=full-talk', sentinel),
+      ).toThrow(/composition.*not yet supported/);
+      expect(calls).toEqual([]);
     });
   });
 });
@@ -352,7 +418,6 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
     const target = resolveSceneNavigationTarget('?scene=intro', registry) as SceneNavigationTarget;
 
     await loadSceneNavigationTarget(target, {
-      registry,
       ctx: {},
       preloadAssets: (scene) => {
         log.push(`preload:${scene.id}`);
@@ -388,7 +453,6 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
 
     await expect(
       loadSceneNavigationTarget(target, {
-        registry,
         ctx: {},
         preloadAssets: (scene) => {
           log.push(`preload:${scene.id}`);
@@ -421,7 +485,6 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
 
     await expect(
       loadSceneNavigationTarget(target, {
-        registry,
         ctx: {},
         preloadAssets: () => {
           log.push('preload');
@@ -456,12 +519,52 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
     const target = resolveSceneNavigationTarget('?scene=intro', registry) as SceneNavigationTarget;
 
     await loadSceneNavigationTarget(target, {
-      registry,
       ctx,
       preloadAssets: () => undefined,
       runTimeline: () => undefined,
     });
 
     expect(seen).toEqual([ctx, ctx, ctx]);
+  });
+
+  it('runs the resolved scene module even when a sibling registry maps the same id elsewhere', async () => {
+    // Identity guarantee: passing a different registry that maps the
+    // same id to a different scene module must not divert the bridge to
+    // the wrong module. The bridge synthesizes its own registry from
+    // `target.scene`, so the module the lifecycle runs is always the
+    // module the navigation resolver returned. This pins codex's review
+    // finding that the original implementation re-resolved by id and
+    // could run a different module.
+    const log: string[] = [];
+    const resolvedIntro = buildScene({
+      id: 'intro',
+      create: () => {
+        log.push('resolved-create');
+      },
+    });
+    const decoyIntro = buildScene({
+      id: 'intro',
+      create: () => {
+        log.push('decoy-create');
+      },
+    });
+    // Resolve through a registry containing the real `intro`.
+    const realRegistry = createSceneRegistry([resolvedIntro]);
+    const target = resolveSceneNavigationTarget(
+      '?scene=intro',
+      realRegistry,
+    ) as SceneNavigationTarget;
+    expect(target.scene).toBe(resolvedIntro);
+    // Show that even if the caller has a different registry mapping the
+    // same id, the bridge runs the resolved scene module.
+    void createSceneRegistry([decoyIntro]);
+
+    await loadSceneNavigationTarget(target, {
+      ctx: {},
+      preloadAssets: () => undefined,
+      runTimeline: () => undefined,
+    });
+
+    expect(log).toEqual(['resolved-create']);
   });
 });
