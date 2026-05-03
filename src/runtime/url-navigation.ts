@@ -309,14 +309,14 @@ export function resolveSceneNavigationTarget(
     }
     const compRegistry = compositions as CompositionRegistry;
     const composition =
-      sceneId !== null
-        ? // Composition-scoped scene navigation. Composition is resolved
+      sceneId === null
+        ? // Composition-only navigation: load from start (ADR-002).
+          resolveCompositionFromStart(compositionId, scenes, compRegistry)
+        : // Composition-scoped scene navigation. Composition is resolved
           // first so composition-level errors (malformed id, unknown
           // composition, scene not a member) surface before any
           // scene-only validation that could mask them.
-          resolveCompositionAndScene(compositionId, sceneId, scenes, compRegistry)
-        : // Composition-only navigation: load from start (ADR-002).
-          resolveCompositionFromStart(compositionId, scenes, compRegistry);
+          resolveCompositionAndScene(compositionId, sceneId, scenes, compRegistry);
     return {
       scene: composition.sceneSlice[0] as SceneModule,
       composition,

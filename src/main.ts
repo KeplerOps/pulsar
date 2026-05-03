@@ -25,7 +25,11 @@ import { createAssetPreloader } from './runtime/asset-preloader';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import type { SceneTimelineRunner } from './runtime/composition-resolver';
 import { createSceneRegistry } from './runtime/registry';
-import { type WorkbenchSceneCtx, createWorkbenchNavigator } from './runtime/workbench-navigator';
+import {
+  type WorkbenchHost,
+  type WorkbenchSceneCtx,
+  createWorkbenchNavigator,
+} from './runtime/workbench-navigator';
 import { placeholderScene } from './scenes/placeholder';
 
 const stage = document.querySelector('#stage');
@@ -54,8 +58,16 @@ const runTimeline: SceneTimelineRunner = () => undefined;
 // dependencies over ambient globals).
 const ctx: WorkbenchSceneCtx = { stage };
 
+// Cast `globalThis` to the structural `WorkbenchHost` shape: in
+// browsers `globalThis === window`, so `addEventListener('popstate',
+// ...)` and `location` are present, but the `globalThis` type alone
+// does not advertise them. A targeted structural cast is preferred
+// over `window` to keep the bootstrap portable to non-browser hosts
+// that polyfill the same surface.
+const host = globalThis as unknown as WorkbenchHost;
+
 const navigator = createWorkbenchNavigator({
-  host: window,
+  host,
   stage,
   sceneRegistry,
   compositionRegistry,
