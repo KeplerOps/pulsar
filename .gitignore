@@ -73,3 +73,6 @@ Thumbs.db
 # Local files
 archive/
 .codex
+
+# Claude Code harness runtime state (not implementation artifacts)
+.claude/scheduled_tasks.lock
