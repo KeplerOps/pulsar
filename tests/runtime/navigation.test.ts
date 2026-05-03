@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   NAVIGATION_MODES,
+  type NavigationEventTarget,
   type NavigationMode,
   type NavigationSubscriptionOptions,
   type NavigationTarget,
+  PulsarNavigationErrorEvent,
+  PulsarNavigationEvent,
+  bootstrapNavigation,
   parseNavigationSearch,
   subscribeNavigation,
 } from '../../src/runtime/navigation';
@@ -463,5 +467,135 @@ describe('subscribeNavigation — clause 2: parse at startup and on popstate', (
 
     expect(fake.removeEventListener).toHaveBeenCalledTimes(1);
     expect(fake.removeEventListener).toHaveBeenCalledWith('popstate', handler);
+  });
+});
+
+describe('bootstrapNavigation — runtime entry wiring', () => {
+  // Browser-shaped fake: a real `EventTarget` wrapped with the
+  // `location.search` property the parser needs. Using a real
+  // EventTarget (rather than vi.fn stubs) proves the popstate dispatch
+  // flows through the helper end-to-end. The fake exposes its
+  // underlying EventTarget so tests can register listeners for
+  // 'pulsar:navigate' / 'pulsar:navigate-error' without fighting the
+  // narrow popstate-only listener typing on NavigationEventTarget.
+  interface FakeBrowser {
+    readonly target: NavigationEventTarget;
+    readonly events: EventTarget;
+    setSearch(value: string): void;
+    firePopstate(): void;
+  }
+
+  const buildFakeBrowser = (initial: string): FakeBrowser => {
+    const events = new EventTarget();
+    let search = initial;
+    const target: NavigationEventTarget = {
+      addEventListener: (event, listener) => {
+        events.addEventListener(event, listener as EventListener);
+      },
+      removeEventListener: (event, listener) => {
+        events.removeEventListener(event, listener as EventListener);
+      },
+      dispatchEvent: (event) => events.dispatchEvent(event),
+      get location() {
+        return { search };
+      },
+    };
+    return {
+      target,
+      events,
+      setSearch(value) {
+        search = value;
+      },
+      firePopstate() {
+        events.dispatchEvent(new Event('popstate'));
+      },
+    };
+  };
+
+  const collectNavigateEvents = (browser: FakeBrowser): PulsarNavigationEvent[] => {
+    const out: PulsarNavigationEvent[] = [];
+    browser.events.addEventListener(PulsarNavigationEvent.TYPE, (evt) => {
+      out.push(evt as PulsarNavigationEvent);
+    });
+    return out;
+  };
+
+  const collectErrorEvents = (browser: FakeBrowser): PulsarNavigationErrorEvent[] => {
+    const out: PulsarNavigationErrorEvent[] = [];
+    browser.events.addEventListener(PulsarNavigationErrorEvent.TYPE, (evt) => {
+      out.push(evt as PulsarNavigationErrorEvent);
+    });
+    return out;
+  };
+
+  it('dispatches PulsarNavigationEvent on startup with the parsed target', () => {
+    const browser = buildFakeBrowser('?scene=intro');
+    const navigate = collectNavigateEvents(browser);
+
+    bootstrapNavigation(browser.target);
+
+    expect(navigate).toHaveLength(1);
+    const evt = navigate[0];
+    if (!evt) throw new Error('expected at least one navigate event');
+    expect(evt.type).toBe('pulsar:navigate');
+    expect(evt.navigationTarget).toEqual({
+      locator: { kind: 'scene', scene: 'intro' },
+    } satisfies NavigationTarget);
+  });
+
+  it('dispatches PulsarNavigationEvent on each popstate using the current search', () => {
+    const browser = buildFakeBrowser('?scene=intro');
+    const navigate = collectNavigateEvents(browser);
+    bootstrapNavigation(browser.target);
+    navigate.length = 0; // discard startup event
+
+    browser.setSearch('?scene=outro');
+    browser.firePopstate();
+    browser.setSearch('?composition=full-talk&index=2');
+    browser.firePopstate();
+
+    expect(navigate.map((evt) => evt.navigationTarget)).toEqual([
+      { locator: { kind: 'scene', scene: 'outro' } },
+      { locator: { kind: 'composition-index', composition: 'full-talk', index: 2 } },
+    ]);
+  });
+
+  it('dispatches PulsarNavigationErrorEvent on parse failure (startup or popstate)', () => {
+    const browser = buildFakeBrowser('?scene=Bad');
+    const errors = collectErrorEvents(browser);
+    bootstrapNavigation(browser.target);
+
+    expect(errors).toHaveLength(1);
+    const startup = errors[0];
+    if (!startup) throw new Error('expected at least one error event');
+    expect(startup.type).toBe('pulsar:navigate-error');
+    expect(startup.navigationError).toBeInstanceOf(Error);
+    expect(startup.navigationError.message).toMatch(/^navigation grammar is invalid:/);
+
+    errors.length = 0;
+    browser.setSearch('?index=1');
+    browser.firePopstate();
+    expect(errors).toHaveLength(1);
+    const popstateErr = errors[0];
+    if (!popstateErr) throw new Error('expected popstate error event');
+    expect(popstateErr.navigationError.message).toMatch(/^navigation grammar is invalid:/);
+  });
+
+  it('disposer stops further popstate dispatch', () => {
+    const browser = buildFakeBrowser('');
+    const navigate = collectNavigateEvents(browser);
+    const dispose = bootstrapNavigation(browser.target);
+    navigate.length = 0;
+
+    dispose();
+    browser.setSearch('?scene=outro');
+    browser.firePopstate();
+
+    expect(navigate).toHaveLength(0);
+  });
+
+  it('static TYPE constants match the event type strings', () => {
+    expect(PulsarNavigationEvent.TYPE).toBe('pulsar:navigate');
+    expect(PulsarNavigationErrorEvent.TYPE).toBe('pulsar:navigate-error');
   });
 });

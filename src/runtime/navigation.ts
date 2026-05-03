@@ -255,10 +255,15 @@ export function parseNavigationSearch(input: URLSearchParams | string): Navigati
  * Defined as a narrow shape — rather than `Pick<Window, ...>` — so the
  * tests can inject a fake without standing up jsdom or pulling in DOM
  * lib types just for `popstate` wiring.
+ *
+ * The listener is typed as `(evt: Event) => void` so the actual browser
+ * `window` is structurally assignable to this interface — DOM
+ * `addEventListener` requires the listener to handle an `Event` arg.
+ * The internal handler ignores the arg.
  */
 export interface NavigationWindowLike {
-  readonly addEventListener: (event: 'popstate', listener: () => void) => void;
-  readonly removeEventListener: (event: 'popstate', listener: () => void) => void;
+  readonly addEventListener: (event: 'popstate', listener: (evt: Event) => void) => void;
+  readonly removeEventListener: (event: 'popstate', listener: (evt: Event) => void) => void;
   readonly location: { readonly search: string };
 }
 
@@ -290,7 +295,7 @@ export interface NavigationSubscriptionOptions {
 export function subscribeNavigation(options: NavigationSubscriptionOptions): () => void {
   const { window: win, onNavigate, onError } = options;
 
-  const handle = (): void => {
+  const handle = (_evt?: Event): void => {
     let target: NavigationTarget;
     try {
       target = parseNavigationSearch(win.location.search);
@@ -306,4 +311,70 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   return () => {
     win.removeEventListener('popstate', handle);
   };
+}
+
+/**
+ * Event dispatched on a successful navigation parse. Future workbench
+ * bootstrap layers subscribe to `'pulsar:navigate'` to receive parsed
+ * targets without coupling to the runtime entry point.
+ *
+ * Subclasses `Event` (rather than using `CustomEvent`) so the helper
+ * works on Node 18, where `CustomEvent` is not yet a global.
+ */
+export class PulsarNavigationEvent extends Event {
+  readonly navigationTarget: NavigationTarget;
+  constructor(target: NavigationTarget) {
+    super(PulsarNavigationEvent.TYPE);
+    this.navigationTarget = target;
+  }
+  static readonly TYPE = 'pulsar:navigate';
+}
+
+/**
+ * Event dispatched when URL grammar parsing fails. Future workbench
+ * bootstrap layers subscribe to `'pulsar:navigate-error'` to surface
+ * malformed URLs to the operator.
+ */
+export class PulsarNavigationErrorEvent extends Event {
+  readonly navigationError: Error;
+  constructor(error: Error) {
+    super(PulsarNavigationErrorEvent.TYPE);
+    this.navigationError = error;
+  }
+  static readonly TYPE = 'pulsar:navigate-error';
+}
+
+/**
+ * Browser-target shape required by {@link bootstrapNavigation}: every
+ * member of {@link NavigationWindowLike} plus a DOM-shaped
+ * `dispatchEvent` so the helper can publish parsed targets and parse
+ * errors as events on the same target.
+ */
+export interface NavigationEventTarget extends NavigationWindowLike {
+  dispatchEvent(event: Event): boolean;
+}
+
+/**
+ * Bootstrap navigation parsing for the runtime entry point.
+ *
+ * Subscribes the URL grammar parser to the supplied target's
+ * `popstate` and runs it once at startup (PUL-F007 clause 2). Every
+ * successful parse fires a {@link PulsarNavigationEvent}; every parse
+ * failure fires a {@link PulsarNavigationErrorEvent}. Returns a
+ * disposer that removes the listener.
+ *
+ * The future workbench bootstrap (scene catalog, mode dispatch,
+ * composition orchestration) subscribes to these events on `window`
+ * to receive parsed targets without coupling to the entry script.
+ */
+export function bootstrapNavigation(target: NavigationEventTarget): () => void {
+  return subscribeNavigation({
+    window: target,
+    onNavigate: (parsed) => {
+      target.dispatchEvent(new PulsarNavigationEvent(parsed));
+    },
+    onError: (error) => {
+      target.dispatchEvent(new PulsarNavigationErrorEvent(error));
+    },
+  });
 }

@@ -10,8 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `src/runtime/navigation.ts` — `parseNavigationSearch`,
-  `subscribeNavigation`, the `NAVIGATION_MODES` tuple, and the
-  `NavigationTarget` / `NavigationLocator` / `NavigationMode` types.
+  `subscribeNavigation`, `bootstrapNavigation`, `PulsarNavigationEvent`,
+  `PulsarNavigationErrorEvent`, the `NAVIGATION_MODES` tuple, and the
+  `NavigationTarget` / `NavigationLocator` / `NavigationMode` /
+  `NavigationEventTarget` types. `src/main.ts` now calls
+  `bootstrapNavigation(window)` at runtime entry so URL parameters are
+  parsed at startup and on every `popstate`, with results published as
+  `'pulsar:navigate'` and `'pulsar:navigate-error'` events on `window`
+  for the future workbench bootstrap to consume.
   Implements PUL-F007: the runtime accepts the five URL parameters
   `scene`, `composition`, `index`, `beat`, `mode`, parses combinations
   per ADR-013's five valid target shapes, and wires startup + `popstate`
