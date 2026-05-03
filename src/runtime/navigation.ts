@@ -100,8 +100,6 @@ export interface NavigationTarget {
 
 const GRAMMAR_KEYS = ['scene', 'composition', 'index', 'beat', 'mode'] as const;
 
-const KEBAB_CONDITION = `must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`;
-
 // ADR-013 defines `index` as "base-10, zero-based, non-negative safe
 // integer." The pattern enforces only the base-10 digit set; leading
 // zeros (e.g. `01`) are accepted because the ADR does not forbid
@@ -138,7 +136,7 @@ function rejectRepeats(params: URLSearchParams): void {
 
 function validateKebab(field: string, value: string): void {
   if (!isKebabIdentifier(value)) {
-    fail(`"${field}" ${KEBAB_CONDITION}`);
+    fail(`"${field}" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`);
   }
 }
 
@@ -146,8 +144,12 @@ function parseIndex(raw: string): number {
   if (!INDEX_PATTERN.test(raw)) {
     fail('"index" must be a base-10 non-negative integer (e.g. 0, 1, 12)');
   }
+  // The regex excludes negatives, signs, decimals, and exponents, so
+  // `parseInt` always returns a non-negative number here. Only the
+  // safe-integer bound needs a runtime check (very long digit strings
+  // can overflow `Number.MAX_SAFE_INTEGER`).
   const value = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(value) || value < 0) {
+  if (!Number.isSafeInteger(value)) {
     fail('"index" must be a non-negative safe integer');
   }
   return value;
