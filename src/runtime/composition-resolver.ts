@@ -111,6 +111,19 @@ const describe = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
 
 /**
+ * One entry of the resolver's internal execution plan. Built once at
+ * preflight time and iterated during lifecycle execution so the
+ * resolver is immune to caller-owned manifest mutations performed
+ * inside lifecycle callbacks (codex review: snapshot the manifest
+ * before lifecycle side effects).
+ */
+interface PlanStep {
+  readonly scene: SceneModule;
+  readonly range: SubRange | undefined;
+  readonly behavior: BehaviorOverride | undefined;
+}
+
+/**
  * Build the resolver's wrapping `Error`. Every public failure carries
  * the `composition resolution failed:` prefix so callers can pattern-
  * match on origin without parsing scene-specific detail.
@@ -130,23 +143,18 @@ const failAggregate = (detail: string, errors: readonly unknown[]): AggregateErr
   new AggregateError(errors, `composition resolution failed: ${detail}`);
 
 /**
- * Build the {@link SceneTimelineRunInput} for one entry. Bare-string
- * entries omit `range` / `behavior` entirely; object entries forward
- * whatever the validator accepted (which already rejects unknown
- * override keys per PUL-F003).
+ * Build the {@link SceneTimelineRunInput} for one plan step. Omits
+ * `range` / `behavior` from the output object when absent on the
+ * source entry rather than emitting `range: undefined` keys, so the
+ * runner's `range in input` checks behave intuitively.
  */
-function buildRunInput(
-  scene: SceneModule,
-  entry: CompositionEntry,
-  timeline: unknown,
-): SceneTimelineRunInput {
-  if (typeof entry === 'string') return { scene, timeline };
+function buildRunInput(step: PlanStep, timeline: unknown): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
-    scene,
+    scene: step.scene,
     timeline,
   };
-  if (entry.range !== undefined) input.range = entry.range;
-  if (entry.behavior !== undefined) input.behavior = entry.behavior;
+  if (step.range !== undefined) input.range = step.range;
+  if (step.behavior !== undefined) input.behavior = step.behavior;
   return input;
 }
 
@@ -196,35 +204,48 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   const { registry, manifest, ctx, preloadAssets, runTimeline } = options;
 
   assertCompositionManifest(manifest);
-  preflightSceneIds(manifest, registry);
+  const plan = buildPlan(manifest, registry);
 
   // Per-scene lifecycle, strictly sequential. Each iteration runs
   // preload → create → timeline → cleanup before the next iteration's
-  // preload begins (clause e of PUL-F004).
-  for (const entry of manifest) {
-    const scene = registry.get(entryId(entry));
-    await preloadScene(scene, preloadAssets);
-    await runScene(scene, entry, ctx, runTimeline);
+  // preload begins (clause e of PUL-F004). Iterating the resolver-
+  // owned `plan` snapshot means lifecycle callbacks cannot mutate the
+  // execution path mid-flight by reaching back into the caller's
+  // manifest.
+  for (const step of plan) {
+    await preloadScene(step.scene, preloadAssets);
+    await runScene(step, ctx, runTimeline);
   }
 }
 
 /**
- * Clause (a): walk every entry, aggregate ALL missing scene ids into
- * a single error before any side effect, and throw if any are missing.
- * Aggregating beats fail-on-first because a manifest author fixes
- * every typo in one pass.
+ * Clause (a) plus snapshot capture: walk every entry exactly once,
+ * resolve every scene id against the registry, snapshot per-entry
+ * `range` / `behavior` overrides, and aggregate ALL missing ids into
+ * one error before any side effect. Aggregating beats fail-on-first
+ * because a manifest author fixes every typo in one pass; snapshotting
+ * means lifecycle callbacks cannot retroactively alter the plan by
+ * mutating the caller's manifest array (codex review).
  */
-function preflightSceneIds(manifest: CompositionManifest, registry: SceneRegistry): void {
+function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): readonly PlanStep[] {
   const missing: { readonly index: number; readonly id: string }[] = [];
+  const plan: PlanStep[] = [];
   for (const [index, entry] of manifest.entries()) {
     const id = entryId(entry);
     if (!registry.has(id)) {
       missing.push({ index, id });
+      continue;
     }
+    const scene = registry.get(id);
+    const range = typeof entry === 'string' ? undefined : entry.range;
+    const behavior = typeof entry === 'string' ? undefined : entry.behavior;
+    plan.push({ scene, range, behavior });
   }
-  if (missing.length === 0) return;
-  const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
-  throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  if (missing.length > 0) {
+    const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
+    throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  }
+  return Object.freeze(plan);
 }
 
 /**
@@ -248,8 +269,7 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
  * Cleanup failures are surfaced through {@link finalizeSceneFailure}.
  */
 async function runScene(
-  scene: SceneModule,
-  entry: CompositionEntry,
+  step: PlanStep,
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
 ): Promise<void> {
@@ -257,6 +277,7 @@ async function runScene(
   // `Promise.reject(undefined)` are still treated as failures. Using
   // `phaseError !== undefined` as the sentinel would silently swallow
   // those (legal JS) cases.
+  const { scene } = step;
   let phase: 'create' | 'timeline' = 'create';
   let phaseFailed = false;
   let phaseError: unknown;
@@ -268,7 +289,7 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(scene, entry, timeline));
+    await runTimeline(buildRunInput(step, timeline));
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

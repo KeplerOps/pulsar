@@ -707,6 +707,50 @@ describe('resolveComposition (PUL-F004)', () => {
     });
   });
 
+  describe('manifest snapshot (codex review: snapshot before lifecycle side effects)', () => {
+    it('iterates a snapshot of the manifest — caller mutations during a lifecycle hook do not retarget later entries', async () => {
+      const visited: string[] = [];
+      // Mutable manifest the test will retarget mid-flight.
+      const mutableManifest: { id: string }[] = [
+        { id: 'scene-a' },
+        { id: 'scene-b' },
+        { id: 'scene-c' },
+      ];
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            create: () => {
+              visited.push('scene-a');
+              // Mutate the caller-owned manifest after the resolver has
+              // already started iterating it. If the resolver re-read
+              // the manifest for steps 1 and 2 we'd see "unknown scene
+              // id" failures here. The snapshot path makes this a
+              // no-op for the resolver.
+              mutableManifest[1] = { id: 'unregistered-substitute' };
+              mutableManifest[2] = { id: 'also-unregistered' };
+            },
+          },
+          {
+            id: 'scene-b',
+            create: () => {
+              visited.push('scene-b');
+            },
+          },
+          {
+            id: 'scene-c',
+            create: () => {
+              visited.push('scene-c');
+            },
+          },
+        ],
+        manifest: mutableManifest as unknown as CompositionManifest,
+      });
+      await expect(resolveComposition(options)).resolves.toBeUndefined();
+      expect(visited).toEqual(['scene-a', 'scene-b', 'scene-c']);
+    });
+  });
+
   describe('non-Error throw paths (codex review: do not use undefined as failure sentinel)', () => {
     // `throw undefined` and `Promise.reject(undefined)` are both legal
     // JS. The resolver must still treat them as failures. These tests
