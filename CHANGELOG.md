@@ -9,26 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
+  field on both `ResolveCompositionOptions` and
+  `SceneTimelineRunInput`. When the caller supplies a signal,
+  `resolveComposition` checks `signal.aborted` before each scene's
+  preload (so an inter-scene abort prevents the next scene from
+  being touched) and forwards the signal to the runner via
+  `SceneTimelineRunInput.signal` (so the runner can honor a
+  mid-scene abort by throwing — which routes through the existing
+  cleanup-always path so the active scene's `cleanup(ctx)` still
+  runs). Pre-start aborts throw with `composition resolution
+  failed: aborted before any scene was visited`; inter-scene
+  aborts throw with `aborted between scenes after "<scene-id>"`
+  and forward `signal.reason` as `Error.cause`. Implements
+  PUL-F006's "presenter skip" exit path with a real cancellation
+  contract — the seam ADR-011 anticipated for the wave-1 PUL-F020
+  presenter-controls work, landed early because PUL-F006 needs it
+  for testable coverage.
 - `tests/runtime/composition-resolver.test.ts` — new
-  `describe('per-scene cleanup invocation (PUL-F006)')` block (8
-  tests) anchoring PUL-F006 to the existing resolver's
-  cleanup-always invariant. Pins the four exit paths PUL-F006
-  enumerates (normal advance, presenter skip modeled as a
-  cooperative early return from the runner, runtime error during
-  create / timeline factory / runner, composition end) and the
-  codex-preflight axis "cleanup invoked exactly once per scene
-  activation" — the latter not asserted directly by PUL-F004's
-  ordering tests. No production behavior change: the resolver
-  shipped under PUL-F004 (`src/runtime/composition-resolver.ts`,
-  `runScene`'s unconditional second try/catch around
-  `scene.cleanup(ctx)`) already enforces the invariant on every
-  exit path; this commit makes the requirement-level coverage
-  explicit and regression-proof.
+  `describe('per-scene cleanup invocation (PUL-F006)')` block (9
+  tests) anchoring PUL-F006 to the resolver's cleanup-always
+  invariant and the new signal contract. Pins the four exit paths
+  PUL-F006 enumerates (normal advance; presenter skip via
+  AbortSignal — mid-scene runner abort, inter-scene abort,
+  pre-start abort; runtime error during create / timeline
+  factory / runner; composition end) and the codex-preflight
+  axis "cleanup invoked exactly once per scene activation" — the
+  latter not asserted directly by PUL-F004's ordering tests.
 - `src/runtime/composition-resolver.ts` — module-header
   documentation block enumerating the four PUL-F006 exit paths
   and routing them to the existing `runScene` finalization,
   including the explicit "do NOT add a parallel cleanup path"
-  invariant. Doc-only addition, no code change.
+  invariant.
 
 - `src/runtime/asset-preloader.ts` — `createAssetPreloader` factory,
   `AssetPreloaderOptions` interface, and `DEFAULT_ALLOWED_SCHEMES`

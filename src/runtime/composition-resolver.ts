@@ -27,12 +27,20 @@
 //      1. normal advance         — happy-path loop iteration in
 //                                  `resolveComposition`; cleanup runs
 //                                  before the next scene's preload.
-//      2. presenter skip         — runner adapter returns early
-//                                  cooperatively (the shape PUL-F020
-//                                  will use; AbortSignal-based
-//                                  cancellation is deferred to the
-//                                  wave-1 re-evaluation per the
-//                                  ADR-011 risk-table entry).
+//      2. presenter skip         — caller passes an `AbortSignal` via
+//                                  `ResolveCompositionOptions.signal`;
+//                                  the resolver checks it before each
+//                                  scene's preload AND forwards it to
+//                                  the runner via
+//                                  `SceneTimelineRunInput.signal`. A
+//                                  mid-scene abort makes the runner
+//                                  throw → the scene's cleanup still
+//                                  runs (cleanup-always invariant). An
+//                                  inter-scene abort throws after the
+//                                  previous scene's cleanup completed
+//                                  and before the next scene's
+//                                  preload begins. ADR-011 anticipated
+//                                  the seam; PUL-F006 lands it.
 //      3. runtime error in scene — `create` / `timeline()` / runner
 //                                  throw or reject; the second
 //                                  unconditional try/catch in
@@ -91,6 +99,18 @@ export interface SceneTimelineRunInput {
   readonly timeline: unknown;
   readonly range?: SubRange;
   readonly behavior?: BehaviorOverride;
+  /**
+   * Cancellation signal forwarded from
+   * {@link ResolveCompositionOptions.signal} when the caller supplied
+   * one. The runner adapter is responsible for honoring it — typically
+   * by polling `signal.aborted`, listening for the `'abort'` event, or
+   * calling `signal.throwIfAborted()` at safe points in its timeline
+   * traversal. When the runner throws (or rejects) in response to an
+   * abort, the resolver still invokes `cleanup(ctx)` for the active
+   * scene per PUL-F006 (mandatory cleanup on every scene exit). Absent
+   * when the caller did not pass a `signal`.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -124,6 +144,30 @@ export interface ResolveCompositionOptions {
   readonly preloadAssets: AssetPreloader;
   /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
   readonly runTimeline: SceneTimelineRunner;
+  /**
+   * Optional cancellation signal for presenter-driven skip / abort
+   * (PUL-F006 "presenter skip" exit path; ADR-011 names AbortSignal as
+   * the cancellation primitive). Behavior:
+   *
+   *  - If `signal.aborted` is already true when {@link resolveComposition}
+   *    is called, the resolver throws immediately without visiting any
+   *    scene (no preload, no create, no cleanup — nothing was touched).
+   *  - The signal is forwarded to the runner via
+   *    {@link SceneTimelineRunInput.signal}; the runner is responsible
+   *    for honoring it mid-timeline. When the runner throws in response
+   *    to an abort, the resolver invokes `cleanup(ctx)` for the active
+   *    scene before propagating, satisfying the PUL-F006 invariant.
+   *  - Between scenes (after one scene's `runScene` returns), the
+   *    resolver re-checks `signal.aborted`. If aborted, subsequent
+   *    scenes are not visited; the resolver throws with the previously-
+   *    completed scene id named in the message.
+   *
+   * Absent (`undefined`) signals disable the skip path entirely — the
+   * resolver behaves as before. The runner adapter is also free to
+   * ignore a forwarded signal if its implementation does not support
+   * cancellation; the resolver does not require runner cooperation.
+   */
+  readonly signal?: AbortSignal;
 }
 
 const entryId = (entry: CompositionEntry): string => (typeof entry === 'string' ? entry : entry.id);
@@ -164,18 +208,46 @@ const failAggregate = (detail: string, errors: readonly unknown[]): AggregateErr
   new AggregateError(errors, `composition resolution failed: ${detail}`);
 
 /**
+ * Throws a wrapped abort error if the optional signal is currently
+ * aborted; otherwise returns. Encapsulating the check inside a
+ * function call serves two purposes:
+ *
+ *  1. It defeats TypeScript's control-flow narrowing across the
+ *     resolver's two abort checkpoints (pre-start and between
+ *     scenes). Without it, the second `signal.aborted` read would be
+ *     narrowed to `false | undefined` by the first checkpoint's
+ *     `if`-then-throw and TS would flag the second check as
+ *     unreachable. The signal's `aborted` getter can flip between
+ *     checkpoints (it is a live property of the caller's controller),
+ *     so the runtime check must run even when TS thinks it cannot.
+ *  2. It localizes the `signal.reason` access to a scope where TS
+ *     can narrow `signal !== undefined` from the `aborted === true`
+ *     check, so we don't need a non-null assertion at the call site.
+ */
+function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
+  if (signal?.aborted === true) {
+    throw fail(detail, signal.reason);
+  }
+}
+
+/**
  * Build the {@link SceneTimelineRunInput} for one plan step. Omits
  * `range` / `behavior` from the output object when absent on the
  * source entry rather than emitting `range: undefined` keys, so the
  * runner's `range in input` checks behave intuitively.
  */
-function buildRunInput(step: PlanStep, timeline: unknown): SceneTimelineRunInput {
+function buildRunInput(
+  step: PlanStep,
+  timeline: unknown,
+  signal: AbortSignal | undefined,
+): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
     timeline,
   };
   if (step.range !== undefined) input.range = step.range;
   if (step.behavior !== undefined) input.behavior = step.behavior;
+  if (signal !== undefined) input.signal = signal;
   return input;
 }
 
@@ -216,15 +288,30 @@ function buildRunInput(step: PlanStep, timeline: unknown): SceneTimelineRunInput
  *  - A cleanup-only failure (timeline succeeded) is re-raised with
  *    `Error.cause` set to the original cleanup error.
  *
- * Out of scope here: cancellation / presenter interrupts. `range` and
- * `behavior` overrides are forwarded to the runner adapter unchanged
- * (the resolver does not interpret them — that is the runner's job
- * per ADR-011).
+ * PUL-F006 presenter-skip handling (`options.signal`): if the caller
+ * supplies an `AbortSignal`, the resolver checks `signal.aborted`
+ * before each scene's preload (so an abort between scenes prevents
+ * the next scene from being touched) and forwards the signal to the
+ * runner via `SceneTimelineRunInput.signal` (so the runner can honor
+ * a mid-scene abort by throwing, which routes through the
+ * cleanup-always path above). Pre-start aborts throw without
+ * visiting any scene; inter-scene aborts throw with the previously-
+ * completed scene id named in the message. The resolver does not
+ * inspect `signal.reason`; it is forwarded as `Error.cause`.
+ *
+ * `range` and `behavior` overrides are forwarded to the runner adapter
+ * unchanged (the resolver does not interpret them — that is the
+ * runner's job per ADR-011).
  */
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
-  const { registry, manifest, ctx, preloadAssets, runTimeline } = options;
+  const { registry, manifest, ctx, preloadAssets, runTimeline, signal } = options;
 
   assertCompositionManifest(manifest);
+  // PUL-F006 abort-before-start: if the caller's signal is already
+  // aborted when the resolver is invoked, fail without touching any
+  // scene. No preload runs, no create runs, no cleanup runs (because
+  // no scene was ever activated — there is nothing to clean up).
+  throwIfAborted(signal, 'aborted before any scene was visited');
   const plan = buildPlan(manifest, registry);
 
   // Per-scene lifecycle, strictly sequential. Each iteration runs
@@ -233,9 +320,23 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // owned `plan` snapshot means lifecycle callbacks cannot mutate the
   // execution path mid-flight by reaching back into the caller's
   // manifest.
+  //
+  // PUL-F006 inter-scene skip: between scenes (after `runScene`
+  // returns successfully), re-check the signal. If aborted, throw
+  // without visiting subsequent scenes. The just-completed scene's
+  // cleanup has already run inside `runScene`, so the cleanup-always
+  // invariant holds for the last activated scene.
+  let lastCompletedSceneId: string | undefined;
   for (const step of plan) {
+    throwIfAborted(
+      signal,
+      lastCompletedSceneId === undefined
+        ? 'aborted before any scene was visited'
+        : `aborted between scenes after "${lastCompletedSceneId}"`,
+    );
     await preloadScene(step.scene, preloadAssets);
-    await runScene(step, ctx, runTimeline);
+    await runScene(step, ctx, runTimeline, signal);
+    lastCompletedSceneId = step.scene.id;
   }
 }
 
@@ -293,6 +394,7 @@ async function runScene(
   step: PlanStep,
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
+  signal: AbortSignal | undefined,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -310,7 +412,7 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(step, timeline));
+    await runTimeline(buildRunInput(step, timeline, signal));
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

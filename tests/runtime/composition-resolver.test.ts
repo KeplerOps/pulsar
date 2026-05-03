@@ -1009,80 +1009,89 @@ describe('per-scene cleanup invocation (PUL-F006)', () => {
     ]);
   });
 
-  it('presenter skip (single-scene, runner exits early after partial timeline traversal): cleanup still runs exactly once and the skipped tail is observably absent', async () => {
-    // Codex review hardening: the previous version of this test had a
-    // runner that returned `undefined` immediately, which was
-    // indistinguishable from ordinary happy-path completion and did
-    // not actually pin a "skip" exit path. We model presenter skip
-    // here as a runner that traverses some pretend timeline beats and
-    // exits BEFORE reaching the final beat — observably partial work.
-    // ADR-011 defers AbortSignal-based cancellation to the wave-1
-    // re-evaluation around PUL-F020; PUL-F006 only guarantees the
-    // cleanup invariant the wave-1 skip mechanism will rely on.
-    const beatsReached: string[] = [];
-    const PRETEND_BEATS = ['intro', 'middle', 'final'] as const;
+  it('presenter skip mid-scene via AbortSignal: runner throws via signal.throwIfAborted, cleanup still runs exactly once for the active scene, subsequent scenes are not visited', async () => {
+    // PUL-F006 presenter-skip exit path with a real cancellation
+    // contract. The caller supplies an AbortSignal; the runner observes
+    // it via SceneTimelineRunInput.signal and bails. The resolver's
+    // cleanup-always invariant (runScene's unconditional second
+    // try/catch) still fires for the active scene, then the abort
+    // propagates and subsequent scenes are not visited.
+    const controller = new AbortController();
+    let runnerSawSignal = false;
     const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: ({ scene }) => {
-        for (const beat of PRETEND_BEATS) {
-          if (beat === 'final') {
-            // Presenter skip cue arrived — return early, do NOT reach
-            // the 'final' beat. This is the distinguishing marker:
-            // happy-path completion would record all three beats.
-            return;
-          }
-          beatsReached.push(`${scene.id}:${beat}`);
-        }
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: ({ signal }) => {
+        runnerSawSignal = signal !== undefined;
+        // Simulate a presenter skip cue mid-runner.
+        controller.abort(new Error('skip cue'));
+        // Honor the signal cooperatively.
+        signal?.throwIfAborted();
+        // unreachable past throwIfAborted
       },
     });
-    await resolveComposition(options);
-    // Skipped runner reached only the pre-skip beats — NOT the final
-    // beat. This distinguishes "skip" from "ordinary completion".
-    expect(beatsReached).toEqual(['scene-a:intro', 'scene-a:middle']);
-    // And cleanup still ran exactly once despite the early exit.
+    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow();
+    expect(runnerSawSignal).toBe(true);
+    // Active scene's cleanup ran exactly once — the cleanup-always
+    // invariant holds even when the runner aborts.
     expect(cleanupCount(log, 'scene-a')).toBe(1);
+    // Scene B was never visited (no preload, no create, no cleanup).
+    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
   });
 
-  it('presenter skip mid-composition: skipped scene receives cleanup after partial timeline traversal, and the next scene runs in full', async () => {
-    // Same hardening as the single-scene skip test — model partial
-    // work so the assertion is not indistinguishable from a happy-path
-    // multi-scene completion.
-    const beatsReached: string[] = [];
-    const PRETEND_BEATS = ['intro', 'middle', 'final'] as const;
+  it('presenter skip between scenes via AbortSignal: signal aborted after scene-a completes, scene-b is not preloaded or mounted', async () => {
+    // PUL-F006 inter-scene skip path. Scene A runs to completion
+    // (including cleanup); the signal is aborted just after. The
+    // resolver re-checks the signal between scenes and refuses to
+    // visit scene B. The error message names the previously-completed
+    // scene so callers can correlate.
+    const controller = new AbortController();
     const { log, options } = buildHarness({
       scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
       manifest: ['scene-a', 'scene-b'],
       runTimeline: ({ scene }) => {
-        for (const beat of PRETEND_BEATS) {
-          if (scene.id === 'scene-a' && beat === 'final') {
-            // Skip on scene-a's final beat — observably partial.
-            return;
-          }
-          beatsReached.push(`${scene.id}:${beat}`);
+        if (scene.id === 'scene-a') {
+          log.push({ hook: 'runTimeline', sceneId: scene.id });
+          // Abort fires DURING scene-a's runner, but the resolver
+          // does not check the signal again until scene-a's cleanup
+          // has completed and the loop is about to preload scene-b.
+          controller.abort(new Error('end of scene a, skip rest'));
+          return;
         }
-        log.push({ hook: 'runTimeline', sceneId: scene.id });
       },
     });
-    await resolveComposition(options);
-    // Scene A: skipped before reaching 'final'. Scene B: full traversal.
-    expect(beatsReached).toEqual([
-      'scene-a:intro',
-      'scene-a:middle',
-      'scene-b:intro',
-      'scene-b:middle',
-      'scene-b:final',
-    ]);
+    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
+      /^composition resolution failed: aborted between scenes after "scene-a"$/,
+    );
+    // Scene A had its full lifecycle including cleanup.
     expect(cleanupCount(log, 'scene-a')).toBe(1);
-    expect(cleanupCount(log, 'scene-b')).toBe(1);
-    // Scene B gets its full resolver lifecycle after the skip on A.
-    expect(log.filter((c) => c.sceneId === 'scene-b').map((c) => c.hook)).toEqual([
+    expect(log.filter((c) => c.sceneId === 'scene-a').map((c) => c.hook)).toEqual([
       'preload',
       'create',
       'timeline',
       'runTimeline',
       'cleanup',
     ]);
+    // Scene B was never visited.
+    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
+  });
+
+  it('presenter skip pre-start (signal already aborted on entry): no scene is mounted, no cleanup is invoked, resolver throws immediately', async () => {
+    // Edge of the PUL-F006 skip contract: the caller may abort the
+    // signal before resolveComposition is ever called. The resolver
+    // must not start any scene — there is nothing to clean up because
+    // nothing was activated.
+    const controller = new AbortController();
+    controller.abort(new Error('aborted before invocation'));
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+    });
+    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
+      /^composition resolution failed: aborted before any scene was visited$/,
+    );
+    // Nothing was touched — no preload, no create, no cleanup.
+    expect(log).toEqual([]);
   });
 
   it("composition end: the final scene's cleanup is the terminal lifecycle call (no preload, create, timeline, or cleanup after it)", async () => {
