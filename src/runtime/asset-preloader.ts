@@ -115,6 +115,16 @@ export interface AssetPreloaderOptions {
    * The allowlist is also re-checked against the response's final URL
    * after fetch (defense against allowed-URL → disallowed-scheme
    * redirects).
+   *
+   * Caveat: relative-path assets (e.g. `'/foo.png'`, `'images/x.png'`)
+   * with no `baseUrl` configured bypass scheme validation entirely,
+   * because the final scheme depends on the browser's
+   * `document.baseURI` and cannot be checked statically. Production
+   * callers wanting strict scheme enforcement MUST also set `baseUrl`
+   * so every asset resolves to an absolute URL the preloader can
+   * scheme-check up front. Without `baseUrl`, the allowlist only
+   * applies to assets that declare an explicit scheme (or `//host/...`
+   * which is rejected outright).
    */
   readonly allowedSchemes?: readonly string[];
 }

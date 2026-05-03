@@ -172,11 +172,35 @@ not need to change for that layer to land.
   serve from cache" semantics pass `init: { cache: 'force-cache' }`.
   The preloader does not impose a default — the bootstrap and the
   exporter each have different needs.
-- Reading `response.arrayBuffer()` allocates the full asset bytes in
-  memory transiently before they're GC'd. For very large assets
-  (multi-megabyte audio or video) this is wasteful compared to a
-  streaming drain. If profiling motivates it, a future change can
-  swap to a `body.getReader()` loop without changing the public API.
+- The preloader uses generic `fetch` with no parallelism cap, so a
+  scene with many large assets briefly opens that many concurrent
+  connections. Bounded concurrency is not implemented; if profiling
+  motivates it, an `AssetPreloaderOptions.concurrency` option can be
+  added without changing the public failure semantics.
+- The preloader uses CORS-restricted `fetch` (the default). Cross-
+  origin assets without `Access-Control-Allow-Origin` headers cannot
+  be preloaded — they reject as `fetch failed: ...` and abort the
+  composition. For browser deployments that load assets from a CDN
+  or third-party origin, the deployment is responsible for ensuring
+  CORS headers are present. A `<link rel="preload">` or `Image()`
+  fallback path with weaker semantics (no body verification, no
+  failure surfacing) is deliberately not shipped here — it would
+  conflict with the "fail loud on missing assets" contract per the
+  codex preflight guardrails. A future requirement may add an
+  opt-in CORS-bypass path for surfaces that explicitly accept the
+  weaker contract.
+- Relative-path assets (e.g. `'/foo.png'`) without a configured
+  `baseUrl` bypass scheme validation entirely — the browser resolves
+  them against `document.baseURI` whose protocol the preloader
+  cannot statically check. Production callers wanting strict scheme
+  enforcement (e.g. `allowedSchemes: ['https:']`) MUST also set
+  `baseUrl` so every asset resolves to an absolute URL the preloader
+  can scheme-check up front. Without `baseUrl`, the allowlist only
+  covers assets that declare an explicit scheme (or `//host/...`
+  which is rejected outright). This trade-off is intentional: the
+  browser's same-origin default makes relative paths safe in normal
+  usage, and forcing a `baseUrl` everywhere would harm the local
+  dev / workbench UX.
 
 ### Risks
 
@@ -186,6 +210,7 @@ not need to change for that layer to land.
 | Screenshot mode lands and depends on decode-complete, but the team forgets the boundary. | When PUL-F005's customer requirement hits, the implementer reads this ADR (linked from the resolver and the preloader module comments), notices the gap, and ships the decode layer as part of that work. The link from `src/runtime/asset-preloader.ts` to ADR-012 is the breadcrumb. |
 | Two scenes share an asset URL; the same URL is fetched twice across consecutive scenes. | The HTTP cache (browser or `undici`) handles cross-scene dedup transparently for cacheable URLs. The preloader does not maintain a separate dedup map; if profiling shows this matters for non-cacheable URLs, a future change can add an in-memory dedup keyed by URL string. |
 | `init.signal` cancellation arrives mid-drain and the preloader propagates a partial failure. | The current behavior surfaces the cancellation as one entry in `AggregateError.errors`. Callers driving cancellation from outside (e.g. the workbench during scene navigation) are responsible for treating cancellation as a non-fatal abort separate from genuine asset failures. |
+| SSRF via `scene.assets` declaring loopback / link-local IPs (e.g. `http://127.0.0.1:...`, `http://169.254.169.254/`). | The scheme allowlist alone does not block these; `http:` and `https:` allow any host. Production deployments wanting host-level defense need to either restrict at the network layer (egress firewall blocking RFC 1918 / RFC 6890 ranges) or wait for a future `originAllowlist` option on the preloader. Surfaces processing untrusted scene metadata MUST adopt one of these defenses. |
 
 ## Related ADRs
 
