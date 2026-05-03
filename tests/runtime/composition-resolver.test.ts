@@ -707,6 +707,97 @@ describe('resolveComposition (PUL-F004)', () => {
     });
   });
 
+  describe('non-Error throw paths (codex review: do not use undefined as failure sentinel)', () => {
+    // `throw undefined` and `Promise.reject(undefined)` are both legal
+    // JS. The resolver must still treat them as failures. These tests
+    // pin that: dropping the boolean failure flags in favor of
+    // `phaseError !== undefined` would silently swallow these cases.
+    it('treats `throw undefined` from create as a failure (no scene-completed pretense)', async () => {
+      const cleanupCalls: number[] = [];
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            create: () => {
+              throw undefined;
+            },
+            cleanup: () => {
+              cleanupCalls.push(1);
+            },
+          },
+        ],
+        manifest: ['scene-a'],
+      });
+      await expect(resolveComposition(options)).rejects.toThrow(
+        /^composition resolution failed: scene "scene-a" create threw: undefined$/,
+      );
+      // Cleanup must still run because create was attempted.
+      expect(cleanupCalls).toEqual([1]);
+    });
+
+    it('treats `Promise.reject(undefined)` from runTimeline as a failure', async () => {
+      const cleanupCalls: number[] = [];
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            cleanup: () => {
+              cleanupCalls.push(1);
+            },
+          },
+        ],
+        manifest: ['scene-a'],
+        runTimeline: () => Promise.reject(undefined),
+      });
+      await expect(resolveComposition(options)).rejects.toThrow(
+        /^composition resolution failed: scene "scene-a" timeline threw: undefined$/,
+      );
+      expect(cleanupCalls).toEqual([1]);
+    });
+
+    it('treats `throw undefined` from cleanup as a failure', async () => {
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            cleanup: () => {
+              throw undefined;
+            },
+          },
+        ],
+        manifest: ['scene-a'],
+      });
+      await expect(resolveComposition(options)).rejects.toThrow(
+        /^composition resolution failed: scene "scene-a" cleanup threw: undefined$/,
+      );
+    });
+
+    it('treats `throw undefined` from preloadAssets as a failure (no create / cleanup)', async () => {
+      const log: string[] = [];
+      const { options } = buildHarness({
+        scenes: [
+          {
+            id: 'scene-a',
+            create: () => {
+              log.push('create');
+            },
+            cleanup: () => {
+              log.push('cleanup');
+            },
+          },
+        ],
+        manifest: ['scene-a'],
+        preloadAssets: () => {
+          throw undefined;
+        },
+      });
+      await expect(resolveComposition(options)).rejects.toThrow(
+        /^composition resolution failed: scene "scene-a" preloadAssets threw: undefined$/,
+      );
+      expect(log).toEqual([]);
+    });
+  });
+
   describe('manifest entry shapes', () => {
     it('accepts object entries with range / behavior overrides without reading either field', async () => {
       const log: string[] = [];
@@ -765,9 +856,13 @@ describe('resolveComposition (PUL-F004)', () => {
       ]);
     });
 
-    it('drives the ADR-002 trailer fixture (mixed bare-string + object entries) end-to-end in order', async () => {
+    it('drives the ADR-002 trailer fixture (object entries with range overrides) end-to-end in order', async () => {
       const { log, options } = buildHarness({
         scenes: [{ id: 'scene-a' }, { id: 'scene-c' }],
+        // Literal copy of ADR-002 §Composition manifests `trailer`
+        // example. Both entries are object form; bare-string mixing is
+        // exercised separately below to keep this assertion honest
+        // about which fixture path it pins.
         manifest: [
           { id: 'scene-a', range: ['intro', 'hook'] },
           { id: 'scene-c', range: 'payoff' },
@@ -780,6 +875,35 @@ describe('resolveComposition (PUL-F004)', () => {
         'timeline:scene-a',
         'runTimeline:scene-a',
         'cleanup:scene-a',
+        'preload:scene-c',
+        'create:scene-c',
+        'timeline:scene-c',
+        'runTimeline:scene-c',
+        'cleanup:scene-c',
+      ]);
+    });
+
+    it('drives a manifest mixing bare-string and object entries end-to-end in declared order', async () => {
+      const { log, options } = buildHarness({
+        scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
+        manifest: [
+          'scene-a',
+          { id: 'scene-b', range: 'beat-1', behavior: { mode: 'demo' } },
+          'scene-c',
+        ],
+      });
+      await resolveComposition(options);
+      expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
+        'preload:scene-a',
+        'create:scene-a',
+        'timeline:scene-a',
+        'runTimeline:scene-a',
+        'cleanup:scene-a',
+        'preload:scene-b',
+        'create:scene-b',
+        'timeline:scene-b',
+        'runTimeline:scene-b',
+        'cleanup:scene-b',
         'preload:scene-c',
         'create:scene-c',
         'timeline:scene-c',

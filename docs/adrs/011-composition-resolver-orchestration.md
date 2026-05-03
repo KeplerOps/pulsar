@@ -125,7 +125,7 @@ identity, so synchronous timeline factories are unaffected.
 |------|-----------|
 | Future presenter-interrupt support might need state the resolver currently does not own. | The orchestrator's small surface (one async function, two callbacks) is easy to extend; cancellation can land as an `AbortSignal` option without changing the failure semantics. Re-evaluate when PUL-F005+ specifies presenter controls. |
 | The "do not interpret `range` / `behavior`" deferral could be missed by future work, leading to silent acceptance of overrides that don't do anything. | Test `'accepts object entries with range / behavior overrides without reading either field'` pins the deferral; any future change that starts interpreting them must adjust this test, surfacing the intent explicitly. |
-| Two failing hooks (timeline + cleanup) could surface as a confusing single error. | The wrapping error message names both, and the cause chain (top → phase → cleanup) preserves both error objects for programmatic inspection; tests pin both surfaces. |
+| Two failing hooks (timeline + cleanup) could surface as a confusing single error. | The wrapping error message names both, and the `AggregateError.errors` array carries both error objects in order for programmatic inspection (no `Error.cause` chain — `errors[]` is the public contract). Neither caller-supplied error is mutated. Tests pin both surfaces. |
 
 ## Related ADRs
 

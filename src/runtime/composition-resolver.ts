@@ -253,7 +253,12 @@ async function runScene(
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
 ): Promise<void> {
+  // Track failure with explicit booleans so `throw undefined` /
+  // `Promise.reject(undefined)` are still treated as failures. Using
+  // `phaseError !== undefined` as the sentinel would silently swallow
+  // those (legal JS) cases.
   let phase: 'create' | 'timeline' = 'create';
+  let phaseFailed = false;
   let phaseError: unknown;
   try {
     await scene.create(ctx);
@@ -265,46 +270,53 @@ async function runScene(
     const timeline = await scene.timeline(ctx);
     await runTimeline(buildRunInput(scene, entry, timeline));
   } catch (err) {
+    phaseFailed = true;
     phaseError = err;
   }
 
+  let cleanupFailed = false;
   let cleanupError: unknown;
   try {
     await scene.cleanup(ctx);
   } catch (err) {
+    cleanupFailed = true;
     cleanupError = err;
   }
 
-  finalizeSceneFailure(scene, phase, phaseError, cleanupError);
+  finalizeSceneFailure(scene, phase, phaseFailed, phaseError, cleanupFailed, cleanupError);
 }
 
 /**
- * Convert the pair `(phaseError, cleanupError)` into a thrown wrapping
- * error, or return cleanly when both are absent.
+ * Convert the failure flags into a thrown wrapping error, or return
+ * cleanly when neither phase nor cleanup failed.
  *
- * - Both present: throws an `AggregateError` whose `errors` array
+ * - Both failed: throws an `AggregateError` whose `errors` array
  *   carries both the phase error and the cleanup error in order. The
- *   message names both. Neither caller-supplied error is mutated.
- * - Only `phaseError`: rethrown wrapped, with the original as
+ *   message names both. Neither caller-supplied error is mutated. The
+ *   `errors` array — NOT `Error.cause` — is the public contract for
+ *   double-fault recovery.
+ * - Only phase failed: rethrown wrapped, with the original as
  *   `Error.cause`.
- * - Only `cleanupError`: rethrown wrapped as a cleanup-only failure.
+ * - Only cleanup failed: rethrown wrapped as a cleanup-only failure.
  */
 function finalizeSceneFailure(
   scene: SceneModule,
   phase: 'create' | 'timeline',
+  phaseFailed: boolean,
   phaseError: unknown,
+  cleanupFailed: boolean,
   cleanupError: unknown,
 ): void {
-  if (phaseError !== undefined && cleanupError !== undefined) {
+  if (phaseFailed && cleanupFailed) {
     throw failAggregate(
       `scene "${scene.id}" ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
       [phaseError, cleanupError],
     );
   }
-  if (phaseError !== undefined) {
+  if (phaseFailed) {
     throw fail(`scene "${scene.id}" ${phase} threw: ${describe(phaseError)}`, phaseError);
   }
-  if (cleanupError !== undefined) {
+  if (cleanupFailed) {
     throw fail(`scene "${scene.id}" cleanup threw: ${describe(cleanupError)}`, cleanupError);
   }
 }
