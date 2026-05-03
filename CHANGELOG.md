@@ -22,17 +22,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `baseUrl` differs) so multi-asset failures stay distinguishable.
   Configurable via `AssetPreloaderOptions.{fetch, init, baseUrl,
   allowedSchemes}`. Function signature
-  `(scene: SceneModule) => Promise<void>` is structurally compatible
-  with PUL-F004's `AssetPreloader` adapter slot. Clause (a) is
-  satisfied by PUL-F001's `SceneModule.assets`. See ADR-012 for the
-  byte-warming-vs-decode-complete boundary, the SSRF posture, and the
-  cross-origin credential caveat.
+  `(scene: SceneModule) => Promise<void>` plugs straight into PUL-F004's
+  `AssetPreloader` adapter slot — workbench bootstrap will pass
+  `createAssetPreloader()` to `resolveComposition({ preloadAssets, ... })`.
+  Clause (a) is satisfied by PUL-F001's `SceneModule.assets`. See
+  ADR-012 for the byte-warming-vs-decode-complete boundary, the SSRF
+  posture, and the cross-origin credential caveat.
 - `tests/runtime/asset-preloader.test.ts` — 34-case Vitest spec for
   the preloader behaviors above; tests inject a fake `fetch` per case
   (no global mutation, no MSW).
 - `docs/adrs/012-asset-preloader-fetch-and-drain.md` (also registered
-  in Ground Control via `gc_create_adr`).
+  in Ground Control via `gc_create_adr`); `docs/adrs/README.md` —
+  adds the ADR-012 row.
 
+- `src/runtime/composition-resolver.ts` — `resolveComposition` async
+  function plus `ResolveCompositionOptions`, `AssetPreloader`,
+  `SceneTimelineRunInput`, and `SceneTimelineRunner` types. Implements
+  PUL-F004 (composition resolution): given a `SceneRegistry` and a
+  `CompositionManifest`, the runtime (a) calls
+  `assertCompositionManifest` defensively then aggregates every missing
+  scene id into a single actionable error before any side effect; (b)
+  per scene, `await`s the injected `preloadAssets(scene)` adapter; (c)
+  `await`s `scene.create(ctx)`; (d) `await`s the value of
+  `scene.timeline(ctx)` (so async timeline factories resolve to a
+  concrete timeline) then `await`s
+  `runTimeline({ scene, timeline, range?, behavior? })` — `range` and
+  `behavior` overrides from object entries flow through the runner
+  input unchanged so the future GSAP runner can honor sub-range cuts
+  and behavior overrides without another resolver-signature change;
+  (e) always `await`s `scene.cleanup(ctx)` whenever the scene was
+  touched (mandatory cleanup per ADR-008 / PUL-P001 — runs after
+  `create` failure when resources may have been partially acquired,
+  and after timeline failure). Errors carry a `composition resolution
+  failed:` prefix; single-failure errors preserve the original as
+  `Error.cause`; combined lifecycle-phase + cleanup failures throw an
+  `AggregateError` whose `errors` array carries both errors in order
+  (the resolver does not mutate caller-supplied errors). Scene `ctx`
+  is opaque to the resolver and passed straight through.
+- `tests/runtime/composition-resolver.test.ts` — 27-test Vitest spec
+  covering every clause of PUL-F004: manifest-defense boundary;
+  clause-(a) pre-flight existence with single, multiple, and object-
+  entry missing ids plus the "no side effect before pre-flight"
+  invariant; clause-(b) preload order, async-await ordering, and abort
+  semantics; clause-(c) `create(ctx)` ordering plus the "still calls
+  cleanup when create rejects" rule; clause-(d) timeline-value
+  pass-through, async-await ordering, and the timeline-throws-cleanup-
+  still-runs rule (separately for `scene.timeline(ctx)` itself
+  throwing and for the runner adapter rejecting); clause-(e) cleanup
+  ordering across a 3-scene happy path, cleanup-only failures,
+  combined timeline+cleanup failures with cause chaining, and combined
+  create+cleanup failures; sync vs async lifecycle hook handling; the
+  range/behavior pass-through deferral; the codex-preflight no-dedup
+  invariant for repeated scene ids; and the ADR-002 `trailer` fixture
+  driven end-to-end with mixed bare-string and object entries.
+- `docs/adrs/011-composition-resolver-orchestration.md` — records the
+  decision that the composition resolver is a pure orchestrator that
+  owns lifecycle order, mandatory-cleanup invariant, and aggregated
+  failure semantics, while delegating asset preloading and timeline
+  execution to injected callbacks (`AssetPreloader`,
+  `SceneTimelineRunner`). Documents the deferral of `range` /
+  `behavior` interpretation to the timeline runner adapter so the
+  resolver does not weld itself to one timeline engine (keeping
+  ADR-003's swappable `ctx.gsap` decision intact). ADR-011 is
+  registered in Ground Control via `gc_create_adr`.
+- `docs/adrs/README.md` index — backfills missing rows for ADR-010
+  (Issue Tag Taxonomy) and ADR-011 (Composition Resolver
+  Orchestration) so the table stays in sync with the files on disk.
 - `src/runtime/composition.ts` — `CompositionManifest`,
   `CompositionEntry`, `CompositionEntryOverride`, `SubRange`, and
   `BehaviorOverride` types plus `assertCompositionManifest` runtime
