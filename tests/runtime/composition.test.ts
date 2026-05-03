@@ -89,17 +89,17 @@ describe('CompositionManifest format (PUL-F003)', () => {
       });
     });
 
-    it('rejects when the failing entry is in the middle of the manifest, reporting its index', () => {
+    it('rejects when the failing entry is in the middle of the manifest, reporting its index and field', () => {
       const manifest = ['scene-a', 'scene-b', 'Bad-Entry', 'scene-c'];
       expect(() => assertCompositionManifest(manifest)).toThrow(
-        /^composition entry \[2\] is invalid:/,
+        /^composition entry \[2\] is invalid: id must be a non-empty lowercase kebab-case string/,
       );
     });
 
     it('rejects when the failing entry is the last entry', () => {
       const manifest = ['scene-a', 'scene-b', ''];
       expect(() => assertCompositionManifest(manifest)).toThrow(
-        /^composition entry \[2\] is invalid:/,
+        /^composition entry \[2\] is invalid: id must be a non-empty lowercase kebab-case string/,
       );
     });
   });
@@ -309,6 +309,13 @@ describe('CompositionManifest format (PUL-F003)', () => {
     });
 
     describe('object entries — top-level shape rejections', () => {
+      // Note: `null` and `undefined` would normally route through the
+      // entry-shape branch (`!isPlainRecord`), but the validator's
+      // bare-string branch only fires for typeof === 'string', so
+      // these fall through to the same "entry must be ..." message.
+      // Numbers/booleans/arrays do the same. Lock the message verbatim
+      // so a regression that changes the field name (`entry`) or the
+      // condition text gets caught.
       it.each<[string, unknown]>([
         ['null', null],
         ['undefined', undefined],
@@ -317,7 +324,7 @@ describe('CompositionManifest format (PUL-F003)', () => {
         ['array', ['scene-a']],
       ])('rejects a non-plain-object entry (%s)', (_label, entry) => {
         expect(() => assertCompositionManifest([entry])).toThrow(
-          /^composition entry \[0\] is invalid:/,
+          /^composition entry \[0\] is invalid: entry must be a kebab-case scene id string or a \{ id, range\?, behavior\? \} object/,
         );
       });
 
@@ -341,7 +348,7 @@ describe('CompositionManifest format (PUL-F003)', () => {
         ],
       ])('rejects %s as an entry (must be a plain { id, ... } object)', (_label, makeEntry) => {
         expect(() => assertCompositionManifest([makeEntry()])).toThrow(
-          /^composition entry \[0\] is invalid:/,
+          /^composition entry \[0\] is invalid: entry must be a kebab-case scene id string or a \{ id, range\?, behavior\? \} object/,
         );
       });
     });
