@@ -216,8 +216,12 @@ describe('resolveComposition (PUL-F004)', () => {
         },
       });
       const resolverPromise = resolveComposition(options);
-      // microtask flush: preload should have started but not yet finished
-      await Promise.resolve();
+      // Flush microtasks until the preloader adapter has started, so the
+      // assertion does not depend on the number of internal await hops
+      // between resolveComposition and the adapter.
+      while (log.length === 0) {
+        await Promise.resolve();
+      }
       expect(log).toEqual(['preload-scene-a-start']);
       resolvePreloadA?.();
       await resolverPromise;
@@ -385,8 +389,12 @@ describe('resolveComposition (PUL-F004)', () => {
         },
       });
       const resolverPromise = resolveComposition(options);
-      await Promise.resolve();
-      await Promise.resolve();
+      // Flush microtasks until runTimeline has started executing, so
+      // the assertion does not depend on the number of internal await
+      // hops between resolveComposition and the runner adapter.
+      while (log.length === 0) {
+        await Promise.resolve();
+      }
       expect(log).toEqual(['runTimeline-scene-a-start']);
       resolveRun?.();
       await resolverPromise;

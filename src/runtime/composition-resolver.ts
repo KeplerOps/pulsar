@@ -139,76 +139,114 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   const { registry, manifest, ctx, preloadAssets, runTimeline } = options;
 
   assertCompositionManifest(manifest);
+  preflightSceneIds(manifest, registry);
 
-  // Clause (a): aggregate every missing id in entry order.
+  // Per-scene lifecycle, strictly sequential. Each iteration runs
+  // preload → create → timeline → cleanup before the next iteration's
+  // preload begins (clause e of PUL-F004).
+  for (const entry of manifest) {
+    const scene = registry.get(entryId(entry));
+    await preloadScene(scene, preloadAssets);
+    await runScene(scene, ctx, runTimeline);
+  }
+}
+
+/**
+ * Clause (a): walk every entry, aggregate ALL missing scene ids into
+ * a single error before any side effect, and throw if any are missing.
+ * Aggregating beats fail-on-first because a manifest author fixes
+ * every typo in one pass.
+ */
+function preflightSceneIds(manifest: CompositionManifest, registry: SceneRegistry): void {
   const missing: { readonly index: number; readonly id: string }[] = [];
-  for (let index = 0; index < manifest.length; index += 1) {
-    const entry = manifest[index];
-    if (entry === undefined) continue; // unreachable: assertCompositionManifest accepted it
+  for (const [index, entry] of manifest.entries()) {
     const id = entryId(entry);
     if (!registry.has(id)) {
       missing.push({ index, id });
     }
   }
-  if (missing.length > 0) {
-    const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
-    throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  if (missing.length === 0) return;
+  const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
+  throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+}
+
+/**
+ * Clause (b): await the injected asset preloader for one scene. A
+ * preload failure aborts before any lifecycle hook touches the scene
+ * — neither `create` nor `cleanup` runs.
+ */
+async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): Promise<void> {
+  try {
+    await preloadAssets(scene);
+  } catch (cause) {
+    throw fail(`scene "${scene.id}" preloadAssets threw: ${describe(cause)}`, cause);
+  }
+}
+
+/**
+ * Clauses (c), (d), (e): mount, run timeline, cleanup. Both `create`
+ * and `timeline` run inside a single try so cleanup fires whenever
+ * the scene was touched (codex preflight: cleanup must run after
+ * `create` OR timeline execution if resources may have been acquired).
+ * Cleanup failures are surfaced through {@link finalizeSceneFailure}.
+ */
+async function runScene(
+  scene: SceneModule,
+  ctx: unknown,
+  runTimeline: SceneTimelineRunner,
+): Promise<void> {
+  let phase: 'create' | 'timeline' = 'create';
+  let phaseError: unknown;
+  try {
+    await scene.create(ctx);
+    phase = 'timeline';
+    const timeline = scene.timeline(ctx);
+    await runTimeline(scene, timeline);
+  } catch (err) {
+    phaseError = err;
   }
 
-  // Per-scene lifecycle, strictly sequential.
-  for (let index = 0; index < manifest.length; index += 1) {
-    const entry = manifest[index];
-    if (entry === undefined) continue; // unreachable per the assert above
-    const scene = registry.get(entryId(entry));
+  let cleanupError: unknown;
+  try {
+    await scene.cleanup(ctx);
+  } catch (err) {
+    cleanupError = err;
+  }
 
-    // Clause (b) — preload before any lifecycle hook touches the scene.
-    try {
-      await preloadAssets(scene);
-    } catch (cause) {
-      throw fail(`scene "${scene.id}" preloadAssets threw: ${describe(cause)}`, cause);
-    }
+  finalizeSceneFailure(scene, phase, phaseError, cleanupError);
+}
 
-    // Clauses (c), (d), (e). Both `create` and `timeline` execute
-    // inside a single try so the cleanup branch fires whenever the
-    // scene was touched (codex preflight: cleanup must run after
-    // create OR timeline if resources may have been acquired).
-    let phase: 'create' | 'timeline' = 'create';
-    let phaseError: unknown;
-    try {
-      await scene.create(ctx);
-      phase = 'timeline';
-      const timeline = scene.timeline(ctx);
-      await runTimeline(scene, timeline);
-    } catch (err) {
-      phaseError = err;
+/**
+ * Convert the pair `(phaseError, cleanupError)` into a thrown wrapping
+ * `Error`, or return cleanly when both are absent.
+ *
+ * - Both present: wrapping message names both; the cause-chain top →
+ *   phase → cleanup makes both errors programmatically recoverable.
+ *   Attaching `cleanupError` onto `phaseError` mutates the caller's
+ *   error object, but only when its `cause` is currently unset —
+ *   never overwrites an existing chain.
+ * - Only `phaseError`: rethrown wrapped, with the original as cause.
+ * - Only `cleanupError`: rethrown wrapped as a cleanup-only failure.
+ */
+function finalizeSceneFailure(
+  scene: SceneModule,
+  phase: 'create' | 'timeline',
+  phaseError: unknown,
+  cleanupError: unknown,
+): void {
+  if (phaseError !== undefined && cleanupError !== undefined) {
+    if (phaseError instanceof Error && phaseError.cause === undefined) {
+      phaseError.cause = cleanupError;
     }
-
-    let cleanupError: unknown;
-    try {
-      await scene.cleanup(ctx);
-    } catch (err) {
-      cleanupError = err;
-    }
-
-    if (phaseError !== undefined && cleanupError !== undefined) {
-      // Surface BOTH failures: the wrapping message names both, the
-      // cause-chain (top → phase → cleanup) makes them programmatically
-      // recoverable. Attaching cleanupError onto phaseError mutates the
-      // caller's error object, but only when its `cause` is currently
-      // unset — never overwrites an existing chain.
-      if (phaseError instanceof Error && phaseError.cause === undefined) {
-        phaseError.cause = cleanupError;
-      }
-      throw fail(
-        `scene "${scene.id}" ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
-        phaseError,
-      );
-    }
-    if (phaseError !== undefined) {
-      throw fail(`scene "${scene.id}" ${phase} threw: ${describe(phaseError)}`, phaseError);
-    }
-    if (cleanupError !== undefined) {
-      throw fail(`scene "${scene.id}" cleanup threw: ${describe(cleanupError)}`, cleanupError);
-    }
+    throw fail(
+      `scene "${scene.id}" ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
+      phaseError,
+    );
+  }
+  if (phaseError !== undefined) {
+    throw fail(`scene "${scene.id}" ${phase} threw: ${describe(phaseError)}`, phaseError);
+  }
+  if (cleanupError !== undefined) {
+    throw fail(`scene "${scene.id}" cleanup threw: ${describe(cleanupError)}`, cleanupError);
   }
 }
