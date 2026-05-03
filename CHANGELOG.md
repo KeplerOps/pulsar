@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/version.ts` exporting `PULSAR_RUNTIME_VERSION` plus a
+  Vitest spec covering it. First runtime symbol the test runner exercises.
 - Toolchain scaffold per ADR-009: TypeScript (strict), ESM, pnpm 9.15,
   Vite 6, Vitest 3 (`@vitest/coverage-v8` for lcov), Biome 1.9, Node 22
   LTS pinned via `.nvmrc` and `package.json` `engines` /
