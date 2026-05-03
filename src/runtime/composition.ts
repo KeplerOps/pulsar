@@ -21,7 +21,7 @@
 // rejected so typos surface immediately rather than silently
 // changing intent.
 
-import { isKebabIdentifier } from './identifier';
+import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { isPlainRecord } from './object';
 
 /**
@@ -65,8 +65,7 @@ export type CompositionManifest = readonly CompositionEntry[];
 
 const ALLOWED_OBJECT_KEYS = new Set<keyof CompositionEntryOverride>(['id', 'range', 'behavior']);
 
-const KEBAB_CONDITION =
-  'must be a non-empty lowercase kebab-case string ([a-z0-9] segments separated by single hyphens)';
+const KEBAB_CONDITION = `must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`;
 
 const RANGE_CONDITION =
   'must be a kebab-case beat label or a [start, end] tuple of kebab-case beat labels';

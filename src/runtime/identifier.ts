@@ -21,6 +21,14 @@
 export const KEBAB_IDENTIFIER_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /**
+ * Plain-English description of {@link KEBAB_IDENTIFIER_PATTERN} for
+ * use inside validator error messages. Exported so every caller
+ * composes a single source of truth — if the regex changes, the
+ * description changes here and every error message follows.
+ */
+export const KEBAB_IDENTIFIER_FORM = '[a-z0-9] segments separated by single hyphens';
+
+/**
  * Returns `true` when `value` is a string matching
  * {@link KEBAB_IDENTIFIER_PATTERN}.
  */

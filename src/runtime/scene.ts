@@ -17,7 +17,7 @@
 // Downstream consumers (registry, composition resolver, exporter)
 // must call assertSceneModule rather than re-implementing checks.
 
-import { isKebabIdentifier } from './identifier';
+import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { isPlainRecord } from './object';
 
 /**
@@ -122,8 +122,7 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
   {
     field: 'id',
     check: (v) => isSceneId(v.id),
-    condition:
-      'must be a non-empty lowercase kebab-case string ([a-z0-9] segments separated by single hyphens)',
+    condition: `must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
   },
   { field: 'title', check: (v) => typeof v.title === 'string', condition: 'must be a string' },
   {
@@ -145,8 +144,7 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
   {
     field: 'defaultNext',
     check: (v) => isSceneIdOrNull(v.defaultNext),
-    condition:
-      'must be a kebab-case scene id ([a-z0-9] segments separated by single hyphens) or null',
+    condition: `must be a kebab-case scene id (${KEBAB_IDENTIFIER_FORM}) or null`,
   },
   {
     field: 'standalone',
