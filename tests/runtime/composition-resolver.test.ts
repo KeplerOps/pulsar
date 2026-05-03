@@ -1009,41 +1009,73 @@ describe('per-scene cleanup invocation (PUL-F006)', () => {
     ]);
   });
 
-  it('presenter skip (single-scene, runner returns early without throwing): cleanup still runs exactly once', async () => {
-    let runnerCalls = 0;
+  it('presenter skip (single-scene, runner exits early after partial timeline traversal): cleanup still runs exactly once and the skipped tail is observably absent', async () => {
+    // Codex review hardening: the previous version of this test had a
+    // runner that returned `undefined` immediately, which was
+    // indistinguishable from ordinary happy-path completion and did
+    // not actually pin a "skip" exit path. We model presenter skip
+    // here as a runner that traverses some pretend timeline beats and
+    // exits BEFORE reaching the final beat — observably partial work.
+    // ADR-011 defers AbortSignal-based cancellation to the wave-1
+    // re-evaluation around PUL-F020; PUL-F006 only guarantees the
+    // cleanup invariant the wave-1 skip mechanism will rely on.
+    const beatsReached: string[] = [];
+    const PRETEND_BEATS = ['intro', 'middle', 'final'] as const;
     const { log, options } = buildHarness({
       scenes: [{ id: 'scene-a' }],
       manifest: ['scene-a'],
-      runTimeline: () => {
-        runnerCalls += 1;
-        // Cooperative early return — the cleanup-bearing exit shape
-        // a PUL-F020 presenter cue will produce. No throw.
+      runTimeline: ({ scene }) => {
+        for (const beat of PRETEND_BEATS) {
+          if (beat === 'final') {
+            // Presenter skip cue arrived — return early, do NOT reach
+            // the 'final' beat. This is the distinguishing marker:
+            // happy-path completion would record all three beats.
+            return;
+          }
+          beatsReached.push(`${scene.id}:${beat}`);
+        }
       },
     });
     await resolveComposition(options);
-    expect(runnerCalls).toBe(1);
+    // Skipped runner reached only the pre-skip beats — NOT the final
+    // beat. This distinguishes "skip" from "ordinary completion".
+    expect(beatsReached).toEqual(['scene-a:intro', 'scene-a:middle']);
+    // And cleanup still ran exactly once despite the early exit.
     expect(cleanupCount(log, 'scene-a')).toBe(1);
   });
 
-  it('presenter skip mid-composition: cleanup runs for the skipped scene and the next scene runs in full', async () => {
-    const skippedRunnerIds: string[] = [];
+  it('presenter skip mid-composition: skipped scene receives cleanup after partial timeline traversal, and the next scene runs in full', async () => {
+    // Same hardening as the single-scene skip test — model partial
+    // work so the assertion is not indistinguishable from a happy-path
+    // multi-scene completion.
+    const beatsReached: string[] = [];
+    const PRETEND_BEATS = ['intro', 'middle', 'final'] as const;
     const { log, options } = buildHarness({
       scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
       manifest: ['scene-a', 'scene-b'],
       runTimeline: ({ scene }) => {
-        if (scene.id === 'scene-a') {
-          skippedRunnerIds.push(scene.id);
-          // Cooperative skip on scene-a only — return early.
-          return;
+        for (const beat of PRETEND_BEATS) {
+          if (scene.id === 'scene-a' && beat === 'final') {
+            // Skip on scene-a's final beat — observably partial.
+            return;
+          }
+          beatsReached.push(`${scene.id}:${beat}`);
         }
         log.push({ hook: 'runTimeline', sceneId: scene.id });
       },
     });
     await resolveComposition(options);
-    expect(skippedRunnerIds).toEqual(['scene-a']);
+    // Scene A: skipped before reaching 'final'. Scene B: full traversal.
+    expect(beatsReached).toEqual([
+      'scene-a:intro',
+      'scene-a:middle',
+      'scene-b:intro',
+      'scene-b:middle',
+      'scene-b:final',
+    ]);
     expect(cleanupCount(log, 'scene-a')).toBe(1);
     expect(cleanupCount(log, 'scene-b')).toBe(1);
-    // Scene B receives its full lifecycle after the skip.
+    // Scene B gets its full resolver lifecycle after the skip on A.
     expect(log.filter((c) => c.sceneId === 'scene-b').map((c) => c.hook)).toEqual([
       'preload',
       'create',
