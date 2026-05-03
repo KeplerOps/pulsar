@@ -54,11 +54,33 @@ describe('placeholderScene', () => {
     expect(stage.attrs.has('data-pulsar-scene-lifecycle')).toBe(false);
   });
 
-  it('is a no-op when ctx has no stage handle', () => {
-    expect(() => placeholderScene.create(null)).not.toThrow();
-    expect(() => placeholderScene.create({})).not.toThrow();
-    expect(() => placeholderScene.create({ stage: null })).not.toThrow();
-    expect(() => placeholderScene.timeline(undefined)).not.toThrow();
-    expect(() => placeholderScene.cleanup(42)).not.toThrow();
+  // For ctx shapes the workbench predicate must reject (or where the
+  // stage handle is explicitly null), the lifecycle hooks must do
+  // nothing observable: no throw AND no side effect. The latter is
+  // verified by pre-populating an unrelated stage with a sentinel
+  // attribute and asserting nothing on that stage changes after the
+  // hook runs. This catches a regression where the predicate accepts
+  // a malformed ctx and the implementation accidentally reaches for
+  // a different stage handle (or the global `document`) — a no-throw-
+  // only assertion would miss that.
+  describe.each<[label: string, ctx: unknown]>([
+    ['null', null],
+    ['undefined', undefined],
+    ['number primitive', 42],
+    ['string primitive', 'ctx'],
+    ['object without `stage` key', {}],
+    ['object with `stage: null`', { stage: null }],
+  ])('is a no-op when ctx is %s', (_label, ctx) => {
+    it('does not throw and does not mutate any concurrently-existing stage', () => {
+      const sentinel = buildStage();
+      sentinel.attrs.set('data-unrelated', 'pristine');
+      expect(() => placeholderScene.create(ctx)).not.toThrow();
+      expect(() => placeholderScene.timeline(ctx)).not.toThrow();
+      expect(() => placeholderScene.cleanup(ctx)).not.toThrow();
+      // The sentinel stage was never wired into ctx; the lifecycle
+      // hooks must not reach for it.
+      expect(sentinel.attrs.get('data-unrelated')).toBe('pristine');
+      expect(sentinel.attrs.has('data-pulsar-scene-lifecycle')).toBe(false);
+    });
   });
 });
