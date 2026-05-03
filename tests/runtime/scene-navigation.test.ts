@@ -14,7 +14,11 @@
 //  - ADR-013 — URL grammar boundary; we consume `NavigationTarget`.
 
 import { describe, expect, it } from 'vitest';
-import { createCompositionRegistry } from '../../src/runtime/composition-registry';
+import type { CompositionManifest } from '../../src/runtime/composition';
+import {
+  type CompositionRegistry,
+  createCompositionRegistry,
+} from '../../src/runtime/composition-registry';
 import type { NavigationTarget } from '../../src/runtime/navigation';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
@@ -354,39 +358,51 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
   });
 
   describe('snapshot immutability', () => {
-    it('deep-freezes object-form entries in the slice (does not rely on the composition registry to do it)', () => {
+    it('deep-freezes the slice itself even when the composition registry returns mutable manifests', () => {
       // The dispatcher accepts the `CompositionRegistry` interface,
-      // not a specific implementation. Even a registry that does NOT
-      // deep-freeze its stored manifests must produce a slice whose
-      // object-form entries are frozen, so a caller cannot mutate
-      // `manifestSlice[0].behavior` between resolve and lifecycle
-      // dispatch. Test by constructing the registry path with mutable
-      // sources and asserting the slice's entries come back frozen.
+      // not a specific implementation. To prove the dispatcher does
+      // its OWN deep-freeze (rather than relying on
+      // `createCompositionRegistry` happening to deep-freeze), inject
+      // a hand-built registry that returns mutable nested objects.
+      // If the dispatcher reverted to a shallow `Object.freeze`,
+      // `slice[0].behavior.fade.duration` would remain mutable and
+      // the assertions below would fail.
       const middle = buildScene({ id: 'middle' });
       const outro = buildScene({ id: 'outro' });
       const scenes = createSceneRegistry([middle, outro]);
-      // Source manifest with mutable object-form entries; the
-      // composition registry (well-behaved here) deep-freezes on
-      // registration. The dispatcher's slice must also freeze, so
-      // that even if a future registry implementation ever skipped
-      // freezing, the slice remains immutable to the bridge.
-      const compositions = createCompositionRegistry([
-        {
-          id: 'mixed',
-          manifest: [
-            { id: 'middle', range: ['intro', 'hook'] },
-            { id: 'outro', behavior: { fade: { duration: 200 } } },
-          ],
+      const mutableManifest: CompositionManifest = [
+        { id: 'middle', range: ['intro', 'hook'] },
+        { id: 'outro', behavior: { fade: { duration: 200, ease: ['cubic'] }, flags: ['a'] } },
+      ];
+      // Hand-rolled CompositionRegistry that returns the mutable
+      // manifest as-is — no deep-freeze on its side.
+      const mutableCompositions: CompositionRegistry = {
+        get: () => mutableManifest,
+        has: () => true,
+        ids: () => ['mixed'],
+        get size() {
+          return 1;
         },
-      ]);
+      };
+
       const target = resolveSceneNavigation(compositionTarget('mixed'), {
         scenes,
-        compositions,
+        compositions: mutableCompositions,
       }) as SceneNavigationTarget;
+
       const slice = target.composition?.manifestSlice as unknown as readonly unknown[];
       expect(Object.isFrozen(slice)).toBe(true);
+      // Object-form entries are frozen.
       expect(Object.isFrozen(slice[0])).toBe(true);
       expect(Object.isFrozen(slice[1])).toBe(true);
+      // And nested objects/arrays inside `range` and `behavior` are
+      // frozen too — this is what the registry-not-freezing branch
+      // would miss with a shallow freeze.
+      const entry1 = slice[1] as { behavior: { fade: { ease: string[] }; flags: string[] } };
+      expect(Object.isFrozen(entry1.behavior)).toBe(true);
+      expect(Object.isFrozen(entry1.behavior.fade)).toBe(true);
+      expect(Object.isFrozen(entry1.behavior.fade.ease)).toBe(true);
+      expect(Object.isFrozen(entry1.behavior.flags)).toBe(true);
     });
 
     it('manifestSlice and sceneSlice are frozen', () => {
