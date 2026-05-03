@@ -20,14 +20,13 @@ export interface Caption {
 }
 
 /**
- * Scene context passed to the lifecycle functions. Refined by PUL-F002
- * (registry lifecycle) and ADR-003 / ADR-004 (timeline + audio surface
- * via `ctx.gsap`, `ctx.audio`). Until then, lifecycle implementations
- * should treat the value as opaque.
+ * Lifecycle function signature. The `ctx` argument is opaque here and
+ * refined by PUL-F002 (registry lifecycle) plus ADR-003 / ADR-004
+ * (timeline + audio surface via `ctx.gsap`, `ctx.audio`). Until then,
+ * lifecycle implementations should treat the value as opaque and
+ * route through whatever helpers the runtime exposes when they land.
  */
-export type SceneContext = unknown;
-
-export type SceneLifecycleFn = (ctx: SceneContext) => unknown;
+export type SceneLifecycleFn = (ctx: unknown) => unknown;
 
 /**
  * The contract every scene module exports per PUL-F001.
@@ -92,10 +91,69 @@ const isCaption = (v: unknown): v is Caption =>
 const isCaptionArray = (v: unknown): v is readonly Caption[] =>
   Array.isArray(v) && v.every(isCaption);
 
+const isStringOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';
+
 const fail = (id: string | undefined, field: string, condition: string): never => {
   const idLabel = id === undefined ? '?' : `"${id}"`;
   throw new Error(`scene ${idLabel} is invalid: ${field} ${condition}`);
 };
+
+interface FieldGuard {
+  readonly field: keyof SceneModule;
+  readonly check: (v: Record<string, unknown>) => boolean;
+  readonly condition: string;
+}
+
+const FIELD_GUARDS: readonly FieldGuard[] = [
+  { field: 'id', check: (v) => typeof v.id === 'string', condition: 'must be a string' },
+  { field: 'title', check: (v) => typeof v.title === 'string', condition: 'must be a string' },
+  {
+    field: 'duration',
+    check: (v) => isValidDuration(v.duration),
+    condition: 'must be a non-negative integer (ms) or null',
+  },
+  { field: 'tags', check: (v) => isStringArray(v.tags), condition: 'must be an array of strings' },
+  {
+    field: 'assets',
+    check: (v) => isStringArray(v.assets),
+    condition: 'must be an array of strings',
+  },
+  {
+    field: 'captions',
+    check: (v) => isCaptionArray(v.captions),
+    condition: 'must be an array of {at: number, text: string}',
+  },
+  {
+    field: 'defaultNext',
+    check: (v) => isStringOrNull(v.defaultNext),
+    condition: 'must be a string or null',
+  },
+  {
+    field: 'standalone',
+    check: (v) => typeof v.standalone === 'boolean',
+    condition: 'must be a boolean',
+  },
+  {
+    field: 'trailerSafe',
+    check: (v) => typeof v.trailerSafe === 'boolean',
+    condition: 'must be a boolean',
+  },
+  {
+    field: 'create',
+    check: (v) => typeof v.create === 'function',
+    condition: 'must be a function',
+  },
+  {
+    field: 'timeline',
+    check: (v) => typeof v.timeline === 'function',
+    condition: 'must be a function',
+  },
+  {
+    field: 'cleanup',
+    check: (v) => typeof v.cleanup === 'function',
+    condition: 'must be a function',
+  },
+];
 
 /**
  * Validates that `value` satisfies the {@link SceneModule} contract.
@@ -112,9 +170,9 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
     throw new Error('scene ? is invalid: value must be a non-null object');
   }
 
-  // Capture id for error messages when it is present and a string.
-  // If id is missing or wrong-typed, the relevant check below raises
-  // with `?` as the entity label.
+  // Capture id for error messages when present and a string. If id is
+  // missing or wrong-typed, the corresponding guard below raises with
+  // `?` as the entity label.
   const id = typeof value.id === 'string' ? value.id : undefined;
 
   for (const field of REQUIRED_FIELDS) {
@@ -123,29 +181,11 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
     }
   }
 
-  if (typeof value.id !== 'string') fail(id, 'id', 'must be a string');
-  if (typeof value.title !== 'string') fail(id, 'title', 'must be a string');
-
-  if (!isValidDuration(value.duration)) {
-    fail(id, 'duration', 'must be a non-negative integer (ms) or null');
+  for (const guard of FIELD_GUARDS) {
+    if (!guard.check(value)) {
+      fail(id, guard.field, guard.condition);
+    }
   }
-
-  if (!isStringArray(value.tags)) fail(id, 'tags', 'must be an array of strings');
-  if (!isStringArray(value.assets)) fail(id, 'assets', 'must be an array of strings');
-  if (!isCaptionArray(value.captions)) {
-    fail(id, 'captions', 'must be an array of {at: number, text: string}');
-  }
-
-  if (value.defaultNext !== null && typeof value.defaultNext !== 'string') {
-    fail(id, 'defaultNext', 'must be a string or null');
-  }
-
-  if (typeof value.standalone !== 'boolean') fail(id, 'standalone', 'must be a boolean');
-  if (typeof value.trailerSafe !== 'boolean') fail(id, 'trailerSafe', 'must be a boolean');
-
-  if (typeof value.create !== 'function') fail(id, 'create', 'must be a function');
-  if (typeof value.timeline !== 'function') fail(id, 'timeline', 'must be a function');
-  if (typeof value.cleanup !== 'function') fail(id, 'cleanup', 'must be a function');
 }
 
 /**
