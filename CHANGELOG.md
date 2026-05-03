@@ -9,47 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `src/runtime/navigation.ts` — `parseNavigationSearch`,
-  `subscribeNavigation`, `bootstrapNavigation`, the `NAVIGATION_MODES`
-  tuple, the `PULSAR_NAVIGATE_EVENT_TYPE` /
-  `PULSAR_NAVIGATE_ERROR_EVENT_TYPE` event-type constants, and the
-  `NavigationTarget` / `NavigationLocator` / `NavigationMode` /
-  `NavigationEventTarget` / `NavigationSubscriptionOptions` types.
-  `src/main.ts` now calls `bootstrapNavigation(window)` at runtime
-  entry so URL parameters are parsed at startup and on every
-  `popstate`. The startup parse is deferred to a microtask so
-  subscribers registered after `bootstrapNavigation` returns observe
-  the initial event. Successful parses are published as
-  `CustomEvent<NavigationTarget>` on `window` under
-  `'pulsar:navigate'`; parse errors as `CustomEvent<Error>` under
-  `'pulsar:navigate-error'`. `subscribeNavigation` accepts an optional
-  `deferStartup` flag (default `false`); `bootstrapNavigation` opts
-  in. Vite HMR re-evaluating the entry module disposes the previous
-  popstate listener via `import.meta.hot.dispose`.
-  Implements PUL-F007: the runtime accepts the five URL parameters
-  `scene`, `composition`, `index`, `beat`, `mode`, parses combinations
-  per ADR-013's five valid target shapes, and wires startup + `popstate`
-  through the same parser path with the same error semantics. The
-  parser is a boundary adapter only — it does not resolve scenes,
-  inspect composition manifests, or mutate browser history. Identifier
-  validation reuses `isKebabIdentifier` from `src/runtime/identifier.ts`
-  per ADR-008 #1; the seven workbench modes are the ADR-007 set
-  (`present`, `standalone`, `loop`, `paused`, `scrub`, `screenshot`,
-  `prompter`). Repeated grammar keys are rejected; unknown keys are
-  ignored. `index` is base-10, zero-based, non-negative, and a JS safe
-  integer. `subscribeNavigation` accepts a minimal injected
-  `Window`-like surface so tests do not depend on jsdom and runtime
-  callers can swap in stricter test doubles.
-- `tests/runtime/navigation.test.ts` — 80-test suite covering the
-  per-key grammar, the five valid / four invalid combination shapes,
-  repeated-key rejection, unknown-key tolerance, frozen target output,
-  the boundary discipline (no scene-existence validation), startup +
-  `popstate` parser routing, error routing, identical error semantics
-  across triggers, and dispose semantics.
-- `docs/adrs/013-url-navigation-grammar-boundary.md` — new ADR
-  recording the URL parsing boundary rules (target shapes, identifier
-  reuse, `popstate` semantics, "URL search string is the source of
-  truth" invariant). Indexed in `docs/adrs/README.md`.
+- `src/runtime/url-navigation.ts` — `SceneNavigationTarget` interface,
+  `resolveSceneNavigationTarget` parser, and `loadSceneNavigationTarget`
+  lifecycle bridge. Implements PUL-F008 (the `scene` URL parameter):
+  parse `scene` once via `URLSearchParams.getAll('scene')` at the
+  runtime boundary, reject repeated/conflicting values, validate the
+  identifier shape with the shared `isKebabIdentifier` rule from
+  `./identifier.ts`, resolve existence via `SceneRegistry.has` /
+  `.get`, and surface malformed or unknown ids as navigation errors
+  prefixed `scene navigation failed: …` before any scene lifecycle
+  hook runs. The optional `loadSceneNavigationTarget` convenience
+  builds a single-entry composition manifest from the resolved target
+  and delegates to `resolveComposition` so the URL navigation path
+  inherits PUL-F004's preload → create → timeline → cleanup ordering
+  and PUL-F006's mandatory-cleanup invariant rather than introducing a
+  parallel single-scene runner. Accepts `URL`, `URLSearchParams`,
+  raw search strings, and `Location`-like `{ search }` objects so the
+  same parser works in browser bootstrap and in Node-side tooling.
+  No localStorage / cookie fallback — URL state is authoritative
+  (ADR-013). `scene` is orthogonal to `mode`/`composition`/`index`/
+  `beat`; this module reads only `scene` and leaves the rest to
+  future requirements.
+- `tests/runtime/url-navigation.test.ts` — 43-test Vitest spec
+  covering every PUL-F008 clause and ADR-013 guardrail: input-shape
+  coverage (URL, URLSearchParams, full URL string, bare search string,
+  Location-like object); scene-absent → null; repeated-parameter
+  rejection (different values, same value, three-way); 13 malformed
+  identifier shapes; unknown-id registry-miss errors; sentinel
+  registry assertions that `has` / `get` are NOT called on the early
+  failure paths; lifecycle never touched on parse-failure paths;
+  orthogonality with `mode`, `composition`, `index`, `beat`,
+  combinations thereof, and the explicit `?scene=middle&index=0`
+  identity-precedence test from ADR-013; lifecycle integration via
+  `loadSceneNavigationTarget` × `resolveComposition` covering
+  preload-to-cleanup ordering, create-throws-still-cleans-up
+  (mandatory cleanup), preload-throws-aborts-before-create, and ctx
+  pass-through.
+- `docs/adrs/013-url-scene-target-selection.md` — added by codex
+  preflight; ADR-013 records the decision that the `scene` URL
+  parameter is a navigation target selector that resolves through the
+  scene registry and never bypasses the runtime lifecycle. ADR-013
+  also enumerates the URL-parsing risks (`URLSearchParams.get` silent
+  selection, dynamic-import temptation, default-fallback temptation)
+  and the mitigations PUL-F008 implements.
+- `docs/adrs/README.md` — registers ADR-013 in the index.
 
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
   field on both `ResolveCompositionOptions` and
