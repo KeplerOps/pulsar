@@ -10,4 +10,12 @@ import { bootstrapNavigation } from './runtime/navigation';
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
 
-bootstrapNavigation(window);
+const disposeNavigation = bootstrapNavigation(window);
+
+// Dev-only: when Vite HMR replaces this entry module, dispose the
+// previous popstate listener so re-evaluation does not stack
+// duplicate listeners and emit duplicate navigation events.
+// `import.meta.hot` is undefined in production builds.
+import.meta.hot?.dispose(() => {
+  disposeNavigation();
+});
