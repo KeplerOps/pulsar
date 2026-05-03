@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `docs/adrs/010-issue-tag-taxonomy.md` — defines a five-dimension,
+  namespaced GitHub issue label taxonomy: type (`requirement` /
+  `bug` / `enhancement` / `documentation` / `chore`),
+  `series:<functional|quality|architecture|policy>`,
+  `priority:<must|should|could|wont>`, `wave:<N>`, and `area:<...>`
+  (12 subsystem labels). Mirrors Ground Control's `requirement_type`,
+  `priority`, and `wave` fields onto labels so triage and filtering
+  work in GitHub's UI without round-tripping through Ground Control.
+  ADR-010 is registered in Ground Control via `gc_create_adr`. Labels
+  applied to all 55 existing requirement-derived issues
+  (#6, #8, #10, #12–#63).
+
 ### Changed
 
 - `src/runtime/scene.ts` — `assertSceneModule` now enforces strict
