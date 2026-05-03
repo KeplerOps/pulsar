@@ -21,6 +21,27 @@
 //    GSAP runner can honor sub-range cuts and behavior overrides
 //    without another resolver-signature change.
 //  - PUL-P001 — cleanup is a policy-level invariant.
+//  - PUL-F006 — `cleanup(ctx)` runs on every scene exit. The four
+//    exit paths PUL-F006 enumerates all route through the same
+//    `runScene` finalization here:
+//      1. normal advance         — happy-path loop iteration in
+//                                  `resolveComposition`; cleanup runs
+//                                  before the next scene's preload.
+//      2. presenter skip         — runner adapter returns early
+//                                  cooperatively (the shape PUL-F020
+//                                  will use; AbortSignal-based
+//                                  cancellation is deferred to the
+//                                  wave-1 re-evaluation per the
+//                                  ADR-011 risk-table entry).
+//      3. runtime error in scene — `create` / `timeline()` / runner
+//                                  throw or reject; the second
+//                                  unconditional try/catch in
+//                                  `runScene` still invokes cleanup.
+//      4. composition end        — final scene's cleanup is the
+//                                  terminal lifecycle call.
+//    Cleanup is invoked exactly once per scene activation. Do NOT
+//    add a parallel cleanup path for skip or error — the single-path
+//    design is the invariant.
 
 import {
   type BehaviorOverride,

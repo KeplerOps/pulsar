@@ -957,3 +957,185 @@ describe('resolveComposition (PUL-F004)', () => {
     });
   });
 });
+
+describe('per-scene cleanup invocation (PUL-F006)', () => {
+  // PUL-F006: "The runtime SHALL invoke `cleanup(ctx)` on every scene
+  // exit, including normal advance, presenter skip, runtime error
+  // within the scene, and composition end."
+  //
+  // The composition resolver shipped under PUL-F004 already centralizes
+  // cleanup invocation in `runScene` (unconditional second try/catch
+  // around `scene.cleanup(ctx)`). These tests anchor the four named
+  // exit paths to PUL-F006 so the invariant cannot regress quietly,
+  // and pin the codex-preflight "exactly once per scene activation"
+  // axis that the PUL-F004 tests only assert by ordering.
+  //
+  // ADR-011 explicitly defers AbortSignal-based cancellation to the
+  // wave-1 re-evaluation around PUL-F020 (presenter controls). PUL-F006
+  // does not implement a presenter-skip mechanism; it ensures the
+  // cleanup invariant the wave-1 mechanism will rely on. Presenter
+  // skip is therefore modeled here as a cooperative early return from
+  // the injected runner adapter — the same shape PUL-F020 will use
+  // when it lands.
+
+  const cleanupCount = (entries: readonly CallRecord[], sceneId: string): number =>
+    entries.filter((c) => c.hook === 'cleanup' && c.sceneId === sceneId).length;
+
+  it('normal advance: cleanup runs exactly once per scene as the resolver advances through a multi-scene composition, strictly before the next scene preload', async () => {
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
+      manifest: ['scene-a', 'scene-b', 'scene-c'],
+    });
+    await resolveComposition(options);
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+    expect(cleanupCount(log, 'scene-b')).toBe(1);
+    expect(cleanupCount(log, 'scene-c')).toBe(1);
+    expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
+      'preload:scene-a',
+      'create:scene-a',
+      'timeline:scene-a',
+      'runTimeline:scene-a',
+      'cleanup:scene-a',
+      'preload:scene-b',
+      'create:scene-b',
+      'timeline:scene-b',
+      'runTimeline:scene-b',
+      'cleanup:scene-b',
+      'preload:scene-c',
+      'create:scene-c',
+      'timeline:scene-c',
+      'runTimeline:scene-c',
+      'cleanup:scene-c',
+    ]);
+  });
+
+  it('presenter skip (single-scene, runner returns early without throwing): cleanup still runs exactly once', async () => {
+    let runnerCalls = 0;
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: () => {
+        runnerCalls += 1;
+        // Cooperative early return — the cleanup-bearing exit shape
+        // a PUL-F020 presenter cue will produce. No throw.
+      },
+    });
+    await resolveComposition(options);
+    expect(runnerCalls).toBe(1);
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+  });
+
+  it('presenter skip mid-composition: cleanup runs for the skipped scene and the next scene runs in full', async () => {
+    const skippedRunnerIds: string[] = [];
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: ({ scene }) => {
+        if (scene.id === 'scene-a') {
+          skippedRunnerIds.push(scene.id);
+          // Cooperative skip on scene-a only — return early.
+          return;
+        }
+        log.push({ hook: 'runTimeline', sceneId: scene.id });
+      },
+    });
+    await resolveComposition(options);
+    expect(skippedRunnerIds).toEqual(['scene-a']);
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+    expect(cleanupCount(log, 'scene-b')).toBe(1);
+    // Scene B receives its full lifecycle after the skip.
+    expect(log.filter((c) => c.sceneId === 'scene-b').map((c) => c.hook)).toEqual([
+      'preload',
+      'create',
+      'timeline',
+      'runTimeline',
+      'cleanup',
+    ]);
+  });
+
+  it("composition end: the final scene's cleanup is the terminal lifecycle call (no preload, create, timeline, or cleanup after it)", async () => {
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+    });
+    await resolveComposition(options);
+    const lastCall = log[log.length - 1];
+    expect(lastCall).toBeDefined();
+    expect(lastCall?.hook).toBe('cleanup');
+    expect(lastCall?.sceneId).toBe('scene-b');
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+    expect(cleanupCount(log, 'scene-b')).toBe(1);
+  });
+
+  it('runtime error during create: cleanup of the failing scene fires exactly once, subsequent scenes are not visited', async () => {
+    const { log, options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          create: () => {
+            throw new Error('create boom');
+          },
+        },
+        { id: 'scene-b' },
+      ],
+      manifest: ['scene-a', 'scene-b'],
+    });
+    await expect(resolveComposition(options)).rejects.toThrow();
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
+  });
+
+  it('runtime error during timeline factory: cleanup of the failing scene fires exactly once', async () => {
+    const { log, options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          timeline: () => {
+            throw new Error('timeline boom');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+    });
+    await expect(resolveComposition(options)).rejects.toThrow();
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+  });
+
+  it('runtime error during runner: cleanup of the failing scene fires exactly once', async () => {
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: () => {
+        throw new Error('runner boom');
+      },
+    });
+    await expect(resolveComposition(options)).rejects.toThrow();
+    expect(cleanupCount(log, 'scene-a')).toBe(1);
+  });
+
+  it('exactly once per occurrence: a manifest with the same scene id repeated yields one cleanup per occurrence (no dedup, no double-fire)', async () => {
+    const { log, options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a', 'scene-a', 'scene-a'],
+    });
+    await resolveComposition(options);
+    expect(cleanupCount(log, 'scene-a')).toBe(3);
+    expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
+      'preload:scene-a',
+      'create:scene-a',
+      'timeline:scene-a',
+      'runTimeline:scene-a',
+      'cleanup:scene-a',
+      'preload:scene-a',
+      'create:scene-a',
+      'timeline:scene-a',
+      'runTimeline:scene-a',
+      'cleanup:scene-a',
+      'preload:scene-a',
+      'create:scene-a',
+      'timeline:scene-a',
+      'runTimeline:scene-a',
+      'cleanup:scene-a',
+    ]);
+  });
+});

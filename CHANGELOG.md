@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tests/runtime/composition-resolver.test.ts` — new
+  `describe('per-scene cleanup invocation (PUL-F006)')` block (8
+  tests) anchoring PUL-F006 to the existing resolver's
+  cleanup-always invariant. Pins the four exit paths PUL-F006
+  enumerates (normal advance, presenter skip modeled as a
+  cooperative early return from the runner, runtime error during
+  create / timeline factory / runner, composition end) and the
+  codex-preflight axis "cleanup invoked exactly once per scene
+  activation" — the latter not asserted directly by PUL-F004's
+  ordering tests. No production behavior change: the resolver
+  shipped under PUL-F004 (`src/runtime/composition-resolver.ts`,
+  `runScene`'s unconditional second try/catch around
+  `scene.cleanup(ctx)`) already enforces the invariant on every
+  exit path; this commit makes the requirement-level coverage
+  explicit and regression-proof.
+- `src/runtime/composition-resolver.ts` — module-header
+  documentation block enumerating the four PUL-F006 exit paths
+  and routing them to the existing `runScene` finalization,
+  including the explicit "do NOT add a parallel cleanup path"
+  invariant. Doc-only addition, no code change.
+
 - `src/runtime/asset-preloader.ts` — `createAssetPreloader` factory,
   `AssetPreloaderOptions` interface, and `DEFAULT_ALLOWED_SCHEMES`
   constant. Implements PUL-F005 clause (b): per scene, validate every
