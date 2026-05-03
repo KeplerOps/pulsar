@@ -42,12 +42,22 @@ const ALL_MODES: readonly NavigationMode[] = [
 
 describe('parseNavigationSearch — clause 1: accepts the five grammar keys', () => {
   describe('input shape', () => {
-    it('accepts a leading-? string', () => {
-      expect(() => parseNavigationSearch('?scene=intro')).not.toThrow();
+    it('accepts a leading-? string and parses identically to no-? form', () => {
+      // The parser must strip the leading `?` rather than treating it as
+      // part of a key. Without an assertion on the parsed locator a
+      // mis-handled `?` (e.g. URLSearchParams kept `?scene` as a
+      // distinct key) would still satisfy a `.not.toThrow()` check.
+      expect(parseNavigationSearch('?scene=intro').locator).toEqual({
+        kind: 'scene',
+        scene: 'intro',
+      });
     });
 
     it('accepts a no-? string', () => {
-      expect(() => parseNavigationSearch('scene=intro')).not.toThrow();
+      expect(parseNavigationSearch('scene=intro').locator).toEqual({
+        kind: 'scene',
+        scene: 'intro',
+      });
     });
 
     it('accepts a URLSearchParams instance', () => {
@@ -88,8 +98,11 @@ describe('parseNavigationSearch — clause 1: accepts the five grammar keys', ()
       ['internal whitespace (encoded)', 'scene%20a'],
       ['unicode', 'sc%C3%A9ne'],
     ])('rejects malformed scene id (%s)', (_label, encoded) => {
+      // Pin the field name in the error so a regression that fires a
+      // different field's error (e.g. the index validator triggering
+      // first) does not pass.
       expect(() => parseNavigationSearch(`scene=${encoded}`)).toThrow(
-        /^navigation grammar is invalid:/,
+        /^navigation grammar is invalid: "scene"/,
       );
     });
   });
