@@ -21,48 +21,23 @@
 //    GSAP runner can honor sub-range cuts and behavior overrides
 //    without another resolver-signature change.
 //  - PUL-P001 — cleanup is a policy-level invariant.
-//  - PUL-F006 — `cleanup(ctx)` runs on every scene exit. The four
-//    exit paths PUL-F006 enumerates all route through the same
-//    `runScene` finalization here:
-//      1. normal advance         — happy-path loop iteration in
-//                                  `resolveComposition`; cleanup runs
-//                                  before the next scene's preload.
-//      2. presenter skip         — TWO shapes, both routed through
-//                                  the same finalization:
-//                                    a. "skip current scene, advance
-//                                       to next" — the runner returns
-//                                       void early. At the resolver
-//                                       level this is identical to a
-//                                       happy-path completion (the
-//                                       resolver does not interpret
-//                                       runner intent per ADR-011);
-//                                       cleanup runs and the next
-//                                       scene preloads as normal.
-//                                    b. "skip rest of composition"
-//                                       (composition-level abort) —
-//                                       caller passes an `AbortSignal`
-//                                       via `ResolveCompositionOptions.signal`;
-//                                       the resolver checks it
-//                                       pre-iteration AND post-preload
-//                                       AND forwards it to the runner
-//                                       via `SceneTimelineRunInput.signal`.
-//                                       A mid-scene abort makes the
-//                                       runner throw → the scene's
-//                                       cleanup still runs. An
-//                                       inter-scene or post-preload
-//                                       abort throws without mounting
-//                                       the next scene. ADR-011
-//                                       anticipated the seam; PUL-F006
-//                                       lands it.
-//      3. runtime error in scene — `create` / `timeline()` / runner
-//                                  throw or reject; the second
-//                                  unconditional try/catch in
-//                                  `runScene` still invokes cleanup.
-//      4. composition end        — final scene's cleanup is the
-//                                  terminal lifecycle call.
+//  - PUL-F006 — `cleanup(ctx)` runs on every scene exit. Four exit
+//    paths, all routed through `runScene`'s unconditional second
+//    try/catch (see ADR-011 risk-table for design rationale):
+//      1. normal advance         — happy-path loop iteration.
+//      2. presenter skip         — TWO shapes: (a) cooperative
+//                                  scene exit (runner returns void;
+//                                  resolver cannot distinguish from
+//                                  completion per ADR-011), and (b)
+//                                  composition-level abort via
+//                                  `ResolveCompositionOptions.signal`
+//                                  (checked pre-iteration and
+//                                  post-preload, and forwarded to
+//                                  the runner).
+//      3. runtime error in scene — create / timeline / runner throws.
+//      4. composition end        — final scene's cleanup is terminal.
 //    Cleanup is invoked exactly once per scene activation. Do NOT
-//    add a parallel cleanup path for skip or error — the single-path
-//    design is the invariant.
+//    add a parallel cleanup path for skip or error.
 
 import {
   type BehaviorOverride,
@@ -158,27 +133,17 @@ export interface ResolveCompositionOptions {
   /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
   readonly runTimeline: SceneTimelineRunner;
   /**
-   * Optional cancellation signal for presenter-driven skip / abort
-   * (PUL-F006 "presenter skip" exit path; ADR-011 names AbortSignal as
-   * the cancellation primitive). Behavior:
-   *
-   *  - If `signal.aborted` is already true when {@link resolveComposition}
-   *    is called, the resolver throws immediately without visiting any
-   *    scene (no preload, no create, no cleanup — nothing was touched).
-   *  - The signal is forwarded to the runner via
-   *    {@link SceneTimelineRunInput.signal}; the runner is responsible
-   *    for honoring it mid-timeline. When the runner throws in response
-   *    to an abort, the resolver invokes `cleanup(ctx)` for the active
-   *    scene before propagating, satisfying the PUL-F006 invariant.
-   *  - Between scenes (after one scene's `runScene` returns), the
-   *    resolver re-checks `signal.aborted`. If aborted, subsequent
-   *    scenes are not visited; the resolver throws with the previously-
-   *    completed scene id named in the message.
-   *
-   * Absent (`undefined`) signals disable the skip path entirely — the
-   * resolver behaves as before. The runner adapter is also free to
-   * ignore a forwarded signal if its implementation does not support
-   * cancellation; the resolver does not require runner cooperation.
+   * Optional cancellation signal for composition-level abort (PUL-F006
+   * "skip rest of composition" exit path; see ADR-011 risk-table for
+   * design rationale). The resolver checks `signal.aborted` at three
+   * checkpoints — pre-start, post-preload, and forwarded into the
+   * runner via {@link SceneTimelineRunInput.signal} — and throws with
+   * a checkpoint-specific message when aborted. `signal.reason` is
+   * forwarded as `Error.cause`. A runner that aborts mid-timeline
+   * still routes through the cleanup-always path so the active
+   * scene's cleanup fires. Absent (`undefined`) disables the
+   * abort path entirely; the runner is also free to ignore a
+   * forwarded signal.
    */
   readonly signal?: AbortSignal;
 }
@@ -187,6 +152,14 @@ const entryId = (entry: CompositionEntry): string => (typeof entry === 'string' 
 
 const describe = (value: unknown): string =>
   value instanceof Error ? value.message : String(value);
+
+/**
+ * Render a kebab id (scene id, manifest entry id, etc.) for inclusion
+ * in a diagnostic message. Centralizing the quoting style means a
+ * future change (e.g., to backticks for code-style rendering) lands
+ * in one place rather than ten string templates across the file.
+ */
+const quoteId = (id: string): string => `"${id}"`;
 
 /**
  * One entry of the resolver's internal execution plan. Built once at
@@ -222,20 +195,14 @@ const failAggregate = (detail: string, errors: readonly unknown[]): AggregateErr
 
 /**
  * Throws a wrapped abort error if the optional signal is currently
- * aborted; otherwise returns. Encapsulating the check inside a
- * function call serves two purposes:
- *
- *  1. It defeats TypeScript's control-flow narrowing across the
- *     resolver's two abort checkpoints (pre-start and between
- *     scenes). Without it, the second `signal.aborted` read would be
- *     narrowed to `false | undefined` by the first checkpoint's
- *     `if`-then-throw and TS would flag the second check as
- *     unreachable. The signal's `aborted` getter can flip between
- *     checkpoints (it is a live property of the caller's controller),
- *     so the runtime check must run even when TS thinks it cannot.
- *  2. It localizes the `signal.reason` access to a scope where TS
- *     can narrow `signal !== undefined` from the `aborted === true`
- *     check, so we don't need a non-null assertion at the call site.
+ * aborted; otherwise returns. The function wrapper exists to defeat
+ * TypeScript's control-flow narrowing across the resolver's two
+ * abort checkpoints (pre-iteration and post-preload): without it,
+ * the second `signal?.aborted === true` read would be narrowed to
+ * `false | undefined` by the first checkpoint's then-throw branch
+ * and the second check would be flagged as unreachable. The signal's
+ * `aborted` getter can flip between checkpoints, so the runtime
+ * check must run even when TS thinks it cannot.
  */
 function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
   if (signal?.aborted === true) {
@@ -320,11 +287,6 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   const { registry, manifest, ctx, preloadAssets, runTimeline, signal } = options;
 
   assertCompositionManifest(manifest);
-  // PUL-F006 abort-before-start: if the caller's signal is already
-  // aborted when the resolver is invoked, fail without touching any
-  // scene. No preload runs, no create runs, no cleanup runs (because
-  // no scene was ever activated — there is nothing to clean up).
-  throwIfAborted(signal, 'aborted before any scene was visited');
   const plan = buildPlan(manifest, registry);
 
   // Per-scene lifecycle, strictly sequential. Each iteration runs
@@ -334,27 +296,25 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // execution path mid-flight by reaching back into the caller's
   // manifest.
   //
-  // PUL-F006 inter-scene skip: between scenes (after `runScene`
-  // returns successfully), re-check the signal. If aborted, throw
-  // without visiting subsequent scenes. The just-completed scene's
-  // cleanup has already run inside `runScene`, so the cleanup-always
-  // invariant holds for the last activated scene.
+  // PUL-F006 abort checkpoints: at the top of each iteration (catches
+  // both abort-before-any-scene and inter-scene aborts) AND after
+  // preload (catches mid-preload aborts before the scene is activated).
+  // No separate pre-loop check is needed because `assertCompositionManifest`
+  // and `buildPlan` are synchronous — there is no yield point between
+  // them and the loop's first iteration check.
   let lastCompletedSceneId: string | undefined;
   for (const step of plan) {
     throwIfAborted(
       signal,
       lastCompletedSceneId === undefined
         ? 'aborted before any scene was visited'
-        : `aborted between scenes after "${lastCompletedSceneId}"`,
+        : `aborted between scenes after ${quoteId(lastCompletedSceneId)}`,
     );
     await preloadScene(step.scene, preloadAssets);
-    // Re-check the signal AFTER preload and BEFORE scene activation.
-    // Async preload can take arbitrary wall-clock time during which
-    // the caller may abort; without this check, an abort observed
-    // mid-preload would still mount and run the scene even though
-    // cancellation has been requested. The pre-loop check above is
-    // not enough because it only runs once per iteration.
-    throwIfAborted(signal, `aborted after preloading "${step.scene.id}", before scene activation`);
+    throwIfAborted(
+      signal,
+      `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
+    );
     await runScene(step, ctx, runTimeline, signal);
     lastCompletedSceneId = step.scene.id;
   }
@@ -384,7 +344,7 @@ function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): read
     plan.push({ scene, range, behavior });
   }
   if (missing.length > 0) {
-    const list = missing.map(({ id, index }) => `"${id}" (entry [${index}])`).join(', ');
+    const list = missing.map(({ id, index }) => `${quoteId(id)} (entry [${index}])`).join(', ');
     throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
   }
   return Object.freeze(plan);
@@ -399,7 +359,7 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
   try {
     await preloadAssets(scene);
   } catch (cause) {
-    throw fail(`scene "${scene.id}" preloadAssets threw: ${describe(cause)}`, cause);
+    throw fail(`scene ${quoteId(scene.id)} preloadAssets threw: ${describe(cause)}`, cause);
   }
 }
 
@@ -473,14 +433,14 @@ function finalizeSceneFailure(
 ): void {
   if (phaseFailed && cleanupFailed) {
     throw failAggregate(
-      `scene "${scene.id}" ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
+      `scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
       [phaseError, cleanupError],
     );
   }
   if (phaseFailed) {
-    throw fail(`scene "${scene.id}" ${phase} threw: ${describe(phaseError)}`, phaseError);
+    throw fail(`scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)}`, phaseError);
   }
   if (cleanupFailed) {
-    throw fail(`scene "${scene.id}" cleanup threw: ${describe(cleanupError)}`, cleanupError);
+    throw fail(`scene ${quoteId(scene.id)} cleanup threw: ${describe(cleanupError)}`, cleanupError);
   }
 }
