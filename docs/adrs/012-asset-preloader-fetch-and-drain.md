@@ -75,6 +75,30 @@ The factory is configurable via `AssetPreloaderOptions`:
 - `init` — `RequestInit` forwarded to every fetch call. Headers,
   `cache` mode, and `signal` (for cooperative cancellation) flow
   through this slot.
+- `baseUrl` — base URL used to resolve relative asset paths via the
+  `URL` constructor. Required for the Node exporter path because
+  Node's `fetch` rejects relative URLs with `TypeError: Invalid URL`.
+  Optional in the browser, where relative paths resolve against
+  `document.baseURI` automatically. When provided, the resolved URL's
+  scheme is re-validated against the allowlist so a scene cannot
+  smuggle a disallowed scheme by declaring it absolute.
+- `allowedSchemes` — URL scheme allowlist. Defaults to the exported
+  `DEFAULT_ALLOWED_SCHEMES` constant: `['http:', 'https:', 'data:',
+  'blob:']`. Schemes outside the list (e.g. `file:`, `gopher:`,
+  `ws:`) reject before fetch with a clear, asset-scoped message.
+  Callers tighten (`['https:']` for production) or extend (add
+  `'file:'` for offline-export workflows) as their threat model
+  requires. The check is the minimum SSRF defense; host-allowlisting
+  for richer attacker models is a deployment concern handled at the
+  workbench/exporter layer.
+
+Failures from rejected fetches and from non-2xx responses are
+**asset-scoped**: every per-asset error message starts with
+`asset "<url>": ...` so two simultaneously failing fetches stay
+distinguishable in `AggregateError.errors`. Rejected fetches preserve
+the original error as `Error.cause`. Non-2xx responses cancel the
+response body via `body.cancel()` before throwing so connections are
+not held open until garbage collection.
 
 Decode-complete semantics are explicitly **out of scope** for PUL-F005.
 A future requirement that needs decode-complete (e.g. when screenshot

@@ -9,26 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `src/runtime/asset-preloader.ts` — `AssetPreloaderOptions` type and
-  `createAssetPreloader` factory. Implements PUL-F005 clause (b) (the
-  runtime SHALL preload declared assets for the active composition
-  before the scene mounts): the returned function fetches every URL in
-  `scene.assets` in parallel and drains each successful response body
-  via `arrayBuffer()` so the network transfer is fully complete before
-  `create(ctx)` runs. Failures aggregate into an `AggregateError` whose
-  `errors` array carries every failure (HTTP non-2xx OR rejected fetch)
-  in declaration order — the same shape PUL-F004 uses for combined
+- `src/runtime/asset-preloader.ts` — `AssetPreloaderOptions` type,
+  `DEFAULT_ALLOWED_SCHEMES` constant, and `createAssetPreloader`
+  factory. Implements PUL-F005 clause (b) (the runtime SHALL preload
+  declared assets for the active composition before the scene mounts):
+  the returned function validates every asset URL against a scheme
+  allowlist, optionally resolves relative paths against a configured
+  `baseUrl`, fetches every URL in `scene.assets` in parallel, drains
+  each successful response body via `arrayBuffer()` so the network
+  transfer is fully complete before `create(ctx)` runs, and
+  cancels (via `body.cancel()`) the response stream of any non-2xx
+  response so connections are not leaked. Failures aggregate into an
+  `AggregateError` whose `errors` array carries every failure in
+  declaration order — the same shape PUL-F004 uses for combined
   failures, single-failure cases included for consumer consistency.
-  The wrapping message is `composition asset preload failed: scene
-  "<id>"`; per-asset detail lives in `errors[i].message` as `asset
-  "<url>": <status> <statusText>`. Configurable via
-  `AssetPreloaderOptions.fetch` (override `globalThis.fetch` — required
-  for tests, useful for custom HTTP agents in bootstrap) and
-  `AssetPreloaderOptions.init` (`RequestInit` forwarded to every fetch
-  — headers, cache mode, signal). Decode-complete semantics (image
-  decode, font load, audio decode) are explicitly out of scope per
-  ADR-012; a future requirement layers them on top without changing
-  this preloader's contract. The function signature
+  Each per-asset failure message names the offending URL so two
+  failed network requests stay distinguishable (`asset "<url>": ...`).
+  Rejected fetches are wrapped with the asset URL and preserve the
+  original error as `Error.cause`. The wrapping `AggregateError`
+  message is `composition asset preload failed: scene "<id>"`.
+  Configurable via `AssetPreloaderOptions`:
+  `fetch` (override `globalThis.fetch` — required for tests, useful
+  for custom HTTP agents in bootstrap), `init` (`RequestInit`
+  forwarded to every fetch — headers, cache mode, signal), `baseUrl`
+  (resolves relative asset paths against an absolute base — required
+  for the Node exporter path because Node's `fetch` rejects relative
+  URLs), and `allowedSchemes` (URL scheme allowlist for SSRF defense
+  — defaults to `http:` / `https:` / `data:` / `blob:`; reject
+  `file:` / `gopher:` / etc. before fetch). Decode-complete semantics
+  (image decode, font load, audio decode) are explicitly out of
+  scope per ADR-012; a future requirement layers them on top without
+  changing this preloader's contract. The function signature
   `(scene: SceneModule) => Promise<void>` is structurally compatible
   with PUL-F004's `AssetPreloader` adapter slot — once both ship the
   workbench bootstrap passes `createAssetPreloader()` straight to
@@ -37,26 +48,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata) was already implemented under PUL-F001 via
   `SceneModule.assets: readonly string[]` and its `assertSceneModule`
   field-guard; reconciliation links PUL-F005 to that file too.
-- `tests/runtime/asset-preloader.test.ts` — 15-test Vitest spec
-  covering every PUL-F005 clause-(b) behavior: empty input no-op,
-  single / multiple / parallel fetch, URL pass-through, fetch override
-  vs. `globalThis.fetch` default, `init` forwarding, body-drain
-  invariant via a gated `arrayBuffer()`, single + aggregated failure
-  paths (404, network rejection, mixed success/failure, declaration-
-  order ordering), and the AggregateError-always-thrown invariant.
-  Tests inject a fake `fetch` per case — no global mutation, no MSW
-  dependency.
+- `tests/runtime/asset-preloader.test.ts` — 27-test Vitest spec
+  covering every PUL-F005 clause-(b) behavior plus the codex-review
+  reinforcements: empty input no-op, single / multiple / parallel
+  fetch, URL pass-through, fetch override vs. `globalThis.fetch`
+  default, `init` forwarding, body-drain invariant via a gated
+  `arrayBuffer()`, single + aggregated failure paths (404, network
+  rejection, mixed success/failure, declaration-order ordering),
+  AggregateError-always-thrown invariant, asset-scoped failure
+  messages with `Error.cause` preservation, body cancel-on-non-2xx
+  (no leaked open streams), `baseUrl` resolution against relative
+  paths and pass-through of absolute paths, scheme allowlist defense
+  against `file:` / `gopher:` / custom-tightened lists, scheme
+  re-validation after `baseUrl` resolution, and the
+  `DEFAULT_ALLOWED_SCHEMES` re-export contract. Tests inject a fake
+  `fetch` per case — no global mutation, no MSW dependency.
 - `docs/adrs/012-asset-preloader-fetch-and-drain.md` — records the
   decision to ship byte-warming preload (`fetch + arrayBuffer()`) for
   PUL-F005 and explicitly defer decode-complete semantics
   (`Image.decode`, `document.fonts.load`, `audioContext.decodeAudioData`)
   to a future requirement that composes with this preloader rather
   than mutating it. Documents the AggregateError-for-failures contract
-  (matches ADR-011), the `AssetPreloaderOptions.fetch` / `init`
-  injection slots, and the Node-22-and-browser portability constraint
-  the chosen approach satisfies. ADR-012 is registered in Ground
-  Control via `gc_create_adr`.
-- `docs/adrs/README.md` — adds the ADR-012 row.
+  (matches ADR-011), the `AssetPreloaderOptions.fetch` / `init` /
+  `baseUrl` / `allowedSchemes` injection slots, the SSRF-defense
+  scheme allowlist, and the Node-22-and-browser portability
+  constraint the chosen approach satisfies. ADR-012 is registered in
+  Ground Control via `gc_create_adr`. The ADR file is added but the
+  `docs/adrs/README.md` index row is intentionally NOT touched in
+  this PR — ADR-010 / ADR-011 rows are missing too, and adding only
+  ADR-012 would create a broken numeric sequence in the table. A
+  follow-up PR backfills 010 / 011 / 012 rows together.
 
 - `src/runtime/composition.ts` — `CompositionManifest`,
   `CompositionEntry`, `CompositionEntryOverride`, `SubRange`, and

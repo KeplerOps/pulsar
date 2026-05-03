@@ -216,7 +216,7 @@ describe('createAssetPreloader (PUL-F005)', () => {
       }
     });
 
-    it('throws AggregateError carrying the original cause when a fetch rejects (network error)', async () => {
+    it('wraps a rejected fetch with the asset URL and preserves the original error as cause', async () => {
       const networkErr = new TypeError('fetch failed: ECONNRESET');
       const fetchImpl: typeof globalThis.fetch = async () => {
         throw networkErr;
@@ -228,8 +228,56 @@ describe('createAssetPreloader (PUL-F005)', () => {
       } catch (err) {
         expect(err).toBeInstanceOf(AggregateError);
         const top = err as AggregateError;
-        expect(top.errors).toEqual([networkErr]);
+        expect(top.errors).toHaveLength(1);
+        const wrapped = top.errors[0] as Error & { cause?: unknown };
+        // Asset URL must appear in the message so multi-asset failures
+        // stay distinguishable.
+        expect(wrapped.message).toBe('asset "/x.png": fetch failed: ECONNRESET');
+        expect(wrapped.cause).toBe(networkErr);
       }
+    });
+
+    it('keeps two distinct rejected fetches distinguishable via URL-scoped messages (no collapsed "fetch failed")', async () => {
+      const fetchImpl: typeof globalThis.fetch = async (input) => {
+        throw new TypeError(`fetch failed for ${String(input)}`);
+      };
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      try {
+        await preload(buildScene('scene-a', ['/first.png', '/second.png']));
+        expect.unreachable('expected both assets to fail');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect(top.errors).toHaveLength(2);
+        expect((top.errors[0] as Error).message).toMatch(/^asset "\/first\.png": /);
+        expect((top.errors[1] as Error).message).toMatch(/^asset "\/second\.png": /);
+      }
+    });
+
+    it('cancels the response body on a non-2xx response (no leaked open stream)', async () => {
+      const cancelCalls: number[] = [];
+      const fetchImpl: typeof globalThis.fetch = async () => {
+        const response = new Response(new ReadableStream(), {
+          status: 503,
+          statusText: 'Service Unavailable',
+        });
+        // Wrap the body's cancel so we can observe it being called.
+        const originalCancel = response.body?.cancel.bind(response.body);
+        if (response.body !== null && originalCancel !== undefined) {
+          Object.defineProperty(response.body, 'cancel', {
+            value: async (reason?: unknown) => {
+              cancelCalls.push(1);
+              return originalCancel(reason);
+            },
+          });
+        }
+        return response;
+      };
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await expect(preload(buildScene('scene-a', ['/down.png']))).rejects.toThrow(
+        /^composition asset preload failed:/,
+      );
+      expect(cancelCalls).toEqual([1]);
     });
 
     it('throws AggregateError with one entry when one of many assets fails (others succeed)', async () => {
@@ -305,6 +353,140 @@ describe('createAssetPreloader (PUL-F005)', () => {
       // Sanity: the OK fetches still ran (parallel start, no early
       // abort) — the function rejects after waiting for all.
       expect(succeededCount).toBe(2);
+    });
+  });
+
+  describe('baseUrl resolution (Node-portable)', () => {
+    it('resolves a relative asset against baseUrl before fetching (Node fetch requires absolute URLs)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'https://cdn.example.com/scenes/',
+      });
+      await preload(buildScene('scene-a', ['hero.png', 'audio/intro.mp3']));
+      expect(calls.map((c) => c.input)).toEqual([
+        'https://cdn.example.com/scenes/hero.png',
+        'https://cdn.example.com/scenes/audio/intro.mp3',
+      ]);
+    });
+
+    it('passes an absolute asset through unchanged even when baseUrl is set (URL constructor behavior)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'https://cdn.example.com/scenes/',
+      });
+      await preload(buildScene('scene-a', ['https://other.example.com/foo.png']));
+      expect(calls.map((c) => c.input)).toEqual(['https://other.example.com/foo.png']);
+    });
+
+    it('passes a relative path through unchanged when baseUrl is unset (browser fetch handles document.baseURI)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await preload(buildScene('scene-a', ['/relative/x.png']));
+      expect(calls.map((c) => c.input)).toEqual(['/relative/x.png']);
+    });
+
+    it('throws asset-scoped error when baseUrl + asset cannot form a valid URL', async () => {
+      const { fetchImpl } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'not a valid base',
+      });
+      try {
+        await preload(buildScene('scene-a', ['x.png']));
+        expect.unreachable('expected invalid URL to throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        const wrapped = top.errors[0] as Error;
+        expect(wrapped.message).toBe('asset "x.png": invalid URL relative to baseUrl');
+      }
+    });
+  });
+
+  describe('scheme allowlist (SSRF defense)', () => {
+    it('rejects file: scheme by default', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      try {
+        await preload(buildScene('scene-a', ['file:///etc/passwd']));
+        expect.unreachable('expected file: to be rejected');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toBe(
+          'asset "file:///etc/passwd": scheme "file:" not in allowed list (http:, https:, data:, blob:)',
+        );
+      }
+      // Network MUST NOT be called for a rejected scheme.
+      expect(calls).toEqual([]);
+    });
+
+    it('rejects gopher: and other obscure schemes by default', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await expect(
+        preload(buildScene('scene-a', ['gopher://internal.example/secrets'])),
+      ).rejects.toThrow(/^composition asset preload failed:/);
+      expect(calls).toEqual([]);
+    });
+
+    it('accepts https:, http:, data:, and blob: by default', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({ fetch: fetchImpl });
+      await preload(
+        buildScene('scene-a', [
+          'https://cdn.example.com/a.png',
+          'http://cdn.example.com/b.png',
+          'data:audio/wav;base64,QQA=',
+          'blob:https://example.com/uuid-here',
+        ]),
+      );
+      expect(calls).toHaveLength(4);
+    });
+
+    it('honors a tightened allowlist (e.g. https-only for production)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        allowedSchemes: ['https:'],
+      });
+      try {
+        await preload(buildScene('scene-a', ['http://insecure.example/a.png']));
+        expect.unreachable('expected http: to be rejected by tightened allowlist');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toBe(
+          'asset "http://insecure.example/a.png": scheme "http:" not in allowed list (https:)',
+        );
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it('re-validates scheme after baseUrl resolution (an absolute file: URL declared as a relative-looking string is still caught)', async () => {
+      const { fetchImpl, calls } = buildFakeFetch();
+      const preload = createAssetPreloader({
+        fetch: fetchImpl,
+        baseUrl: 'file:///some/dir/',
+      });
+      try {
+        await preload(buildScene('scene-a', ['relative-path.png']));
+        expect.unreachable('expected file: scheme on resolved URL to be rejected');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AggregateError);
+        const top = err as AggregateError;
+        expect((top.errors[0] as Error).message).toMatch(/scheme "file:" not in allowed list/);
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it('re-exports DEFAULT_ALLOWED_SCHEMES so callers can extend rather than duplicate the default list', async () => {
+      const { DEFAULT_ALLOWED_SCHEMES } = await import('../../src/runtime/asset-preloader');
+      expect(DEFAULT_ALLOWED_SCHEMES).toEqual(['http:', 'https:', 'data:', 'blob:']);
+      // Frozen so callers cannot accidentally mutate the default.
+      expect(Object.isFrozen(DEFAULT_ALLOWED_SCHEMES)).toBe(true);
     });
   });
 });
