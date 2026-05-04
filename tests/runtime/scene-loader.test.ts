@@ -1015,6 +1015,53 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
     });
 
+    it('keeps the missing-beat path non-fatal when the injected onError sink throws', async () => {
+      // PUL-F011 / ADR-015: the diagnostic callback is contractually
+      // non-fatal — the runner is forbidden from throwing on missing
+      // labels. The injected `onError` sink is user-supplied, so an
+      // exception from it must NOT propagate back through
+      // `input.onBeatMissing()` into the resolver (which would treat
+      // it as a lifecycle failure and unmount the scene). Cleanup is
+      // therefore the natural lifecycle exit, NOT a phase-error
+      // wrap, when onError throws.
+      const lifecycleLog: string[] = [];
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          lifecycleLog.push('create');
+        },
+        cleanup: () => {
+          lifecycleLog.push('cleanup');
+        },
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          input.onBeatMissing?.();
+          // If onBeatMissing's surfaceError had thrown out, this
+          // line would not execute and the runner would surface a
+          // rejection — the assertion below would catch it.
+        },
+        onError: () => {
+          throw new Error('user-injected logger blew up');
+        },
+      });
+
+      await expect(
+        loader.handle(sceneTargetWithBeat('intro', 'unknown-label')),
+      ).resolves.toBeUndefined();
+
+      // Lifecycle ran end-to-end as expected for a successful
+      // missing-beat exit. cleanup fired naturally; no extra
+      // phase-error wrap, no AggregateError, no rejection.
+      expect(lifecycleLog).toEqual(['create', 'cleanup']);
+    });
+
     it('only fires the diagnostic once per navigation even if the runner calls onBeatMissing repeatedly', async () => {
       // A buggy runner (or a future GSAP integration that retries on
       // each beat-not-found) must not spam the error sink. Once-only

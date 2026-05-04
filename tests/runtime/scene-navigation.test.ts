@@ -863,7 +863,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
           beat: 'hook',
         }),
       ).rejects.toThrow(
-        /^loadSceneNavigationTarget: `onBeatMissing` is required when `beat` is supplied/,
+        /^scene navigation failed: "onBeatMissing" is required when "beat" is supplied/,
       );
     });
 

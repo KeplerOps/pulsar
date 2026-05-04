@@ -278,11 +278,25 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     return (): void => {
       if (fired || signal.aborted || disposed) return;
       fired = true;
-      surfaceError(
-        new Error(
-          `beat positioning failed: beat "${beat}" does not exist in scene "${headSceneId}"`,
-        ),
-      );
+      // PUL-F011 / ADR-015: this path is non-fatal by contract — the
+      // runner is forbidden from throwing or rejecting on missing
+      // labels (the resolver would treat that as a lifecycle failure
+      // and unmount the scene). The injected `onError` sink is
+      // user-supplied, so an exception from it would propagate back
+      // through the runner's `onBeatMissing()` invocation, into the
+      // resolver's `await runTimeline(...)`, and trigger the
+      // cleanup-then-throw path. Swallow here so the diagnostic
+      // surface stays non-fatal even when the operator's logger
+      // throws.
+      try {
+        surfaceError(
+          new Error(
+            `beat positioning failed: beat "${beat}" does not exist in scene "${headSceneId}"`,
+          ),
+        );
+      } catch {
+        // Intentionally empty: see comment above.
+      }
     };
   };
 

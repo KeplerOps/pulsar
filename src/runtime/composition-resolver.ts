@@ -352,9 +352,14 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // to surface (the runner MUST NOT throw on missing labels; the
   // callback is its only error channel). Failing fast at the boundary
   // is better than running a doomed lifecycle that reports nothing.
+  // Routed through the resolver's `fail(...)` helper so the error
+  // carries the documented `composition resolution failed:` envelope
+  // — callers pattern-matching on origin get the same prefix as
+  // every other resolver-level failure.
   if (headBeat !== undefined && onBeatMissing === undefined) {
-    throw new Error(
-      'resolveComposition: `onBeatMissing` is required when `headBeat` is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+    throw fail(
+      '"onBeatMissing" is required when "headBeat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+      undefined,
     );
   }
 

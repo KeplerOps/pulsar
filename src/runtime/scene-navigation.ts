@@ -388,10 +388,14 @@ export async function loadSceneNavigationTarget(
   // silently lose the missing-label diagnostic the runner is
   // contracted to surface. Mirror the resolver's check at this
   // boundary so the bridge's direct callers fail at construction
-  // time, not after the lifecycle started.
+  // time, not after the lifecycle started. Routed through the
+  // module's `fail(...)` helper so the error carries the documented
+  // `scene navigation failed:` envelope — same prefix as every
+  // other navigation-level failure (unknown scene, out-of-range
+  // index, etc.).
   if (options.beat !== undefined && options.onBeatMissing === undefined) {
-    throw new Error(
-      'loadSceneNavigationTarget: `onBeatMissing` is required when `beat` is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+    fail(
+      '"onBeatMissing" is required when "beat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
     );
   }
 

@@ -1301,7 +1301,7 @@ describe('URL beat positioning forwarding (PUL-F011)', () => {
       manifest: ['scene-a'],
     });
     await expect(resolveComposition({ ...options, headBeat: 'hook' })).rejects.toThrow(
-      /^resolveComposition: `onBeatMissing` is required when `headBeat` is supplied/,
+      /^composition resolution failed: "onBeatMissing" is required when "headBeat" is supplied/,
     );
   });
 
