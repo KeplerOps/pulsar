@@ -8,8 +8,11 @@
 //
 // The registry delegates scene-shape validation to assertSceneModule
 // (PUL-F001) — there is one validator and the registry consumes it
-// rather than re-implementing it.
+// rather than re-implementing it. The id-keyed plumbing (Map, frozen
+// snapshot, duplicate-id rejection, miss-throws) is shared with the
+// composition registry via `./id-registry.ts`.
 
+import { type IdRegistry, createIdRegistry } from './id-registry';
 import { type SceneModule, assertSceneModule } from './scene';
 
 /**
@@ -18,22 +21,15 @@ import { type SceneModule, assertSceneModule } from './scene';
  * lookup by id only — to satisfy PUL-F002's "only mechanism by which
  * scenes are addressable for navigation" clause.
  */
-export interface SceneRegistry {
-  /** Look up a scene by id. Throws if no scene is registered with that id. */
-  get(id: string): SceneModule;
-  /** Check whether a scene is registered with the given id. */
-  has(id: string): boolean;
-  /** Snapshot of registered scene ids in insertion order. The returned array is detached from the registry. */
-  ids(): readonly string[];
-  /** Number of scenes registered. */
-  readonly size: number;
-}
+export type SceneRegistry = IdRegistry<SceneModule>;
 
 /**
  * Build a {@link SceneRegistry} from a collection of scene modules.
  *
  * Validation rules, applied in iteration order:
  *  1. Each module must satisfy {@link assertSceneModule} (PUL-F001).
+ *     The shape validator also enforces the kebab-case `scene.id`
+ *     rule (PUL-A007) before the registry sees it.
  *  2. Scene ids must be unique within the registry — registration is by
  *     id, so collisions are unrecoverable here. The first occurrence
  *     wins detection: the duplicating scene raises the error.
@@ -43,36 +39,25 @@ export interface SceneRegistry {
  * ADR-008 #2 "manifests over flow control").
  */
 export function createSceneRegistry(scenes: Iterable<SceneModule>): SceneRegistry {
-  const byId = new Map<string, SceneModule>();
-  const order: string[] = [];
-
-  for (const scene of scenes) {
-    assertSceneModule(scene);
-    if (byId.has(scene.id)) {
-      throw new Error(`scene registry: duplicate id "${scene.id}"`);
-    }
-    byId.set(scene.id, scene);
-    order.push(scene.id);
-  }
-
-  const registry: SceneRegistry = {
-    get(id: string): SceneModule {
-      const scene = byId.get(id);
-      if (scene === undefined) {
-        throw new Error(`scene registry: no scene registered with id "${id}"`);
+  // `assertSceneModule` runs before the generic sees the entry so a
+  // bad module raises with the PUL-F001 grammar (`scene "<id>" is
+  // invalid: ...`) rather than a generic registry error. The
+  // generic's own validators handle id-shape rejection (delegated
+  // back to `assertSceneModule` via the `validate` block) and
+  // duplicate-id rejection.
+  return createIdRegistry(
+    (function* mapToEntries() {
+      for (const scene of scenes) {
+        assertSceneModule(scene);
+        yield { id: scene.id, value: scene };
       }
-      return scene;
+    })(),
+    {
+      label: 'scene registry',
+      subject: 'scene',
+      // `assertSceneModule` already validated the id shape; the
+      // generic's id check is a no-op for scenes.
+      validateId: () => undefined,
     },
-    has(id: string): boolean {
-      return byId.has(id);
-    },
-    ids(): readonly string[] {
-      return Object.freeze(order.slice());
-    },
-    get size(): number {
-      return byId.size;
-    },
-  };
-
-  return Object.freeze(registry);
+  );
 }

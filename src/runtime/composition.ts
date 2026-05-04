@@ -165,3 +165,49 @@ export function isCompositionManifest(value: unknown): value is CompositionManif
     return false;
   }
 }
+
+/**
+ * Extract the scene id from a composition entry. Bare string entries
+ * are the scene id verbatim; object entries carry the id under `id`.
+ * Centralized so resolver, URL navigation, and any future consumer
+ * read entry identity through one helper.
+ */
+export const entryId = (entry: CompositionEntry): string =>
+  typeof entry === 'string' ? entry : entry.id;
+
+/**
+ * One missing entry recorded by {@link findUnregisteredEntries}: the
+ * entry's index in the manifest plus its scene id. Callers format
+ * their own error messages from these tuples so subsystem-specific
+ * grammar (composition resolver vs URL navigation) stays at the call
+ * site.
+ */
+export interface MissingEntry {
+  readonly index: number;
+  readonly id: string;
+}
+
+/**
+ * Walk a composition manifest and aggregate every entry whose scene
+ * id is not satisfied by `isPresent`. Returns the missing entries in
+ * iteration order.
+ *
+ * Centralized so composition-resolver's preflight pass and URL
+ * navigation's slice snapshot share the same "report every gap, not
+ * just the first" behavior — a manifest author or composition
+ * registrar fixes every typo in one pass rather than chasing a
+ * sequence of "first miss" errors.
+ */
+export function findUnregisteredEntries(
+  manifest: CompositionManifest,
+  isPresent: (id: string) => boolean,
+): readonly MissingEntry[] {
+  const missing: MissingEntry[] = [];
+  for (const [index, entry] of manifest.entries()) {
+    const id = entryId(entry);
+    if (!isPresent(id)) {
+      missing.push({ index, id });
+    }
+  }
+  return missing;
+}

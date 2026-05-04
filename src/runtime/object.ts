@@ -22,3 +22,29 @@ export const isPlainRecord = (value: unknown): value is Record<string, unknown> 
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 };
+
+/**
+ * Recursively freeze plain objects and arrays. Walks the value graph,
+ * freezing each plain object and array reachable from `value`, and
+ * returns the input unchanged when it is a primitive or already
+ * frozen.
+ *
+ * Used wherever the runtime needs to defend a stored or returned
+ * value against post-validation mutation: composition registry
+ * manifests, behavior overrides, etc. Lives next to
+ * {@link isPlainRecord} because the two predicates share the same
+ * "what counts as a plain structure" boundary.
+ */
+export function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  // Already frozen — skip to avoid re-walking shared subtrees.
+  if (Object.isFrozen(value)) return value;
+  if (Array.isArray(value)) {
+    for (const element of value) deepFreeze(element);
+    return Object.freeze(value);
+  }
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    deepFreeze((value as Record<string, unknown>)[key]);
+  }
+  return Object.freeze(value);
+}

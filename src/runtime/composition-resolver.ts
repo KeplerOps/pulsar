@@ -41,11 +41,13 @@
 
 import {
   type BehaviorOverride,
-  type CompositionEntry,
   type CompositionManifest,
   type SubRange,
   assertCompositionManifest,
+  entryId,
+  findUnregisteredEntries,
 } from './composition';
+import { describeError } from './error';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
@@ -147,11 +149,6 @@ export interface ResolveCompositionOptions {
    */
   readonly signal?: AbortSignal;
 }
-
-const entryId = (entry: CompositionEntry): string => (typeof entry === 'string' ? entry : entry.id);
-
-const describe = (value: unknown): string =>
-  value instanceof Error ? value.message : String(value);
 
 /**
  * Render a kebab id (scene id, manifest entry id, etc.) for inclusion
@@ -330,22 +327,17 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
  * mutating the caller's manifest array (codex review).
  */
 function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): readonly PlanStep[] {
-  const missing: { readonly index: number; readonly id: string }[] = [];
-  const plan: PlanStep[] = [];
-  for (const [index, entry] of manifest.entries()) {
-    const id = entryId(entry);
-    if (!registry.has(id)) {
-      missing.push({ index, id });
-      continue;
-    }
-    const scene = registry.get(id);
-    const range = typeof entry === 'string' ? undefined : entry.range;
-    const behavior = typeof entry === 'string' ? undefined : entry.behavior;
-    plan.push({ scene, range, behavior });
-  }
+  const missing = findUnregisteredEntries(manifest, (id) => registry.has(id));
   if (missing.length > 0) {
     const list = missing.map(({ id, index }) => `${quoteId(id)} (entry [${index}])`).join(', ');
     throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  }
+  const plan: PlanStep[] = [];
+  for (const entry of manifest) {
+    const scene = registry.get(entryId(entry));
+    const range = typeof entry === 'string' ? undefined : entry.range;
+    const behavior = typeof entry === 'string' ? undefined : entry.behavior;
+    plan.push({ scene, range, behavior });
   }
   return Object.freeze(plan);
 }
@@ -359,7 +351,7 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
   try {
     await preloadAssets(scene);
   } catch (cause) {
-    throw fail(`scene ${quoteId(scene.id)} preloadAssets threw: ${describe(cause)}`, cause);
+    throw fail(`scene ${quoteId(scene.id)} preloadAssets threw: ${describeError(cause)}`, cause);
   }
 }
 
@@ -433,14 +425,20 @@ function finalizeSceneFailure(
 ): void {
   if (phaseFailed && cleanupFailed) {
     throw failAggregate(
-      `scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)} (cleanup also failed: ${describe(cleanupError)})`,
+      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)} (cleanup also failed: ${describeError(cleanupError)})`,
       [phaseError, cleanupError],
     );
   }
   if (phaseFailed) {
-    throw fail(`scene ${quoteId(scene.id)} ${phase} threw: ${describe(phaseError)}`, phaseError);
+    throw fail(
+      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)}`,
+      phaseError,
+    );
   }
   if (cleanupFailed) {
-    throw fail(`scene ${quoteId(scene.id)} cleanup threw: ${describe(cleanupError)}`, cleanupError);
+    throw fail(
+      `scene ${quoteId(scene.id)} cleanup threw: ${describeError(cleanupError)}`,
+      cleanupError,
+    );
   }
 }

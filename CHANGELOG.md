@@ -9,47 +9,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `src/runtime/navigation.ts` — `parseNavigationSearch`,
-  `subscribeNavigation`, `bootstrapNavigation`, the `NAVIGATION_MODES`
-  tuple, the `PULSAR_NAVIGATE_EVENT_TYPE` /
-  `PULSAR_NAVIGATE_ERROR_EVENT_TYPE` event-type constants, and the
-  `NavigationTarget` / `NavigationLocator` / `NavigationMode` /
-  `NavigationEventTarget` / `NavigationSubscriptionOptions` types.
-  `src/main.ts` now calls `bootstrapNavigation(window)` at runtime
-  entry so URL parameters are parsed at startup and on every
-  `popstate`. The startup parse is deferred to a microtask so
-  subscribers registered after `bootstrapNavigation` returns observe
-  the initial event. Successful parses are published as
-  `CustomEvent<NavigationTarget>` on `window` under
-  `'pulsar:navigate'`; parse errors as `CustomEvent<Error>` under
-  `'pulsar:navigate-error'`. `subscribeNavigation` accepts an optional
-  `deferStartup` flag (default `false`); `bootstrapNavigation` opts
-  in. Vite HMR re-evaluating the entry module disposes the previous
-  popstate listener via `import.meta.hot.dispose`.
-  Implements PUL-F007: the runtime accepts the five URL parameters
-  `scene`, `composition`, `index`, `beat`, `mode`, parses combinations
-  per ADR-013's five valid target shapes, and wires startup + `popstate`
-  through the same parser path with the same error semantics. The
-  parser is a boundary adapter only — it does not resolve scenes,
-  inspect composition manifests, or mutate browser history. Identifier
-  validation reuses `isKebabIdentifier` from `src/runtime/identifier.ts`
-  per ADR-008 #1; the seven workbench modes are the ADR-007 set
-  (`present`, `standalone`, `loop`, `paused`, `scrub`, `screenshot`,
-  `prompter`). Repeated grammar keys are rejected; unknown keys are
-  ignored. `index` is base-10, zero-based, non-negative, and a JS safe
-  integer. `subscribeNavigation` accepts a minimal injected
-  `Window`-like surface so tests do not depend on jsdom and runtime
-  callers can swap in stricter test doubles.
-- `tests/runtime/navigation.test.ts` — 80-test suite covering the
-  per-key grammar, the five valid / four invalid combination shapes,
-  repeated-key rejection, unknown-key tolerance, frozen target output,
-  the boundary discipline (no scene-existence validation), startup +
-  `popstate` parser routing, error routing, identical error semantics
-  across triggers, and dispose semantics.
-- `docs/adrs/013-url-navigation-grammar-boundary.md` — new ADR
-  recording the URL parsing boundary rules (target shapes, identifier
-  reuse, `popstate` semantics, "URL search string is the source of
-  truth" invariant). Indexed in `docs/adrs/README.md`.
+- `src/runtime/scene-navigation.ts` — `SceneNavigationTarget` /
+  `SceneNavigationCompositionContext` interfaces,
+  `resolveSceneNavigation` dispatcher, and
+  `loadSceneNavigationTarget` lifecycle bridge. Implements PUL-F008
+  on top of PUL-F007's `parseNavigationSearch` parser
+  (`./navigation.ts`): consumes the parser's `NavigationTarget`,
+  resolves the locator (`kind: 'scene' | 'composition' |
+  'composition-scene' | 'composition-index' | 'none'`) against the
+  scene + composition registries, snapshots the manifest slice +
+  matching scene modules, and surfaces every miss (unknown scene,
+  unknown composition, scene-not-in-composition, index out of
+  range, empty composition, references to unregistered scenes) as a
+  `scene navigation failed: …` error before any lifecycle hook
+  runs. The lifecycle bridge plays the snapshot through
+  `resolveComposition` so the URL path inherits PUL-F004's preload
+  → create → timeline → cleanup ordering and PUL-F006's
+  mandatory-cleanup invariant. Per-entry `range` and `behavior`
+  overrides survive slicing intact and forward to the runner
+  adapter unchanged (ADR-011). The bridge de-duplicates scene
+  modules by id when synthesizing its scene registry so manifests
+  with repeated scene ids (which `resolveComposition` legitimately
+  supports) are not rejected by the registry's duplicate-id guard.
+- `src/runtime/scene-navigation.ts` — `composition+scene` resolution
+  rejects ambiguous locators: when the addressed scene id appears
+  more than once in the named composition, the resolver throws
+  `scene navigation failed: scene "<id>" appears <N> times in
+  composition "<id>" — use composition+index for ambiguous locators`
+  per ADR-013. Without the count check, `findIndex` silently picks
+  the first occurrence and a later occurrence with different
+  `range` / `behavior` overrides would load a slice that does not
+  match what the URL named.
+- `src/runtime/scene-loader.ts` — `createSceneLoader(options)`
+  factory plus `WorkbenchSceneCtx` and `StageElement` shapes.
+  Encapsulates the navigation state machine that consumes PUL-F007's
+  `pulsar:navigate` / `pulsar:navigate-error` events: serializes
+  navigations through a queue so concurrent calls don't race on
+  stage attributes, eagerly aborts any in-flight load when a new
+  navigation is enqueued (so back/forward doesn't wait for the
+  current scene to drain naturally), drops superseded queued
+  events via a per-event generation counter (so a rapid
+  `handle(B)` → `handle(C)` while A is in flight skips B and runs
+  only C, instead of running A → B → C), routes parse errors
+  (`handleError`) through the same queue so a malformed URL aborts
+  the active scene before the error attribute is set, runs the
+  previous scene's `cleanup(ctx)` before the next preload begins,
+  and writes
+  `data-pulsar-scene-target` / `data-pulsar-composition-target` /
+  `data-pulsar-navigation-error` so reviewers, agents, and
+  screenshot automation can verify the runtime honored the URL —
+  including malformed URLs, which set
+  `data-pulsar-navigation-error` rather than silently no-op-ing.
+  `dispose()` aborts any in-flight load silently and prevents
+  future navigations. Errors flow through an optional `onError`
+  hook (defaults to `console.error`) so headless harnesses observe
+  failures without monkey-patching `console`. The loader depends
+  only on injected registries / adapters / stage, which keeps the
+  entire state machine unit-testable in Node's vitest environment
+  without DOM polyfills. `WorkbenchSceneCtx` is the scene-context
+  shape the workbench passes to every lifecycle hook (`{ stage:
+  StageElement | null }`); future requirements extend it with
+  `gsap`, `audio`, and `mode` per ADR-003 / ADR-004 / ADR-007.
+- `src/runtime/composition-registry.ts` — `CompositionRegistry`
+  interface, `CompositionRegistryEntry` shape, and
+  `createCompositionRegistry` factory. Mirrors PUL-F002's scene
+  registry contract for compositions: id-keyed lookup
+  (`get` / `has` / `ids` / `size`), validation delegated to
+  `assertCompositionManifest` (PUL-F003), kebab-case ids enforced
+  via `isKebabIdentifier`, duplicate-id rejection, and the returned
+  registry is frozen with no add / remove / positional API.
+  Manifests are deep-frozen on registration (array, each
+  object-form entry, and any nested `range` tuple / `behavior`
+  record) so callers cannot mutate stored compositions after
+  validation, and the registry stores a defensive copy so caller-
+  side mutation of the original array does not leak into the
+  registry. The composition registry is the addressability path
+  the `?composition=X` URL parameter consults.
+- `src/scenes/placeholder.ts` — first registered scene in the
+  workbench. Minimal scene module that satisfies the PUL-F001
+  contract (id, title, duration, tags, assets, captions,
+  defaultNext, standalone, trailerSafe, create / timeline / cleanup)
+  and tags `#stage` with `data-pulsar-scene-lifecycle` so reviewers
+  and screenshot tests can verify each lifecycle phase ran.
+  Lifecycle hooks guard against `document` being undefined so the
+  module is also safe to import in Node-side tests.
+- `src/compositions/default.ts` — first registered composition,
+  containing only the placeholder scene. Gives `?composition=default`
+  a registered target and gives `?composition=default&scene=
+  placeholder` an end-to-end membership-validated path.
+- `src/main.ts` — workbench entry wires PUL-F007's URL navigation
+  parser to PUL-F008's scene loader. Builds the scene registry from
+  `placeholderScene` and the composition registry from
+  `defaultComposition`, instantiates a `SceneLoader` with the
+  PUL-F005 asset preloader + a placeholder timeline runner, and
+  subscribes the loader's `handle` / `handleError` to the
+  `pulsar:navigate` / `pulsar:navigate-error` events that
+  `bootstrapNavigation` dispatches. The loader honors URL
+  parameters at startup and on every `popstate`, runs the active
+  scene's `cleanup(ctx)` before the next scene's preload, and
+  records both successful targets and parse / lookup / lifecycle
+  errors on `#stage` via `data-pulsar-scene-target` /
+  `data-pulsar-composition-target` /
+  `data-pulsar-navigation-error`. The Vite HMR `dispose` hook
+  removes the popstate listener AND disposes the loader so
+  re-evaluation does not stack duplicate listeners or strand a
+  half-loaded scene.
+- `src/runtime/composition.ts` — exported `findUnregisteredEntries`
+  helper (returns `MissingEntry[]` in iteration order). Centralizes
+  the "report every missing scene id, not just the first"
+  preflight-aggregation pattern that the composition resolver and
+  URL navigation slice snapshot both consume; reduces duplication
+  and keeps the report-every-gap behavior uniform across
+  subsystems.
+- `src/runtime/id-registry.ts` — generic `createIdRegistry<T>`
+  factory plus `IdRegistry<T>` and `IdRegistryEntry<T>` shapes.
+  Centralizes the id-keyed plumbing both `createSceneRegistry`
+  (PUL-F002) and `createCompositionRegistry` (PUL-F008's companion)
+  share: Map + insertion-order array, duplicate-id rejection,
+  miss-throws, frozen `ids()` snapshot, frozen registry surface.
+  Per-domain concerns (id-shape validation, value-shape validation,
+  defensive transforms like manifest deep-freeze) plug in via
+  `validateId` and `transform` hooks. The two existing registries
+  become thin wrappers (~30 LOC each) that delegate plumbing here
+  and keep their domain-specific error grammars.
+- `src/runtime/error.ts` — shared `describeError(value)` helper.
+  Folds an unknown thrown value into a human-readable string for
+  diagnostic messages (`Error.message` for native errors, `String()`
+  otherwise). Replaces three local copies (`composition-resolver.ts`'s
+  `describe`, `asset-preloader.ts`'s `describeFailure`,
+  `workbench-navigator.ts`'s local `describeError`) so any future
+  rendering rule (truncation, redaction, structured-cause unwrap)
+  lands once.
+- `tests/runtime/scene-navigation.test.ts` — 29-test Vitest spec
+  covering every PUL-F008 dispatch path: each `NavigationLocator`
+  kind (none, scene, composition, composition-scene,
+  composition-index) for happy paths and error paths (unknown
+  scene / composition, non-member scene, out-of-range index, empty
+  composition, scenes referenced by composition not in scene
+  registry); manifest-slice snapshot freezing; per-entry override
+  preservation; repeated-scene-id slices; lifecycle never touched
+  on any error path; lifecycle integration via
+  `loadSceneNavigationTarget` × `resolveComposition` covering
+  preload → create → timeline → cleanup ordering for both
+  single-scene and composition paths, identity guarantee against
+  decoy registries, mandatory cleanup on create-throws,
+  preload-aborts-before-create, ctx pass-through, and override
+  forwarding to the runner adapter.
+- `tests/runtime/scene-loader.test.ts` — 11-test Vitest spec
+  pinning the loader state machine: handle() for single-scene and
+  composition+scene targets, no-op on `kind: 'none'`,
+  stale-attribute reset between navigations, error surfacing
+  through the injected `onError` hook AND the
+  `data-pulsar-navigation-error` stage attribute (unregistered
+  scene, lifecycle-throw), `handleError(parseErr)` clearing stale
+  scene attrs while recording the error, mid-lifecycle abort with
+  cleanup invariant preserved, silent dispose, and post-dispose
+  no-op.
+- `tests/runtime/composition-registry.test.ts` — 13-test Vitest spec
+  covering empty / single / multi composition construction; generator
+  inputs; id-shape validation (kebab-case, empty, whitespace);
+  manifest-shape delegation to `assertCompositionManifest`; duplicate-
+  id rejection; lookup hits and misses; `has` semantics; insertion-
+  order listing with frozen-snapshot detachment; and registry
+  frozenness.
+- `src/runtime/composition.ts` — exported `entryId` helper centralizes
+  "extract the scene id from a composition entry" (bare string vs.
+  `{ id, ... }` object). Single source of truth for composition-entry
+  identity, reused by the resolver and the URL navigation slice
+  builder.
+- `docs/adrs/014-url-scene-target-selection.md` — records PUL-F008's
+  scene navigation dispatch decisions: consume PUL-F007's parsed
+  `NavigationTarget` (no parallel parser), resolve the locator
+  against the scene + composition registries, snapshot the
+  manifest slice + matching scene modules to defend against
+  mid-flight registry substitution, fail before any lifecycle hook
+  runs, route through the existing composition resolver lifecycle.
+  Indexed in `docs/adrs/README.md`.
 
 - `src/runtime/composition-resolver.ts` — `signal?: AbortSignal`
   field on both `ResolveCompositionOptions` and
@@ -210,6 +345,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate.
 
 ### Changed
+
+- `src/runtime/registry.ts` — `createSceneRegistry` is now a thin
+  wrapper over the new generic `createIdRegistry<T>` from
+  `./id-registry.ts`. Public surface (`SceneRegistry`,
+  `createSceneRegistry`) and error grammar (`scene registry: ...`)
+  are unchanged; the change is internal plumbing share with the
+  composition registry.
+- `src/runtime/composition-registry.ts` — `createCompositionRegistry`
+  now delegates to `createIdRegistry<T>` and consumes the shared
+  `deepFreeze` from `./object.ts`. Public surface
+  (`CompositionRegistry`, `CompositionRegistryEntry`,
+  `createCompositionRegistry`) and error grammar
+  (`composition registry: ...`, `composition manifest is invalid: ...`)
+  are unchanged.
+- `src/runtime/object.ts` — adds `deepFreeze<T>(value)` next to
+  `isPlainRecord` so the recursive-freeze utility lives with the
+  other "what counts as a plain structure" predicates rather than
+  hidden inside `composition-registry.ts`.
 
 - `src/runtime/scene.ts` — sources the kebab-case identifier
   predicate from the new `src/runtime/identifier.ts` instead of
