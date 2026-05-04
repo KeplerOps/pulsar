@@ -28,6 +28,10 @@ URL grammar and the boundary parser (`parseNavigationSearch` in
 ADR-013 deliberately stops at the grammar boundary. PUL-F008 picks up
 where the parser leaves off: turn each scene-targeting locator into a
 running scene by way of the existing composition-resolver lifecycle.
+PUL-F009 uses the same dispatch boundary for the `composition`
+parameter: when present, `composition` selects a registered
+composition manifest by id and makes that manifest the navigation
+context for the addressed target.
 
 The locator value is still external input. It is well-formed (the
 grammar parser already rejected malformed identifiers, repeated
@@ -64,6 +68,23 @@ dispatch layer:
 - Keeps URL state authoritative. The dispatch layer never reads
   localStorage, cookies, or any cached runtime state — the
   `NavigationTarget` it consumes is the only source.
+
+For PUL-F009, `composition` is always a catalog lookup key, never an
+inline manifest, file path, module specifier, network URL, or dynamic
+import target. The selected manifest supplies navigation context:
+
+- `composition` alone starts at entry 0 of that manifest.
+- `composition` + `scene` selects the unique matching entry and uses
+  the manifest slice from that entry onward as context.
+- `composition` + `index` selects the entry at that zero-based
+  composition index and uses the manifest slice from that entry onward
+  as context.
+
+The dispatch layer must keep this context as a manifest slice, not as a
+second schema or a new "active deck" concept. Object-form composition
+entries retain their `range` and `behavior` overrides unchanged so the
+existing resolver and timeline runner contract remain the only place
+that can interpret them.
 
 Locator handling:
 
@@ -132,6 +153,8 @@ always runs before the next preload begins.
 | Composition + scene re-resolves modules and substitutes scenes mid-flight | Snapshot the manifest slice and the matching scene modules at resolve time; the bridge plays the snapshot, never re-resolving by id against an outside registry. |
 | Composition + scene plays a scene that was never in the composition | Verify membership at dispatch time; non-member combinations are navigation errors before any lifecycle hook runs. |
 | Composition + index points outside the manifest | Range-check before snapshotting; out-of-bounds is a navigation error. |
+| `composition` handling becomes a parallel manifest loader | Treat the parameter as an id into `CompositionRegistry`; no URL-derived manifests, dynamic imports, filesystem paths, or fetches. |
+| Composition context is flattened into scene-only state | Preserve the manifest slice and composition id on the navigation target so downstream lifecycle, diagnostics, and workbench state can distinguish "standalone scene" from "scene inside composition". |
 | Invalid URLs silently fall back to a default scene | Dispatch layer surfaces an explicit navigation error to the workbench (stage attribute + `onError` hook) per ADR-013's "no silent fallback". |
 
 ## Related ADRs

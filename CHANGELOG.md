@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tests/runtime/scene-loader.test.ts` — two PUL-F009 regression
+  anchors in the "happy path" describe block: the canonical
+  `?composition=full-talk` case (`kind: 'composition'` — head scene
+  is `manifest[0]`, `data-pulsar-composition-target` records the
+  composition id, lifecycle runs through the existing dispatch
+  chain) and the `?composition=full-talk&index=1` case
+  (`kind: 'composition-index'` — head scene is the addressed entry).
+  PUL-F009's parser, dispatcher, and loader chain shipped as part of
+  PUL-F008 (PR #70); these tests pin PUL-F009's canonical statement —
+  "the composition URL parameter resolves the addressed manifest and
+  uses it as the navigation context" — at the loader boundary so a
+  future refactor cannot silently break the composition-only or
+  composition-index path while keeping the composition+scene path
+  green.
+
 - `src/runtime/scene-navigation.ts` — `SceneNavigationTarget` /
   `SceneNavigationCompositionContext` interfaces,
   `resolveSceneNavigation` dispatcher, and

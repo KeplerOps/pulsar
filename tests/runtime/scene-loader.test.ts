@@ -59,8 +59,14 @@ const buildStage = (): FakeStage => {
 const sceneTarget = (id: string): NavigationTarget => ({
   locator: { kind: 'scene', scene: id },
 });
+const compositionTarget = (composition: string): NavigationTarget => ({
+  locator: { kind: 'composition', composition },
+});
 const compositionSceneTarget = (composition: string, scene: string): NavigationTarget => ({
   locator: { kind: 'composition-scene', composition, scene },
+});
+const compositionIndexTarget = (composition: string, index: number): NavigationTarget => ({
+  locator: { kind: 'composition-index', composition, index },
 });
 const noneTarget: NavigationTarget = { locator: { kind: 'none' } };
 
@@ -115,6 +121,99 @@ describe('createSceneLoader (PUL-F008)', () => {
 
       expect(stage.attrs.get('data-pulsar-scene-target')).toBe('middle');
       expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+    });
+
+    it('loads the composition manifest from index 0 when the locator is `kind: "composition"` (PUL-F009)', async () => {
+      // Canonical PUL-F009 case: `?composition=full-talk` (no scene,
+      // no index). The runtime resolves the addressed composition
+      // manifest and uses it as the navigation context — every entry
+      // in the slice runs through the existing PUL-F004 lifecycle in
+      // manifest order, the head scene is recorded on the stage
+      // (`manifest[0]`), and the composition stage attribute records
+      // the composition id. Each scene's create/cleanup is observed so
+      // the test would catch a regression that collapsed the locator
+      // into a single-scene load and dropped the manifest slice.
+      const log: string[] = [];
+      const trace = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`create:${id}`);
+          },
+          cleanup: () => {
+            log.push(`cleanup:${id}`);
+          },
+        });
+      const intro = trace('intro');
+      const middle = trace('middle');
+      const outro = trace('outro');
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, middle, outro]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
+        ]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(compositionTarget('full-talk'));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('intro');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+      expect(log).toEqual([
+        'create:intro',
+        'cleanup:intro',
+        'create:middle',
+        'cleanup:middle',
+        'create:outro',
+        'cleanup:outro',
+      ]);
+    });
+
+    it('loads the composition slice from the addressed index when the locator is `kind: "composition-index"` (PUL-F009)', async () => {
+      // PUL-F009 with `?composition=full-talk&index=1`: the manifest
+      // slice starts at the addressed entry and continues to the end,
+      // so head scene is `manifest[1]` and every entry from there
+      // forward runs in order. The 3-entry manifest with `index=1`
+      // distinguishes "slice from addressed index onward" from a
+      // single-scene load of `manifest[1]`: the latter would skip
+      // `outro`.
+      const log: string[] = [];
+      const trace = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`create:${id}`);
+          },
+          cleanup: () => {
+            log.push(`cleanup:${id}`);
+          },
+        });
+      const intro = trace('intro');
+      const middle = trace('middle');
+      const outro = trace('outro');
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, middle, outro]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
+        ]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(compositionIndexTarget('full-talk', 1));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('middle');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+      expect(log).toEqual(['create:middle', 'cleanup:middle', 'create:outro', 'cleanup:outro']);
     });
 
     it('is a no-op for `kind: "none"` (no scene to load)', async () => {
