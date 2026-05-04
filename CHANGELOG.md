@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tests/runtime/scene-loader.test.ts` — two PUL-F010 regression
+  anchors under a new `'composition + index positions playback
+  (PUL-F010)'` describe block: `?composition=trailer&index=2` against
+  a 4-entry manifest records `data-pulsar-scene-target='scene-c'` and
+  plays only `scene-c → scene-d` (proves zero-based positional
+  semantics for N > 1 and that the slice continues from the index to
+  the end), and two sequential navigations on the same loader instance
+  with `index=0` then `index=2` against the same composition resolve
+  to different head scenes (proves the `index` parameter — not the
+  composition id — decides where in the composition playback starts).
+  PUL-F010's parser, dispatcher, and loader chain shipped as part of
+  PUL-F008 (PR #70) and PUL-F009 (PR #72); these tests pin PUL-F010's
+  canonical statement — "when `index` is present alongside
+  `composition`, the runtime positions playback at the given
+  zero-based index" — at the loader boundary so a future refactor
+  cannot silently collapse `composition-index` to a head-of-manifest
+  load, off-by-one the index, or single-load `manifest[index]` and
+  drop trailing entries.
+- `docs/adrs/013-url-navigation-grammar-boundary.md` /
+  `docs/adrs/014-url-scene-target-selection.md` — extend the existing
+  ADRs to name PUL-F010 explicitly: ADR-013 records that `index` is
+  not scene identity, an id alias, or a persistent bookmark
+  independent of composition order, and adds a "PUL-F010 forks from
+  composition path" risk + mitigation to keep positional dispatch in
+  the existing `composition-index` locator; ADR-014 records that
+  `composition` + `index` is PUL-F010's positional navigation
+  behavior, that the head scene is `manifest[index]` with the slice
+  continuing in manifest order, and adds an "index handling creates
+  a second playback state machine" risk + mitigation.
 - `tests/runtime/scene-loader.test.ts` — two PUL-F009 regression
   anchors in the "happy path" describe block: the canonical
   `?composition=full-talk` case (`kind: 'composition'` — head scene
