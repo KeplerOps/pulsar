@@ -102,6 +102,33 @@ composition code.
 | `beat` in a composition is interpreted as "find this label anywhere in the remaining composition" | Scope `beat` to the active head scene only. Later scenes run normally. |
 | Composition `range` and URL `beat` get validated by different layers | Keep both concerns in the timeline runner, where the concrete timeline and per-entry overrides are already present. |
 
+## Current state (2026-05-05)
+
+PR #74 lands the runtime contract this ADR mandates: the parser
+emits `NavigationTarget.beat`; the dispatcher and resolver forward
+it to the head scene's run input; the scene loader supplies a
+non-fatal `onBeatMissing` callback that surfaces
+`data-pulsar-navigation-error` and the configured `onError` sink
+without unmounting the scene. Defense-in-depth at the loader
+re-validates kebab-case shape and the "beat requires a scene-like
+target" combination rule before any side effect.
+
+The contract is delivered. **PUL-F011 remains DRAFT** because the
+end-to-end seek path requires a real timeline engine — ADR-003's
+GSAP runner. The placeholder runner in `src/main.ts` honestly
+reports "every beat missing" against its `null` timeline, so the
+diagnostic path (PUL-F011 clause 2) is exercisable today, but the
+positioning path (PUL-F011 clause 1) is not testable until labels
+exist in real timelines.
+
+PUL-F023 ("Named timeline beats") is the requirement that delivers
+labelled timelines through the GSAP runner; PUL-F022 ("Timeline
+orchestration") is the broader composition / play / pause / seek
+spine. When those land, the GSAP runner replaces the placeholder
+in `src/main.ts` and PUL-F011 transitions to ACTIVE without further
+contract changes — the seek path is `if (timeline.labels[input.beat]
+=== undefined) input.onBeatMissing?.(); else timeline.seek(input.beat)`.
+
 ## Related ADRs
 
 - [ADR-003](003-gsap-timeline-engine.md) — labels and seeking are part
