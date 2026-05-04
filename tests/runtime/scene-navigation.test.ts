@@ -723,4 +723,145 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
 
     expect(seen).toEqual([ctx, ctx, ctx]);
   });
+
+  describe('URL beat forwarding (PUL-F011)', () => {
+    // ADR-015: URL beat is timeline-runner state. The bridge's only
+    // job is to forward `beat` and `onBeatMissing` from the loader to
+    // the resolver as `headBeat` / `onBeatMissing`. Label existence
+    // and seeking remain the runner's responsibility.
+
+    it('forwards `beat` to the runner for a single-scene target', async () => {
+      const seen: { beat?: string }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { beat?: string } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          seen.push(captured);
+        },
+        beat: 'hook',
+      });
+
+      expect(seen).toEqual([{ beat: 'hook' }]);
+    });
+
+    it('forwards `beat` to the head scene only of a composition slice', async () => {
+      // Composition slice with two entries; the head must receive
+      // `beat`, the tail must not. ADR-015: URL beat targets the
+      // active head scene only — no search through later scenes.
+      // `composition-index` (per ADR-013) is the valid grammar for
+      // pairing composition with beat; `kind: 'composition'` alone
+      // would be rejected by the parser and the loader's defense-in-
+      // depth check.
+      const seen: { id: string; beat?: string }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { id: string; beat?: string } = { id: input.scene.id };
+          if ('beat' in input) captured.beat = input.beat;
+          seen.push(captured);
+        },
+        beat: 'hook',
+      });
+
+      expect(seen).toEqual([{ id: 'intro', beat: 'hook' }, { id: 'middle' }]);
+    });
+
+    it('forwards `onBeatMissing` to the head scene only', async () => {
+      const callbacks: (((() => void) | undefined) | 'absent')[] = [];
+      const sentinel = (): void => undefined;
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          callbacks.push('onBeatMissing' in input ? input.onBeatMissing : 'absent');
+        },
+        beat: 'hook',
+        onBeatMissing: sentinel,
+      });
+
+      expect(callbacks).toEqual([sentinel, 'absent']);
+    });
+
+    it('does not forward `onBeatMissing` when `beat` is omitted (paired contract)', async () => {
+      // `onBeatMissing` is meaningless without a `beat` to trigger it.
+      // The bridge drops the callback when the caller forgot to supply
+      // a beat so the resolver / runner never see an impossible state.
+      const onBeatMissingPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          onBeatMissingPresence.push('onBeatMissing' in input);
+        },
+        onBeatMissing: () => undefined,
+      });
+
+      expect(onBeatMissingPresence).toEqual([false]);
+    });
+
+    it('does not forward `beat` when the option is omitted', async () => {
+      const seen: SceneNavigationTarget['scene'][] = [];
+      const beatPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene);
+          beatPresence.push('beat' in input);
+        },
+      });
+
+      expect(seen).toHaveLength(1);
+      expect(beatPresence).toEqual([false]);
+    });
+  });
 });

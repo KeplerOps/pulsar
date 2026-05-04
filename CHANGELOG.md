@@ -9,6 +9,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/composition-resolver.ts` — `headBeat?: string` and
+  `onBeatMissing?: () => void` fields on `ResolveCompositionOptions`,
+  paired with `beat?: string` and `onBeatMissing?: () => void` on
+  `SceneTimelineRunInput`. Implements PUL-F011's URL-beat forwarding
+  in line with ADR-015: when the caller supplies `headBeat`, the
+  resolver attaches `beat` (and the paired `onBeatMissing`) to the
+  FIRST plan step's run input only — subsequent scenes never receive
+  them, because ADR-015 scopes URL beat to the active head scene
+  (no search through later composition entries). Both fields are
+  omitted from the run input object when absent (the same `range` /
+  `behavior` precedent — `'beat' in input === false`), so the
+  runner's branching can rely on key presence. The resolver itself
+  does not interpret labels — that responsibility belongs to the
+  timeline runner per ADR-015.
+- `src/runtime/scene-navigation.ts` — `beat?: string` and
+  `onBeatMissing?: () => void` on `LoadSceneNavigationTargetOptions`.
+  The bridge forwards both to `resolveComposition` as `headBeat` /
+  `onBeatMissing`, omitting whichever the caller did not supply so
+  the resolver does not see spurious `undefined` keys.
+- `src/runtime/scene-loader.ts` — when the parsed `NavigationTarget`
+  carries `target.beat`, the loader extracts it, builds an
+  `onBeatMissing` closure that calls the existing `surfaceError(...)`
+  with `Error('beat positioning failed: beat "<beat>" does not exist
+  in scene "<head-scene-id>"')`, and forwards both to the bridge.
+  The closure does NOT short-circuit the lifecycle: missing-label
+  diagnostics write `data-pulsar-navigation-error` and invoke the
+  configured `onError` sink while the active scene stays mounted at
+  its initial timeline position (PUL-F011 clause 2's "remain at the
+  scene's first beat", per ADR-015's "do not reject through
+  `resolveComposition` for missing labels — that triggers cleanup
+  and unmounts the scene"). The error grammar uses the stable prefix
+  `beat positioning failed:` so callers can pattern-match on origin.
+- `src/main.ts` — placeholder timeline runner invokes
+  `input.onBeatMissing?.()` once when `input.beat !== undefined`.
+  The placeholder timeline returns `null` (no labels), so any URL
+  beat is a missing-label diagnostic by definition. The runner does
+  not throw — it surfaces the diagnostic via the loader's callback
+  and continues normally so the scene stays mounted. ADR-003's GSAP
+  runner replaces this stand-in with `timeline.labels[input.beat]`-
+  style seeking when the engine lands.
+- `docs/adrs/015-url-beat-positioning.md` — records ADR-015's
+  decisions: `beat` is timeline-runner state (not parser, dispatcher,
+  registry, or manifest state); URL beat targets the active head
+  scene only; an unknown beat is a non-fatal navigation-positioning
+  diagnostic surfaced through the existing
+  `data-pulsar-navigation-error` + `onError` surface; missing-label
+  rejection through `resolveComposition` is forbidden because it
+  triggers PUL-F006 cleanup and would unmount the scene; valid beat
+  seeking uses the timeline engine's label API (no parallel beat
+  schema in scene metadata, manifests, URL parsing, or registries).
+  Indexed in `docs/adrs/README.md`.
+- `tests/runtime/composition-resolver.test.ts` — new
+  `'URL beat positioning forwarding (PUL-F011)'` describe block (5
+  tests): `headBeat` reaches plan[0]'s run input only and subsequent
+  scenes get no `beat` key; `onBeatMissing` follows the same head-
+  scope semantics; absence of either option leaves the run input
+  free of `beat` / `onBeatMissing` keys; an `onBeatMissing` supplied
+  without `headBeat` is dropped (paired contract); a runner that
+  silently consumes `headBeat` does not cause the resolver to throw
+  or skip cleanup (resolver delegates label-existence to the runner).
+- `tests/runtime/scene-navigation.test.ts` — new
+  `'URL beat forwarding (PUL-F011)'` describe block (5 tests):
+  `beat` reaches the runner for a single-scene target; in a
+  `composition-index` slice, `beat` reaches the head scene only;
+  `onBeatMissing` follows the same head-only forwarding;
+  `onBeatMissing` supplied without `beat` is dropped (paired
+  contract); omitted `beat` produces no `beat` key on the run input.
+- `tests/runtime/scene-loader.test.ts` — new
+  `'beat positioning (PUL-F011)'` describe block (8 tests):
+  the loader extracts `target.beat` and forwards it to the runner;
+  a runner that invokes `onBeatMissing` writes
+  `data-pulsar-navigation-error='beat positioning failed: beat
+  "<beat>" does not exist in scene "<head-scene-id>"'` AND calls
+  `onError` while the scene stays mounted (proven via a pending
+  runner that holds the gate open: cleanup has NOT fired during
+  the diagnostic — only after the runner naturally exits); a
+  diagnostic surfaced after the load was disposed/aborted is
+  suppressed (parallel to `isPureAbort`); the diagnostic is
+  fired only once per navigation even if the runner calls
+  `onBeatMissing` repeatedly; a hand-built target with a
+  non-kebab `beat` value is rejected with the parser's grammar
+  message; a successful beat (runner does not invoke
+  `onBeatMissing`) leaves the error attribute absent; a
+  hand-built `composition`-only target with `beat` is rejected
+  with the parser's "beat requires a scene-like target" message
+  (defense-in-depth for ADR-013); targets without `beat` carry
+  no `beat` / `onBeatMissing` keys on the run input.
 - `tests/runtime/scene-loader.test.ts` — two PUL-F009 regression
   anchors in the "happy path" describe block: the canonical
   `?composition=full-talk` case (`kind: 'composition'` — head scene

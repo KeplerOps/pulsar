@@ -101,6 +101,29 @@ export interface SceneTimelineRunInput {
    * when the caller did not pass a `signal`.
    */
   readonly signal?: AbortSignal;
+  /**
+   * URL beat label (PUL-F011) the runner SHOULD seek to before
+   * playing the timeline. Only present on the run input for the FIRST
+   * scene of the resolved composition slice — subsequent scenes never
+   * receive `beat` because ADR-015 scopes URL beat to the active head
+   * scene only. Absent when the navigation target had no `beat=`
+   * parameter. Label-existence checking is the runner's responsibility
+   * (the resolver does not parse the timeline value).
+   */
+  readonly beat?: string;
+  /**
+   * Non-fatal callback the runner SHOULD invoke when {@link beat} is
+   * supplied but the named label does not exist in the timeline
+   * (PUL-F011 / ADR-015). The runner MUST continue normally after
+   * invoking — playing the timeline from its initial position
+   * ("scene's first beat") — and MUST NOT throw or reject in response
+   * to a missing label, because the resolver treats runner rejection
+   * as a lifecycle failure and would unmount the scene via cleanup.
+   * Paired with {@link beat}: only present on the head scene's run
+   * input, and only when the caller supplied `onBeatMissing` on
+   * {@link ResolveCompositionOptions}.
+   */
+  readonly onBeatMissing?: () => void;
 }
 
 /**
@@ -148,6 +171,24 @@ export interface ResolveCompositionOptions {
    * forwarded signal.
    */
   readonly signal?: AbortSignal;
+  /**
+   * URL beat label (PUL-F011) to forward to the FIRST scene's run
+   * input as {@link SceneTimelineRunInput.beat}. Subsequent scenes
+   * never receive a beat — ADR-015 scopes URL beat to the active head
+   * scene only, so a composition slice does not search later scenes
+   * for the label. Absent when the navigation target had no `beat=`
+   * parameter.
+   */
+  readonly headBeat?: string;
+  /**
+   * Non-fatal callback paired with {@link headBeat}. Forwarded to the
+   * head scene's run input as {@link SceneTimelineRunInput.onBeatMissing}
+   * so the runner can report a missing label without rejecting (which
+   * would trigger PUL-F006 cleanup and unmount the scene, violating
+   * PUL-F011's "remain at the scene's first beat"). Absent when the
+   * caller did not opt into beat positioning.
+   */
+  readonly onBeatMissing?: () => void;
 }
 
 /**
@@ -209,14 +250,21 @@ function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
 
 /**
  * Build the {@link SceneTimelineRunInput} for one plan step. Omits
- * `range` / `behavior` from the output object when absent on the
- * source entry rather than emitting `range: undefined` keys, so the
- * runner's `range in input` checks behave intuitively.
+ * `range` / `behavior` / `beat` / `onBeatMissing` from the output
+ * object when absent on the source entry rather than emitting
+ * `field: undefined` keys, so the runner's `field in input` checks
+ * behave intuitively.
+ *
+ * `beat` and `onBeatMissing` are caller-supplied per-call (resolver
+ * passes them only for the head plan step); the rest are per-entry
+ * (resolver derives from the manifest snapshot).
  */
 function buildRunInput(
   step: PlanStep,
   timeline: unknown,
   signal: AbortSignal | undefined,
+  beat: string | undefined,
+  onBeatMissing: (() => void) | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -225,6 +273,8 @@ function buildRunInput(
   if (step.range !== undefined) input.range = step.range;
   if (step.behavior !== undefined) input.behavior = step.behavior;
   if (signal !== undefined) input.signal = signal;
+  if (beat !== undefined) input.beat = beat;
+  if (onBeatMissing !== undefined) input.onBeatMissing = onBeatMissing;
   return input;
 }
 
@@ -281,7 +331,8 @@ function buildRunInput(
  * runner's job per ADR-011).
  */
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
-  const { registry, manifest, ctx, preloadAssets, runTimeline, signal } = options;
+  const { registry, manifest, ctx, preloadAssets, runTimeline, signal, headBeat, onBeatMissing } =
+    options;
 
   assertCompositionManifest(manifest);
   const plan = buildPlan(manifest, registry);
@@ -299,8 +350,12 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // No separate pre-loop check is needed because `assertCompositionManifest`
   // and `buildPlan` are synchronous — there is no yield point between
   // them and the loop's first iteration check.
+  //
+  // PUL-F011: `headBeat` / `onBeatMissing` (when supplied) are forwarded
+  // to the FIRST scene's run input only. Subsequent scenes do not
+  // receive them — ADR-015 scopes URL beat to the active head scene.
   let lastCompletedSceneId: string | undefined;
-  for (const step of plan) {
+  for (const [index, step] of plan.entries()) {
     throwIfAborted(
       signal,
       lastCompletedSceneId === undefined
@@ -312,7 +367,14 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
       signal,
       `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
     );
-    await runScene(step, ctx, runTimeline, signal);
+    const isHead = index === 0;
+    // `onBeatMissing` is paired with `headBeat` per ADR-015. Drop the
+    // callback when no beat is supplied — otherwise the runner would
+    // see `input.onBeatMissing` with no `input.beat` to trigger it
+    // against, an impossible state per the documented contract.
+    const stepBeat = isHead ? headBeat : undefined;
+    const stepOnBeatMissing = stepBeat === undefined ? undefined : onBeatMissing;
+    await runScene(step, ctx, runTimeline, signal, stepBeat, stepOnBeatMissing);
     lastCompletedSceneId = step.scene.id;
   }
 }
@@ -367,6 +429,8 @@ async function runScene(
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
   signal: AbortSignal | undefined,
+  beat: string | undefined,
+  onBeatMissing: (() => void) | undefined,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -384,7 +448,7 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(step, timeline, signal));
+    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing));
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

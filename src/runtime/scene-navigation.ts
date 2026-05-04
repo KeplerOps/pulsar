@@ -117,6 +117,24 @@ export interface LoadSceneNavigationTargetOptions {
    * defined for composition-level abort.
    */
   readonly signal?: AbortSignal;
+  /**
+   * URL beat label (PUL-F011) the runner should seek to before
+   * playing the head scene's timeline. Forwarded to
+   * {@link resolveComposition} as `headBeat` — the resolver scopes
+   * delivery to the head scene's run input only, per ADR-015. Absent
+   * when the navigation target had no `beat=` URL parameter.
+   */
+  readonly beat?: string;
+  /**
+   * Non-fatal callback invoked by the runner when {@link beat} is
+   * supplied but the named timeline label does not exist (PUL-F011 /
+   * ADR-015). Forwarded to {@link resolveComposition} as
+   * `onBeatMissing`. The runner MUST NOT throw or reject in response
+   * to a missing label; the loader uses this hook to surface a
+   * navigation-positioning diagnostic without unmounting the active
+   * scene.
+   */
+  readonly onBeatMissing?: () => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -368,5 +386,15 @@ export async function loadSceneNavigationTarget(
     preloadAssets: options.preloadAssets,
     runTimeline: options.runTimeline,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    // `onBeatMissing` is paired with `beat` per ADR-015 — a callback
+    // without a label has no trigger condition, so dropping it when
+    // `beat` is absent prevents misuse-by-spread (e.g. a caller
+    // accidentally passing `onBeatMissing` with no `beat`).
+    ...(options.beat === undefined
+      ? {}
+      : {
+          headBeat: options.beat,
+          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
+        }),
   });
 }

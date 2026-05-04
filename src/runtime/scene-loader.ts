@@ -32,6 +32,7 @@
 import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
 import { describeError } from './error';
+import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import type { NavigationTarget } from './navigation';
 import type { SceneRegistry } from './registry';
 import {
@@ -213,6 +214,38 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   };
 
   const runTarget = async (target: NavigationTarget): Promise<void> => {
+    // Defense-in-depth for ADR-013's "beat requires a scene-like
+    // target" rule and the kebab-case identifier shape.
+    // `parseNavigationSearch` enforces both on URL input, but
+    // `NavigationTarget` is an exported type that non-parser callers
+    // (event-detail unmarshaling, future test harnesses, programmatic
+    // navigation) can construct directly. Re-checking at the loader
+    // boundary stops a hand-built target with an invalid `beat` (wrong
+    // shape, or paired with a non-scene-like locator) from reaching
+    // the runner with a value the parser would have rejected. Mirrors
+    // the parser's error grammar verbatim so a downstream caller
+    // pattern-matching on the message gets the same string regardless
+    // of which boundary rejected.
+    if (target.beat !== undefined) {
+      if (!isKebabIdentifier(target.beat)) {
+        surfaceError(
+          new Error(
+            `navigation grammar is invalid: "beat" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
+          ),
+        );
+        return;
+      }
+      const k = target.locator.kind;
+      if (k !== 'scene' && k !== 'composition-scene' && k !== 'composition-index') {
+        surfaceError(
+          new Error(
+            'navigation grammar is invalid: "beat" requires a scene-like target ("scene", "composition" + "scene", or "composition" + "index")',
+          ),
+        );
+        return;
+      }
+    }
+
     let resolved: SceneNavigationTarget | null;
     try {
       resolved = resolveSceneNavigation(target, {
@@ -253,6 +286,48 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       surfaceError(err);
       return;
     }
+    // PUL-F011 / ADR-015: when the URL carries `beat=<label>`, the
+    // loader supplies a non-fatal callback that writes
+    // `data-pulsar-navigation-error` and calls `onError` without
+    // throwing, so a missing label does NOT cause the resolver to
+    // reject (which would unmount the scene via PUL-F006 cleanup —
+    // violating "remain at the scene's first beat"). The error
+    // message names both the beat and the head scene id so the
+    // operator can fix the URL or the timeline label. The closure
+    // captures `resolved.scene.id` (the head scene) at handle time;
+    // the bridge / resolver guarantees the callback only fires on
+    // the head scene's run input per ADR-015.
+    //
+    // Three guards parallel the existing fatal-error suppression in
+    // the queue (`isPureAbort`, `inFlight.silent`, post-dispose
+    // no-op):
+    //  - `controller.signal.aborted` — a stale runner that reports
+    //    `onBeatMissing` after the load was aborted (a new
+    //    navigation enqueued, popstate, etc.) MUST NOT write the
+    //    diagnostic for the superseded navigation. Mirrors
+    //    `isPureAbort`'s "the new event owns the visible state".
+    //  - `disposed` — post-`dispose()` runners must not surface
+    //    diagnostics; the workbench is shutting down.
+    //  - `beatDiagnosticFired` — a runner that calls the callback
+    //    multiple times (a buggy GSAP integration retrying on each
+    //    label miss, etc.) MUST NOT spam `onError` and the stage
+    //    attribute. Once-only matches the "single diagnostic per
+    //    navigation" semantics of every other surfaceError call.
+    const beat = target.beat;
+    let beatDiagnosticFired = false;
+    const onBeatMissing =
+      beat === undefined
+        ? undefined
+        : (): void => {
+            if (beatDiagnosticFired) return;
+            if (controller.signal.aborted || disposed) return;
+            beatDiagnosticFired = true;
+            surfaceError(
+              new Error(
+                `beat positioning failed: beat "${beat}" does not exist in scene "${resolved.scene.id}"`,
+              ),
+            );
+          };
     const load: InFlightLoad = {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -260,6 +335,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         preloadAssets,
         runTimeline: options.runTimeline,
         signal: controller.signal,
+        ...(beat === undefined ? {} : { beat }),
+        ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
       }),
       silent: false,
     };

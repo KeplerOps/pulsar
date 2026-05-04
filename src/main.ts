@@ -65,15 +65,34 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // navigation. ADR-003's GSAP runner replaces this slot when the
 // timeline engine lands; until then this stand-in honors the
 // "scene stays loaded between navigations" workbench expectation.
+//
+// PUL-F011 / ADR-015: when the URL carries `beat=<label>`, the runner
+// is responsible for label existence. The placeholder timeline returns
+// `null` (no labels), so EVERY URL beat is a missing-label diagnostic
+// by definition — `input.onBeatMissing?.()` is the correct response
+// here. The runner does NOT throw or reject; the loader's callback
+// writes `data-pulsar-navigation-error` and the scene stays mounted at
+// its initial timeline position. ADR-003's GSAP runner replaces this
+// stand-in with `timeline.labels[input.beat]`-style seeking when the
+// engine lands; until then the placeholder honestly reports "no
+// labels" rather than silently ignoring the URL.
+//
+// Abort ordering: the abort check runs BEFORE the missing-beat
+// diagnostic so a navigation that was superseded between
+// `scene.timeline(ctx)` resolution and the runner's first turn does
+// not surface a stale diagnostic for a disposed/aborted load.
 const runTimeline: SceneTimelineRunner = (input) =>
   new Promise<void>((resolve) => {
-    if (input.signal === undefined) {
-      // No abort path was wired (e.g. test harness without a
-      // signal); treat as a no-op so we don't wait forever.
+    if (input.signal?.aborted === true) {
       resolve();
       return;
     }
-    if (input.signal.aborted) {
+    if (input.beat !== undefined) {
+      input.onBeatMissing?.();
+    }
+    if (input.signal === undefined) {
+      // No abort path was wired (e.g. test harness without a
+      // signal); treat as a no-op so we don't wait forever.
       resolve();
       return;
     }

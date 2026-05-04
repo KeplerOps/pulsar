@@ -40,3 +40,4 @@ Each ADR includes:
 | [012](012-asset-preloader-fetch-and-drain.md) | Asset Preloader — Warm Bytes via Fetch + Drain; Decode-Complete is Future Work | Accepted |
 | [013](013-url-navigation-grammar-boundary.md) | URL Navigation Grammar Boundary | Accepted |
 | [014](014-url-scene-target-selection.md) | Loading the Addressed Scene as the Runtime Navigation Target | Accepted |
+| [015](015-url-beat-positioning.md) | URL Beat Positioning as Timeline-Runner State | Accepted |

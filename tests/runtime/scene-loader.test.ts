@@ -782,4 +782,311 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(log).toEqual([]);
     });
   });
+
+  describe('beat positioning (PUL-F011)', () => {
+    // PUL-F011: when `beat=<label>` is present, the runtime SHALL
+    // position the active scene's timeline at the named label; if the
+    // label does not exist, surface an error and remain at the scene's
+    // first beat. ADR-015 places label existence + seeking in the
+    // timeline-runner boundary; the loader's job is to:
+    //   (a) extract `target.beat` and forward it to the runner;
+    //   (b) provide an `onBeatMissing` callback that writes the
+    //       `data-pulsar-navigation-error` attribute + calls `onError`
+    //       WITHOUT unmounting the scene (no rejection through the
+    //       resolver, which would trigger cleanup).
+
+    const sceneTargetWithBeat = (id: string, beat: string): NavigationTarget => ({
+      locator: { kind: 'scene', scene: id },
+      beat,
+    });
+
+    it('forwards `beat` from the parsed navigation target to the runner', async () => {
+      const seen: { beat?: string }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          const captured: { beat?: string } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          seen.push(captured);
+        },
+      });
+
+      await loader.handle(sceneTargetWithBeat('intro', 'hook'));
+
+      expect(seen).toEqual([{ beat: 'hook' }]);
+    });
+
+    it('keeps the scene mounted while the runner is still active after onBeatMissing (PUL-F011 "remain at the scene\'s first beat")', async () => {
+      // The substantive PUL-F011 invariant: a missing-label diagnostic
+      // MUST NOT cause the scene to be unmounted. Reading "create then
+      // cleanup" alone is insufficient evidence — that just describes
+      // any normal lifecycle. The test instead holds the runner pending
+      // (so the scene is "live"), observes the diagnostic surfaced AND
+      // the scene is still mounted (cleanup has NOT yet fired), then
+      // releases the runner and confirms cleanup ran on natural exit.
+      // This pins that the missing-beat path does NOT short-circuit the
+      // resolver into an early cleanup.
+      const captured: unknown[] = [];
+      const lifecycleLog: string[] = [];
+      let resolveRunner: (() => void) | undefined;
+      const runnerGate = new Promise<void>((res) => {
+        resolveRunner = res;
+      });
+      let runnerEntered: (() => void) | undefined;
+      const runnerEnteredBarrier = new Promise<void>((res) => {
+        runnerEntered = res;
+      });
+      const intro = buildScene({
+        id: 'intro',
+        create: () => {
+          lifecycleLog.push('create');
+        },
+        cleanup: () => {
+          lifecycleLog.push('cleanup');
+        },
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: async (input) => {
+          // Simulate an unknown timeline label: runner reports the
+          // diagnostic via `onBeatMissing`, signals the test that
+          // it has entered, and stays alive (await gate). The
+          // runner MUST NOT throw — that would trigger cleanup and
+          // unmount the scene per PUL-F006.
+          input.onBeatMissing?.();
+          runnerEntered?.();
+          await runnerGate;
+        },
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      const handlePromise = loader.handle(sceneTargetWithBeat('intro', 'unknown-label'));
+
+      // Block until the runner has fired the diagnostic and is
+      // awaiting the gate. This synchronizes the assertions to a
+      // deterministic lifecycle point — independent of how many
+      // microtasks the queue / dispatcher / resolver chain costs.
+      await runnerEnteredBarrier;
+
+      // While the runner is still pending: scene IS mounted (create
+      // fired, cleanup has NOT), the diagnostic IS surfaced. This is
+      // the substantive "remain at the scene's first beat" assertion.
+      expect(lifecycleLog).toEqual(['create']);
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('intro');
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBe(
+        'beat positioning failed: beat "unknown-label" does not exist in scene "intro"',
+      );
+      expect(captured).toHaveLength(1);
+      expect((captured[0] as Error).message).toBe(
+        'beat positioning failed: beat "unknown-label" does not exist in scene "intro"',
+      );
+
+      // Release the runner so the lifecycle completes naturally.
+      // Cleanup runs only now — proves the diagnostic did NOT
+      // short-circuit into an early unmount.
+      resolveRunner?.();
+      await handlePromise;
+      expect(lifecycleLog).toEqual(['create', 'cleanup']);
+    });
+
+    it('suppresses a missing-beat diagnostic if the runner reports after the load was aborted (stale-load guard)', async () => {
+      // Defense parallel to `isPureAbort` for fatal-error suppression:
+      // a runner that calls `onBeatMissing` after a navigation was
+      // superseded (e.g. popstate aborted the in-flight load) must
+      // NOT write a diagnostic for the dead navigation. Otherwise the
+      // stage would carry the previous URL's beat error after the new
+      // navigation completed.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      let capturedOnBeatMissing: (() => void) | undefined;
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          // Capture the callback but DON'T call it yet — we simulate
+          // a runner that reports late, after the navigation was
+          // aborted by a follow-up dispose().
+          capturedOnBeatMissing = input.onBeatMissing;
+          // Resolve the runner immediately so the lifecycle settles.
+        },
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await loader.handle(sceneTargetWithBeat('intro', 'unknown-label'));
+      // Drop the diagnostic that the runner DID surface during the
+      // original navigation — focus the test on a SECOND, late call
+      // that comes in after the load is dead.
+      stage.attrs.delete('data-pulsar-navigation-error');
+      captured.length = 0;
+
+      // Now dispose the loader and have the captured callback fire.
+      // The closure must observe `disposed === true` and no-op.
+      loader.dispose();
+      capturedOnBeatMissing?.();
+
+      expect(captured).toEqual([]);
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+    });
+
+    it('only fires the diagnostic once per navigation even if the runner calls onBeatMissing repeatedly', async () => {
+      // A buggy runner (or a future GSAP integration that retries on
+      // each beat-not-found) must not spam the error sink. Once-only
+      // gating matches every other surfaceError call in the loader.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          input.onBeatMissing?.();
+          input.onBeatMissing?.();
+          input.onBeatMissing?.();
+        },
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await loader.handle(sceneTargetWithBeat('intro', 'unknown-label'));
+
+      expect(captured).toHaveLength(1);
+    });
+
+    it('rejects a constructed target whose `beat` value is not kebab-case (defense-in-depth for parser)', async () => {
+      // The parser validates `beat` shape; the loader re-validates so
+      // a hand-built `NavigationTarget` (event-detail unmarshaling,
+      // programmatic navigation) cannot bypass kebab-case enforcement.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      const malformed: NavigationTarget = {
+        locator: { kind: 'scene', scene: 'intro' },
+        // `Bad Label` has uppercase + space — invalid kebab.
+        // Cast to string is needed because the type annotation on
+        // `beat` is `string`, but parser enforcement makes any
+        // non-kebab beat unreachable in normal flow.
+        beat: 'Bad Label' as unknown as string,
+      };
+
+      await loader.handle(malformed);
+
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
+        /^navigation grammar is invalid: "beat" must be a non-empty lowercase kebab-case string/,
+      );
+      expect(captured).toHaveLength(1);
+    });
+
+    it('a successful beat (runner does NOT invoke onBeatMissing) leaves the error attribute absent', async () => {
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: () => undefined, // simulates successful seek
+      });
+
+      await loader.handle(sceneTargetWithBeat('intro', 'hook'));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('intro');
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+    });
+
+    it('rejects a constructed `composition`-only target with `beat` (defense-in-depth for ADR-013)', async () => {
+      // `parseNavigationSearch` already rejects `composition=<id>&beat=<label>`,
+      // but `NavigationTarget` is an exported type and a non-parser
+      // caller could construct one directly. The loader re-enforces
+      // the rule before any side effect so a hand-built target does
+      // not bypass the grammar invariant the parser would have caught.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['intro'] }]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      const compositionOnlyWithBeat: NavigationTarget = {
+        locator: { kind: 'composition', composition: 'full-talk' },
+        beat: 'hook',
+      };
+
+      await loader.handle(compositionOnlyWithBeat);
+
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+      expect(stage.attrs.has('data-pulsar-composition-target')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
+        /^navigation grammar is invalid: "beat" requires a scene-like target/,
+      );
+      expect(captured).toHaveLength(1);
+    });
+
+    it('targets without `beat` carry no `beat` or `onBeatMissing` on the run input', async () => {
+      const seen: { beatPresent: boolean; onBeatMissingPresent: boolean }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          seen.push({
+            beatPresent: 'beat' in input,
+            onBeatMissingPresent: 'onBeatMissing' in input,
+          });
+        },
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      expect(seen).toEqual([{ beatPresent: false, onBeatMissingPresent: false }]);
+    });
+  });
 });
