@@ -1229,7 +1229,7 @@ describe('URL beat positioning forwarding (PUL-F011)', () => {
         runCalls.push(input);
       },
     });
-    await resolveComposition({ ...options, headBeat: 'hook' });
+    await resolveComposition({ ...options, headBeat: 'hook', onBeatMissing: () => undefined });
     expect(runCalls).toHaveLength(2);
     expect(runCalls[0]?.scene.id).toBe('scene-a');
     expect(runCalls[0]?.beat).toBe('hook');
@@ -1290,6 +1290,21 @@ describe('URL beat positioning forwarding (PUL-F011)', () => {
     expect('onBeatMissing' in (runCalls[0] as object)).toBe(false);
   });
 
+  it('throws when `headBeat` is supplied without `onBeatMissing` (paired-required contract)', async () => {
+    // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing`
+    // would silently lose the missing-label diagnostic the runner
+    // is contracted to surface. The resolver fails fast at the
+    // boundary rather than running a doomed lifecycle that reports
+    // nothing.
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+    });
+    await expect(resolveComposition({ ...options, headBeat: 'hook' })).rejects.toThrow(
+      /^resolveComposition: `onBeatMissing` is required when `headBeat` is supplied/,
+    );
+  });
+
   it('does not interpret `headBeat` itself — a runner that silently consumes it does not error', async () => {
     // Resolver delegates label-existence checking to the runner per
     // ADR-015. A runner that receives `beat: 'unknown-label'` and
@@ -1309,7 +1324,11 @@ describe('URL beat positioning forwarding (PUL-F011)', () => {
       runTimeline: () => undefined,
     });
     await expect(
-      resolveComposition({ ...options, headBeat: 'never-defined' }),
+      resolveComposition({
+        ...options,
+        headBeat: 'never-defined',
+        onBeatMissing: () => undefined,
+      }),
     ).resolves.toBeUndefined();
     expect(cleanupCalls).toEqual(['scene-a']);
   });

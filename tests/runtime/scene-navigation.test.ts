@@ -749,6 +749,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
           seen.push(captured);
         },
         beat: 'hook',
+        onBeatMissing: () => undefined,
       });
 
       expect(seen).toEqual([{ beat: 'hook' }]);
@@ -783,6 +784,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
           seen.push(captured);
         },
         beat: 'hook',
+        onBeatMissing: () => undefined,
       });
 
       expect(seen).toEqual([{ id: 'intro', beat: 'hook' }, { id: 'middle' }]);
@@ -838,6 +840,31 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       });
 
       expect(onBeatMissingPresence).toEqual([false]);
+    });
+
+    it('throws when `beat` is supplied without `onBeatMissing` (paired-required contract)', async () => {
+      // PUL-F011 / ADR-015: a `beat` without an `onBeatMissing` would
+      // silently lose the missing-label diagnostic the runner is
+      // contracted to surface. The bridge fails fast at the boundary,
+      // mirroring the resolver's check.
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await expect(
+        loadSceneNavigationTarget(target, {
+          ctx: {},
+          preloadAssets: () => undefined,
+          runTimeline: () => undefined,
+          beat: 'hook',
+        }),
+      ).rejects.toThrow(
+        /^loadSceneNavigationTarget: `onBeatMissing` is required when `beat` is supplied/,
+      );
     });
 
     it('does not forward `beat` when the option is omitted', async () => {

@@ -114,11 +114,19 @@ export interface SceneTimelineRunInput {
   /**
    * Non-fatal callback the runner SHOULD invoke when {@link beat} is
    * supplied but the named label does not exist in the timeline
-   * (PUL-F011 / ADR-015). The runner MUST continue normally after
-   * invoking — playing the timeline from its initial position
-   * ("scene's first beat") — and MUST NOT throw or reject in response
-   * to a missing label, because the resolver treats runner rejection
-   * as a lifecycle failure and would unmount the scene via cleanup.
+   * (PUL-F011 / ADR-015).
+   *
+   * On invocation, the runner MUST NOT throw, reject, or otherwise
+   * signal a lifecycle failure (the resolver would treat that as a
+   * fatal scene error and unmount via cleanup). The runner MUST also
+   * NOT seek to the requested label — there is no such label. The
+   * scene's playback position MUST be the timeline's start (PUL-F011's
+   * "scene's first beat"). Whether the runner then plays the timeline
+   * forward from that start, holds parked, or hands control to a
+   * presenter is the runner's contract with its callers — the
+   * requirement only mandates the position, not the post-position
+   * behavior.
+   *
    * Paired with {@link beat}: only present on the head scene's run
    * input, and only when the caller supplied `onBeatMissing` on
    * {@link ResolveCompositionOptions}.
@@ -185,8 +193,13 @@ export interface ResolveCompositionOptions {
    * head scene's run input as {@link SceneTimelineRunInput.onBeatMissing}
    * so the runner can report a missing label without rejecting (which
    * would trigger PUL-F006 cleanup and unmount the scene, violating
-   * PUL-F011's "remain at the scene's first beat"). Absent when the
-   * caller did not opt into beat positioning.
+   * PUL-F011's "remain at the scene's first beat").
+   *
+   * REQUIRED whenever {@link headBeat} is supplied: a beat without a
+   * diagnostic surface would silently lose the missing-label error
+   * the runner reports — the resolver throws when this invariant is
+   * violated rather than letting the diagnostic vanish. Absent when
+   * {@link headBeat} is also absent.
    */
   readonly onBeatMissing?: () => void;
 }
@@ -333,6 +346,17 @@ function buildRunInput(
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
   const { registry, manifest, ctx, preloadAssets, runTimeline, signal, headBeat, onBeatMissing } =
     options;
+
+  // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
+  // silently lose the missing-label diagnostic the runner is contracted
+  // to surface (the runner MUST NOT throw on missing labels; the
+  // callback is its only error channel). Failing fast at the boundary
+  // is better than running a doomed lifecycle that reports nothing.
+  if (headBeat !== undefined && onBeatMissing === undefined) {
+    throw new Error(
+      'resolveComposition: `onBeatMissing` is required when `headBeat` is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+    );
+  }
 
   assertCompositionManifest(manifest);
   const plan = buildPlan(manifest, registry);

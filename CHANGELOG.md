@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `src/runtime/composition-resolver.ts` / `src/runtime/scene-navigation.ts`
+  — both now reject `headBeat` / `beat` supplied without a paired
+  `onBeatMissing` callback. PUL-F011 / ADR-015 makes the callback the
+  runner's only error channel for missing labels (the runner MUST NOT
+  throw — that triggers cleanup), so a beat without the diagnostic
+  surface would silently lose missing-label errors. The resolver and
+  bridge now fail fast at the boundary rather than running a doomed
+  lifecycle. The error message names which option is missing.
+- `src/runtime/scene-loader.ts` — `runTarget` refactored: the
+  beat-grammar defense-in-depth check, the missing-beat callback
+  builder, and the in-flight-load builder are now extracted helpers
+  (`validateBeatGrammar`, `buildOnBeatMissing`, `buildLoad`).
+  Behavior is unchanged; the function reads as a linear pipeline of
+  `validate → resolve → mark-stage → build-load → await`. Reduces
+  cognitive complexity below SonarCloud's 15-token cap.
+
 ### Added
 
 - `src/runtime/composition-resolver.ts` — `headBeat?: string` and

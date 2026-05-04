@@ -133,6 +133,11 @@ export interface LoadSceneNavigationTargetOptions {
    * to a missing label; the loader uses this hook to surface a
    * navigation-positioning diagnostic without unmounting the active
    * scene.
+   *
+   * REQUIRED whenever {@link beat} is supplied: a beat without a
+   * diagnostic surface would silently lose the missing-label error
+   * the runner reports — the bridge throws when this invariant is
+   * violated rather than letting the diagnostic vanish.
    */
   readonly onBeatMissing?: () => void;
 }
@@ -378,6 +383,17 @@ export async function loadSceneNavigationTarget(
   // because `snapshotSceneSlice` pulled both from the same scene
   // registry, so dedupe is identity-preserving.
   const uniqueScenes = Array.from(new Map(scenes.map((s) => [s.id, s])).values());
+
+  // PUL-F011 / ADR-015: a `beat` without an `onBeatMissing` would
+  // silently lose the missing-label diagnostic the runner is
+  // contracted to surface. Mirror the resolver's check at this
+  // boundary so the bridge's direct callers fail at construction
+  // time, not after the lifecycle started.
+  if (options.beat !== undefined && options.onBeatMissing === undefined) {
+    throw new Error(
+      'loadSceneNavigationTarget: `onBeatMissing` is required when `beat` is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+    );
+  }
 
   await resolveComposition({
     registry: createSceneRegistry(uniqueScenes),

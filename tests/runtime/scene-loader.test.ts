@@ -902,13 +902,86 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(lifecycleLog).toEqual(['create', 'cleanup']);
     });
 
-    it('suppresses a missing-beat diagnostic if the runner reports after the load was aborted (stale-load guard)', async () => {
+    it('suppresses a missing-beat diagnostic if the runner reports after the load was aborted by a superseding navigation (signal.aborted guard)', async () => {
       // Defense parallel to `isPureAbort` for fatal-error suppression:
-      // a runner that calls `onBeatMissing` after a navigation was
-      // superseded (e.g. popstate aborted the in-flight load) must
-      // NOT write a diagnostic for the dead navigation. Otherwise the
-      // stage would carry the previous URL's beat error after the new
-      // navigation completed.
+      // a runner that calls `onBeatMissing` AFTER its navigation was
+      // superseded (popstate / new handle() / dispose) must NOT write
+      // a diagnostic for the dead navigation. Otherwise the stage
+      // would carry the previous URL's beat error after the next
+      // navigation completed. This test specifically exercises the
+      // `signal.aborted` branch of the closure (NOT the `disposed`
+      // branch — that's covered by the dispose-then-fire variant).
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      let capturedOnBeatMissing: (() => void) | undefined;
+      let resolveFirstRunner: (() => void) | undefined;
+      const firstRunnerGate = new Promise<void>((res) => {
+        resolveFirstRunner = res;
+      });
+      let firstRunnerEntered: (() => void) | undefined;
+      const firstRunnerEnteredBarrier = new Promise<void>((res) => {
+        firstRunnerEntered = res;
+      });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        ctx: {},
+        createPreloader: () => () => undefined,
+        runTimeline: async (input) => {
+          if (input.beat !== undefined) {
+            // Capture the callback but do not fire it yet. The first
+            // navigation is held open via the gate, then aborted by
+            // the second handle() below; we'll fire the captured
+            // callback AFTER the abort so the closure sees
+            // `signal.aborted === true` (and `disposed === false`).
+            capturedOnBeatMissing = input.onBeatMissing;
+            firstRunnerEntered?.();
+            await firstRunnerGate;
+          }
+        },
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      // Start the first navigation but do NOT await it — the runner
+      // is parked on `firstRunnerGate`.
+      const firstHandle = loader.handle(sceneTargetWithBeat('intro', 'unknown-label'));
+      await firstRunnerEnteredBarrier;
+
+      // Enqueue a second navigation. `enqueue()` aborts the in-flight
+      // load via `inFlight.controller.abort()` — that flips the first
+      // navigation's signal.aborted to true. The second navigation
+      // proceeds to wait for the first to settle (it won't, until we
+      // release the gate below).
+      const secondHandle = loader.handle(sceneTarget('intro'));
+
+      // The first runner's signal is now aborted. Fire its captured
+      // callback — the closure must observe `signal.aborted === true`
+      // and no-op (the loader is NOT disposed). Without the guard,
+      // this would write `data-pulsar-navigation-error` for a dead
+      // navigation.
+      capturedOnBeatMissing?.();
+
+      // Release the first runner's gate so the lifecycle drains and
+      // the second navigation can proceed.
+      resolveFirstRunner?.();
+      await firstHandle;
+      await secondHandle;
+
+      // Stage carries the second navigation's scene (`intro` with no
+      // beat) and no error attribute — the stale beat-missing was
+      // suppressed.
+      expect(captured).toEqual([]);
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('intro');
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+    });
+
+    it('suppresses a missing-beat diagnostic if the runner reports after dispose (disposed guard)', async () => {
+      // Sibling of the signal.aborted test above — proves the
+      // `disposed` branch of the closure independently.
       const captured: unknown[] = [];
       const intro = buildScene({ id: 'intro' });
       const stage = buildStage();
@@ -920,11 +993,9 @@ describe('createSceneLoader (PUL-F008)', () => {
         ctx: {},
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
-          // Capture the callback but DON'T call it yet — we simulate
-          // a runner that reports late, after the navigation was
-          // aborted by a follow-up dispose().
+          // Capture but don't fire; the runner exits immediately so
+          // the lifecycle settles. Then dispose; then fire.
           capturedOnBeatMissing = input.onBeatMissing;
-          // Resolve the runner immediately so the lifecycle settles.
         },
         onError: (err) => {
           captured.push(err);
@@ -932,14 +1003,11 @@ describe('createSceneLoader (PUL-F008)', () => {
       });
 
       await loader.handle(sceneTargetWithBeat('intro', 'unknown-label'));
-      // Drop the diagnostic that the runner DID surface during the
-      // original navigation — focus the test on a SECOND, late call
-      // that comes in after the load is dead.
+      // Drop the diagnostic the runner DID surface during the first
+      // navigation — focus the test on a SECOND, late call.
       stage.attrs.delete('data-pulsar-navigation-error');
       captured.length = 0;
 
-      // Now dispose the loader and have the captured callback fire.
-      // The closure must observe `disposed === true` and no-op.
       loader.dispose();
       capturedOnBeatMissing?.();
 
