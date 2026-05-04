@@ -31,7 +31,10 @@ running scene by way of the existing composition-resolver lifecycle.
 PUL-F009 uses the same dispatch boundary for the `composition`
 parameter: when present, `composition` selects a registered
 composition manifest by id and makes that manifest the navigation
-context for the addressed target.
+context for the addressed target. PUL-F010 uses that context for the
+`composition` + `index` compatibility shim: the index selects the
+zero-based entry to start playback from, but the scene id at that
+entry remains the content identity.
 
 The locator value is still external input. It is well-formed (the
 grammar parser already rejected malformed identifiers, repeated
@@ -69,16 +72,17 @@ dispatch layer:
   localStorage, cookies, or any cached runtime state — the
   `NavigationTarget` it consumes is the only source.
 
-For PUL-F009, `composition` is always a catalog lookup key, never an
-inline manifest, file path, module specifier, network URL, or dynamic
-import target. The selected manifest supplies navigation context:
+For PUL-F009 / PUL-F010, `composition` is always a catalog lookup key,
+never an inline manifest, file path, module specifier, network URL, or
+dynamic import target. The selected manifest supplies navigation
+context:
 
 - `composition` alone starts at entry 0 of that manifest.
 - `composition` + `scene` selects the unique matching entry and uses
   the manifest slice from that entry onward as context.
 - `composition` + `index` selects the entry at that zero-based
   composition index and uses the manifest slice from that entry onward
-  as context.
+  as context. This is PUL-F010's positional navigation behavior.
 
 The dispatch layer must keep this context as a manifest slice, not as a
 second schema or a new "active deck" concept. Object-form composition
@@ -102,7 +106,8 @@ Locator handling:
   composition+index for ambiguous locators` rather than silently
   picking the first occurrence.
 - `kind: 'composition-index'` — index into the composition's
-  manifest, snapshot from that entry onwards.
+  manifest, snapshot from that entry onwards. The head scene is
+  `manifest[index]`; subsequent entries continue in manifest order.
 
 `beat` and `mode` (when present on the parsed target) are recorded
 on the navigation target but not consumed by the dispatch layer.
@@ -156,6 +161,7 @@ always runs before the next preload begins.
 | `composition` handling becomes a parallel manifest loader | Treat the parameter as an id into `CompositionRegistry`; no URL-derived manifests, dynamic imports, filesystem paths, or fetches. |
 | Composition context is flattened into scene-only state | Preserve the manifest slice and composition id on the navigation target so downstream lifecycle, diagnostics, and workbench state can distinguish "standalone scene" from "scene inside composition". |
 | Invalid URLs silently fall back to a default scene | Dispatch layer surfaces an explicit navigation error to the workbench (stage attribute + `onError` hook) per ADR-013's "no silent fallback". |
+| Index handling creates a second playback state machine | Keep `composition-index` as only a dispatch locator; after snapshotting the slice, playback still flows through `resolveComposition`. |
 
 ## Related ADRs
 
