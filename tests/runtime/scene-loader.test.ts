@@ -1731,8 +1731,15 @@ describe('createSceneLoader (PUL-F008)', () => {
       readonly log: string[];
       readonly scenes: readonly SceneModule[];
       readonly compositionId: string;
+      readonly runner: SceneTimelineRunner;
     }
 
+    // Build a probe whose runner writes into the SAME log as the
+    // scene's create/timeline/cleanup hooks. This is what makes the
+    // transition-order test catch a regression that bypassed or
+    // re-ordered `runTimeline` under `mode=present` — without the
+    // runner observation, a "skip runTimeline for present" bug would
+    // still emit `create → timeline → cleanup` and pass.
     const buildLifecycleProbe = (compositionId = 'full-talk'): LifecycleProbe => {
       const log: string[] = [];
       const trace = (id: string): SceneModule =>
@@ -1749,24 +1756,29 @@ describe('createSceneLoader (PUL-F008)', () => {
             log.push(`cleanup:${id}`);
           },
         });
+      const runner: SceneTimelineRunner = (input) => {
+        log.push(`runTimeline:${input.scene.id}`);
+      };
       return {
         log,
         scenes: [trace('scene-a'), trace('scene-b'), trace('scene-c')],
         compositionId,
+        runner,
       };
     };
 
-    it('runs every scene in a composition under `mode=present` with cleanup-before-next-create ordering (pins the inter-scene-transition seam, NOT transition rendering)', async () => {
+    it('runs every scene in a composition under `mode=present` with cleanup-before-next-create ordering AND `runTimeline` between timeline-factory and cleanup (pins the inter-scene-transition seam, NOT transition rendering)', async () => {
       // Inter-scene transition RENDERING is reserved by ADR-003's GSAP
       // runner and not implemented in this repo yet. What this test
       // pins is the lifecycle ordering the future runner will hang
       // transition rendering off: under `mode=present` the resolver
-      // visits every entry in a composition slice in manifest order
+      // visits every entry in a composition slice in manifest order,
+      // calls `runTimeline` between the timeline factory and cleanup,
       // and runs cleanup before the next entry's create (ADR-011 /
-      // PUL-F004). A regression that collapsed `mode=present` to a
-      // single-scene load — or that re-ordered cleanup after the next
-      // create — would fail here and break every future inter-scene
-      // transition before it ships.
+      // PUL-F004). The runner's `runTimeline:<id>` log entry catches
+      // a regression that bypassed `runTimeline` under `mode=present`
+      // — without it, "skip runTimeline for present" would still emit
+      // create / timeline / cleanup and pass.
       const probe = buildLifecycleProbe();
       const stage = buildStage();
       const loader = createSceneLoader({
@@ -1780,7 +1792,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         stage: stage.element,
         buildCtx: stubCtx,
         createPreloader: () => () => undefined,
-        runTimeline: noopRunner,
+        runTimeline: probe.runner,
       });
 
       await loader.handle(presentTarget(probe.compositionId));
@@ -1788,12 +1800,15 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(probe.log).toEqual([
         'create:scene-a',
         'timeline:scene-a',
+        'runTimeline:scene-a',
         'cleanup:scene-a',
         'create:scene-b',
         'timeline:scene-b',
+        'runTimeline:scene-b',
         'cleanup:scene-b',
         'create:scene-c',
         'timeline:scene-c',
+        'runTimeline:scene-c',
         'cleanup:scene-c',
       ]);
       expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-a');
@@ -1820,7 +1835,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         stage: stage.element,
         buildCtx: stubCtx,
         createPreloader: () => () => undefined,
-        runTimeline: noopRunner,
+        runTimeline: probe.runner,
       });
 
       await loader.handle(absentModeTarget(probe.compositionId));
@@ -1828,12 +1843,15 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(probe.log).toEqual([
         'create:scene-a',
         'timeline:scene-a',
+        'runTimeline:scene-a',
         'cleanup:scene-a',
         'create:scene-b',
         'timeline:scene-b',
+        'runTimeline:scene-b',
         'cleanup:scene-b',
         'create:scene-c',
         'timeline:scene-c',
+        'runTimeline:scene-c',
         'cleanup:scene-c',
       ]);
     });
@@ -1958,6 +1976,15 @@ describe('createSceneLoader (PUL-F008)', () => {
       // than via the test-runner timeout.
       const cleanupRan: string[] = [];
       let runnerSignal: AbortSignal | undefined;
+      // The runner resolves a deferred when its first call enters; the
+      // test awaits that deferred (or a 1s timeout) instead of an
+      // unbounded microtask spin so a regression that prevents the
+      // runner from starting fails with a deterministic assertion
+      // rather than hanging the test process.
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
       // First runner call holds open until aborted; subsequent calls
       // (the superseding navigation's runner) resolve immediately so
       // the test does not hang waiting for an interrupt that never
@@ -1968,10 +1995,11 @@ describe('createSceneLoader (PUL-F008)', () => {
         if (runnerCalls !== 1) return undefined;
         // Capture and assert signal presence synchronously, before
         // returning the gate promise. A missing signal fails the
-        // test deterministically with the assertion below — not via
-        // the 5s test timeout the abort-listener path would otherwise
+        // test deterministically with the throw below — not via the
+        // 5s test timeout the abort-listener path would otherwise
         // hit.
         runnerSignal = input.signal;
+        runnerEntered();
         if (runnerSignal === undefined) {
           throw new Error('mode=present did not forward a signal to the runner');
         }
@@ -2010,12 +2038,21 @@ describe('createSceneLoader (PUL-F008)', () => {
         locator: { kind: 'scene', scene: 'scene-a' },
         mode: 'present',
       });
-      while (runnerCalls === 0) {
-        await Promise.resolve();
-      }
+      // Bounded wait: race the deferred against a 1s timeout. A
+      // regression that prevents the runner from starting fails the
+      // assertion below with `runnerCalls === 0`, not via the 5s test
+      // timeout.
+      const guard = new Promise<'timeout'>((resolve) => {
+        setTimeout(() => resolve('timeout'), 1000);
+      });
+      const enteredOrTimeout = await Promise.race([
+        runnerEnteredPromise.then(() => 'entered' as const),
+        guard,
+      ]);
+      expect(enteredOrTimeout).toBe('entered');
+      expect(runnerCalls).toBe(1);
       // Signal MUST be present by the time the runner parked on it;
-      // assert before triggering the abort so a regression fails here
-      // rather than via timeout.
+      // assert before triggering the abort.
       expect(runnerSignal).toBeDefined();
       expect(runnerSignal?.aborted).toBe(false);
 

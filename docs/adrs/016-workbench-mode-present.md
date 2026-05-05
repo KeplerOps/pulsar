@@ -62,7 +62,7 @@ Take option 3. PUL-F013 today delivers:
    identifying which seams future surfaces will plug into.
 2. **Test pinning of the seams** under `mode=present` — see
    `tests/runtime/scene-loader.test.ts` block
-   `'present-mode contract (PUL-F013)'`. The tests pin:
+   `'present-mode adapter seams (PUL-F013 boundary, NOT a PUL-F013 implementation)'`. The tests pin:
    - The composition resolver's structural cleanup-before-next-create
      ordering across multiple scenes — the lifecycle hook ADR-003's
      GSAP runner will hang inter-scene transition rendering off.
@@ -114,7 +114,9 @@ plug into.
 
 ### Negative
 
-- PUL-F013 stays DRAFT until at least one rendering surface lands.
+- PUL-F013 stays DRAFT until every facet PUL-F013's statement names
+  (chrome, audio, inter-scene transitions, presenter input) lands as
+  a real rendering / input surface that adds its own end-to-end test.
   A reviewer reading the requirement in isolation may expect ACTIVE
   on first delivery; the DRAFT-with-contract-and-seams state is
   intentional and matches the PUL-F011 / ADR-015 precedent.
