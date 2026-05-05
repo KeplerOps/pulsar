@@ -33,7 +33,12 @@ import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
 import { describeError } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
-import type { NavigationTarget } from './navigation';
+import {
+  NAVIGATION_MODES,
+  type NavigationMode,
+  type NavigationTarget,
+  effectiveMode,
+} from './navigation';
 import type { SceneRegistry } from './registry';
 import {
   type SceneNavigationTarget,
@@ -56,14 +61,28 @@ export interface StageElement {
  * stage in `ctx` keeps scenes pure of `document` lookups and
  * Node-test-friendly without `typeof document === 'undefined'` guards.
  *
- * Future requirements (timeline engine, audio engine, mode dispatch)
- * extend this shape with `gsap`, `audio`, `mode`, etc. per ADR-003 /
- * ADR-004 / ADR-007. The runtime resolver itself never inspects
- * ctx — it is purely a scene-to-environment carrier.
+ * `mode` exposes the effective workbench mode the runtime selected
+ * for the current navigation (PUL-F012 / ADR-007). Scenes that need
+ * mode-aware behavior — `screenshot` audio suppression, `loop`
+ * indefinite repetition — read it here rather than re-implementing
+ * mode detection. Per ADR-007 the runtime core is the dispatch
+ * point; the field is set per navigation by {@link createSceneLoader}.
+ *
+ * Future requirements (timeline engine, audio engine) extend this
+ * shape with `gsap`, `audio`, etc. per ADR-003 / ADR-004. The runtime
+ * resolver itself never inspects ctx — it is purely a scene-to-
+ * environment carrier.
  */
 export interface WorkbenchSceneCtx {
   /** The workbench stage element, or `null` when the runtime has no stage. */
   readonly stage: StageElement | null;
+  /**
+   * The effective workbench mode for the current navigation per
+   * PUL-F012 / ADR-007. Set by the loader from
+   * {@link effectiveMode}; absent `mode` URL parameter resolves to
+   * `'present'`.
+   */
+  readonly mode: NavigationMode;
 }
 
 /**
@@ -77,8 +96,31 @@ export interface SceneLoaderOptions {
   readonly compositions: CompositionRegistry;
   /** May be `null` when the workbench has no stage (rare; e.g. Node tests). */
   readonly stage: StageElement | null;
-  /** Opaque scene context forwarded to every lifecycle hook. */
-  readonly ctx: unknown;
+  /**
+   * Per-navigation scene context builder. The loader calls this once
+   * per navigation that produces a runnable target, passing the
+   * effective workbench mode derived from the URL via
+   * {@link effectiveMode} (PUL-F012 / ADR-007). The returned value is
+   * forwarded opaquely to every lifecycle hook (`create` / `timeline`
+   * / `cleanup`); the resolver never inspects it.
+   *
+   * Returns {@link WorkbenchSceneCtx} so the production contract
+   * "scenes receive `ctx.mode`" is enforced at this boundary rather
+   * than relying on a single workbench bootstrap annotation. Mode
+   * dispatch lives at this seam per ADR-007 ("Mode is dispatched in
+   * the runtime core, not per scene"): the workbench supplies the
+   * stage and any other long-lived ctx members through a closure, the
+   * loader contributes the per-navigation `mode`, and the combined
+   * value is what scenes see as `ctx`. Constructing a fresh ctx per
+   * navigation also blocks any "previous mode leaks into a `mode`-less
+   * URL" regression — every navigation re-derives mode from its own
+   * target.
+   *
+   * Not invoked when the locator is `kind: 'none'` (no scene mounts)
+   * or when the navigation event is a parse-error event, because
+   * those paths run no lifecycle.
+   */
+  readonly buildCtx: (mode: NavigationMode) => WorkbenchSceneCtx;
   /**
    * Build a per-navigation asset preloader bound to that
    * navigation's abort signal. The loader calls this once per
@@ -243,6 +285,29 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   };
 
   /**
+   * Defense-in-depth for ADR-007's mode allowlist (PUL-F012).
+   * `parseNavigationSearch` validates `mode` against
+   * `NAVIGATION_MODES` on URL input, but `NavigationTarget` is an
+   * exported type that non-parser callers (event-detail unmarshaling,
+   * future test harnesses, programmatic navigation) can construct
+   * directly. Re-checking at the loader boundary stops a hand-built
+   * target with a mode the parser would have rejected from reaching
+   * `effectiveMode` and `buildCtx`, where it would propagate to
+   * scenes as `ctx.mode`. Returns an `Error` with the parser's exact
+   * grammar message when the target is invalid, or `null` when no
+   * further check is needed.
+   */
+  const validateModeGrammar = (target: NavigationTarget): Error | null => {
+    if (target.mode === undefined) return null;
+    if (!(NAVIGATION_MODES as readonly string[]).includes(target.mode)) {
+      return new Error(
+        `navigation grammar is invalid: "mode" unknown mode "${target.mode}" — allowed: ${NAVIGATION_MODES.join(', ')}`,
+      );
+    }
+    return null;
+  };
+
+  /**
    * PUL-F011 / ADR-015: build the non-fatal callback the loader
    * supplies to the timeline runner when the URL carries
    * `beat=<label>`. The callback writes
@@ -312,7 +377,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    */
   const buildLoad = (
     resolved: SceneNavigationTarget,
-    beat: string | undefined,
+    target: NavigationTarget,
   ): InFlightLoad | null => {
     const controller = new AbortController();
     let preloadAssets: AssetPreloader;
@@ -328,11 +393,40 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       surfaceError(err);
       return null;
     }
+    // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core
+    // seam. The loader derives the effective mode from the parsed
+    // target via `effectiveMode` (URL-only — no localStorage,
+    // sessionStorage, cookies, history.state, or cached state) and
+    // hands the workbench's `buildCtx` that mode so the per-navigation
+    // ctx carries `mode`. Every navigation re-derives from its own
+    // target, so a previous non-`present` mode cannot leak into a
+    // subsequent `mode`-less URL.
+    //
+    // Built AFTER the preloader so a preloader-factory failure does
+    // not waste any builder-side allocations, and wrapped in the same
+    // rollback-then-surfaceError pattern so a throwing builder does
+    // not leave stale stage attrs or skip the queue's error sink.
+    let ctx: unknown;
+    try {
+      ctx = options.buildCtx(effectiveMode(target));
+    } catch (err) {
+      // Abort the freshly-created controller before bailing so any
+      // signal-tied resource the preloader factory may have wired
+      // (e.g. a fetch listener registered on `controller.signal`)
+      // observes cancellation and releases. Without this, the signal
+      // is GC'd in the never-aborted state and any abort-keyed
+      // listener runs at GC time (or never).
+      controller.abort();
+      resetStageAttrs();
+      surfaceError(err);
+      return null;
+    }
+    const beat = target.beat;
     const onBeatMissing = buildOnBeatMissing(beat, resolved.scene.id, controller.signal);
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
-        ctx: options.ctx,
+        ctx,
         preloadAssets,
         runTimeline: options.runTimeline,
         signal: controller.signal,
@@ -347,6 +441,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const beatErr = validateBeatGrammar(target);
     if (beatErr !== null) {
       surfaceError(beatErr);
+      return;
+    }
+    const modeErr = validateModeGrammar(target);
+    if (modeErr !== null) {
+      surfaceError(modeErr);
       return;
     }
 
@@ -368,7 +467,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    const load = buildLoad(resolved, target.beat);
+    const load = buildLoad(resolved, target);
     if (load === null) return;
     inFlight = load;
 

@@ -258,6 +258,29 @@ export function parseNavigationSearch(input: URLSearchParams | string): Navigati
 }
 
 /**
+ * Derive the effective workbench mode for the runtime/core dispatch
+ * boundary (PUL-F012). When `target.mode` is present, that mode is
+ * selected; when absent (or no target is supplied), the default
+ * `'present'` is selected.
+ *
+ * Per ADR-007 the URL is the **only** source of mode: this helper
+ * MUST NOT consult `localStorage`, `sessionStorage`, `document.cookie`,
+ * `history.state`, or any cached in-memory navigation state. Per
+ * ADR-013 the parser preserves absent `mode` as absent on the parsed
+ * `NavigationTarget`, so the dispatch boundary can distinguish "URL
+ * said `mode=present`" from "URL said nothing" if a future requirement
+ * needs that distinction; today both collapse to the same effective
+ * mode by design.
+ *
+ * Pure function — depends only on its argument. Adding a fallback that
+ * reads any other source would violate ADR-007's "fresh `present`
+ * selection on every startup and `popstate`" guarantee.
+ */
+export function effectiveMode(target?: NavigationTarget | undefined): NavigationMode {
+  return target?.mode ?? 'present';
+}
+
+/**
  * Minimal `Window`-like surface required by {@link subscribeNavigation}.
  * Defined as a narrow shape — rather than `Pick<Window, ...>` — so the
  * tests can inject a fake without standing up jsdom or pulling in DOM

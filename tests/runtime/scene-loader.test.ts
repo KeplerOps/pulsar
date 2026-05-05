@@ -10,13 +10,28 @@
 //  - ADR-014 — scene navigation dispatch + cleanup-before-handoff.
 //  - ADR-013 — URL grammar boundary; F007 supplies NavigationTarget.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCompositionRegistry } from '../../src/runtime/composition-registry';
 import type { SceneTimelineRunner } from '../../src/runtime/composition-resolver';
-import type { NavigationTarget } from '../../src/runtime/navigation';
+import {
+  NAVIGATION_MODES,
+  type NavigationMode,
+  type NavigationTarget,
+} from '../../src/runtime/navigation';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
-import { type StageElement, createSceneLoader } from '../../src/runtime/scene-loader';
+import {
+  type StageElement,
+  type WorkbenchSceneCtx,
+  createSceneLoader,
+} from '../../src/runtime/scene-loader';
+
+// Default ctx builder for tests that don't care about ctx contents:
+// produces a minimal WorkbenchSceneCtx with a null stage and the
+// effective mode the loader supplies. PUL-F012 tightened the loader's
+// `buildCtx` return type to `WorkbenchSceneCtx`, so a `() => ({})`
+// stub no longer satisfies the type.
+const stubCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage: null, mode });
 
 interface BuildSceneOpts {
   readonly id: string;
@@ -90,7 +105,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -112,7 +127,7 @@ describe('createSceneLoader (PUL-F008)', () => {
           { id: 'full-talk', manifest: ['intro', 'middle'] },
         ]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -154,7 +169,7 @@ describe('createSceneLoader (PUL-F008)', () => {
           { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
         ]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -203,7 +218,7 @@ describe('createSceneLoader (PUL-F008)', () => {
           { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
         ]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -256,7 +271,7 @@ describe('createSceneLoader (PUL-F008)', () => {
             { id: 'trailer', manifest: ['scene-a', 'scene-b', 'scene-c', 'scene-d'] },
           ]),
           stage: stage.element,
-          ctx: {},
+          buildCtx: stubCtx,
           createPreloader: () => () => undefined,
           runTimeline: noopRunner,
         });
@@ -297,7 +312,7 @@ describe('createSceneLoader (PUL-F008)', () => {
             { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
           ]),
           stage: stage.element,
-          ctx: {},
+          buildCtx: stubCtx,
           createPreloader: () => () => undefined,
           runTimeline: noopRunner,
         });
@@ -318,7 +333,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -340,7 +355,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -361,7 +376,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
@@ -386,7 +401,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: () => undefined,
@@ -412,7 +427,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([broken]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: () => undefined,
@@ -435,7 +450,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
@@ -500,7 +515,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro, middle]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
       });
@@ -543,7 +558,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: (err) => {
@@ -603,7 +618,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([a, b, c]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
       });
@@ -653,7 +668,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: (err) => {
@@ -713,7 +728,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro, middle]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: () => undefined,
@@ -749,7 +764,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro, middle]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: (signal) => {
           observedSignals.push(signal);
           return () => undefined;
@@ -799,7 +814,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([broken, buildScene({ id: 'next' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: blockingRunner,
         onError: (err) => {
@@ -834,7 +849,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => {
           throw new Error('preloader factory blew up');
         },
@@ -867,7 +882,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: buildStage().element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
       });
@@ -904,7 +919,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           const captured: { beat?: string } = {};
@@ -952,7 +967,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: async (input) => {
           // Simulate an unknown timeline label: runner reports the
@@ -1023,7 +1038,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: async (input) => {
           if (input.beat !== undefined) {
@@ -1086,7 +1101,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           // Capture but don't fire; the runner exits immediately so
@@ -1135,7 +1150,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           input.onBeatMissing?.();
@@ -1169,7 +1184,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           input.onBeatMissing?.();
@@ -1197,7 +1212,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
@@ -1230,7 +1245,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: () => undefined, // simulates successful seek
       });
@@ -1254,7 +1269,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['intro'] }]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: noopRunner,
         onError: (err) => {
@@ -1285,7 +1300,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        ctx: {},
+        buildCtx: stubCtx,
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           seen.push({
@@ -1298,6 +1313,375 @@ describe('createSceneLoader (PUL-F008)', () => {
       await loader.handle(sceneTarget('intro'));
 
       expect(seen).toEqual([{ beatPresent: false, onBeatMissingPresent: false }]);
+    });
+  });
+
+  describe('mode dispatch (PUL-F012)', () => {
+    // PUL-F012 / ADR-007: when the parsed `NavigationTarget` carries
+    // `mode`, the loader selects the corresponding workbench mode.
+    // Absent `mode` defaults to `'present'`. Mode dispatch lives in
+    // the runtime core (this loader), not in scenes — the loader
+    // calls `options.buildCtx(effectiveMode)` once per navigation,
+    // and the returned ctx (carrying `mode`) is what scenes see.
+    //
+    // The "URL is the only source" rule (no localStorage,
+    // sessionStorage, cookies, history.state, cached state) is pinned
+    // by the across-navigation no-leak test below: a navigation that
+    // sets a non-`present` mode must not influence a subsequent
+    // `mode`-less navigation's effective mode.
+
+    interface ModeProbe {
+      readonly modes: NavigationMode[];
+      readonly buildCtx: (mode: NavigationMode) => WorkbenchSceneCtx;
+    }
+
+    const buildModeProbe = (): ModeProbe => {
+      const modes: NavigationMode[] = [];
+      return {
+        modes,
+        buildCtx: vi.fn((mode: NavigationMode): WorkbenchSceneCtx => {
+          modes.push(mode);
+          return { stage: null, mode };
+        }),
+      };
+    };
+
+    it.each(NAVIGATION_MODES)(
+      'invokes buildCtx with %s when target.mode is %s (clause 1: explicit mode is selected)',
+      async (mode) => {
+        const intro = buildScene({ id: 'intro' });
+        const stage = buildStage();
+        const probe = buildModeProbe();
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([intro]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: probe.buildCtx,
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+        });
+
+        await loader.handle({ locator: { kind: 'scene', scene: 'intro' }, mode });
+
+        expect(probe.modes).toEqual([mode]);
+      },
+    );
+
+    it('invokes buildCtx with "present" when target.mode is absent (clause 2: default is present)', async () => {
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      expect(probe.modes).toEqual(['present']);
+    });
+
+    it('the ctx threaded into the lifecycle carries the effective mode', async () => {
+      // The ctx the loader hands the lifecycle MUST carry the mode
+      // value returned by buildCtx — proves the per-navigation ctx
+      // (not a stale cached one) is what scenes receive on every
+      // hook (`create` / `timeline` / `cleanup`).
+      const seen: { phase: string; mode: unknown }[] = [];
+      const recordMode = (phase: string) => (ctx: unknown) => {
+        seen.push({
+          phase,
+          mode: (ctx as { mode?: NavigationMode }).mode,
+        });
+      };
+      const intro = buildScene({
+        id: 'intro',
+        create: recordMode('create'),
+        timeline: ((ctx: unknown) => {
+          recordMode('timeline')(ctx);
+        }) as SceneModule['timeline'],
+        cleanup: recordMode('cleanup'),
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: (mode) => ({ stage: stage.element, mode }),
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'intro' }, mode: 'screenshot' });
+
+      expect(seen).toEqual([
+        { phase: 'create', mode: 'screenshot' },
+        { phase: 'timeline', mode: 'screenshot' },
+        { phase: 'cleanup', mode: 'screenshot' },
+      ]);
+    });
+
+    it('a previous non-present mode does not leak into a later mode-less navigation (ADR-007 risk-table)', async () => {
+      // ADR-007 risk-table: "A previous non-`present` mode leaks into
+      // a URL without `mode`" — mitigation: "Treat omitted `mode` as a
+      // fresh `present` selection on every startup and `popstate`; do
+      // not cache the last effective mode." This is the canonical
+      // regression test: load with mode=screenshot, then load with no
+      // mode, and verify the second navigation's ctx carries `present`,
+      // NOT `screenshot`.
+      //
+      // Two assertions in one test: (a) the probe's `buildCtx` was
+      // called with the right effective mode at each step, AND (b) the
+      // ctx that actually reaches the second scene's lifecycle hooks
+      // carries `mode: 'present'`. The second assertion guards against
+      // a regression that calls `buildCtx('present')` correctly but
+      // accidentally reuses the previously-built `{ mode: 'screenshot' }`
+      // ctx — that bug would pass the input-only assertion but leak the
+      // stale mode to the runner / scene.
+      const seen: { sceneId: string; mode: unknown }[] = [];
+      const recordCreate =
+        (sceneId: string) =>
+        (ctx: unknown): void => {
+          seen.push({ sceneId, mode: (ctx as { mode?: NavigationMode }).mode });
+        };
+      const intro = buildScene({ id: 'intro', create: recordCreate('intro') });
+      const outro = buildScene({ id: 'outro', create: recordCreate('outro') });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, outro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'intro' }, mode: 'screenshot' });
+      await loader.handle({ locator: { kind: 'scene', scene: 'outro' } });
+
+      expect(probe.modes).toEqual(['screenshot', 'present']);
+      expect(seen).toEqual([
+        { sceneId: 'intro', mode: 'screenshot' },
+        { sceneId: 'outro', mode: 'present' },
+      ]);
+    });
+
+    it('does not invoke buildCtx when the locator is `kind: "none"` (no scene mounts)', async () => {
+      // The runtime does not mount any scene for `?` (no explicit
+      // target), so the per-navigation ctx is never assembled — there
+      // is nothing to hand it to. Without this contract, an "always
+      // build ctx" loader would invoke the workbench's `buildCtx` for
+      // every popstate even when no lifecycle ran, which makes
+      // ctx-build cost (e.g. async stage allocation) charge the no-op
+      // path.
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(noneTarget);
+
+      expect(probe.modes).toEqual([]);
+    });
+
+    it('does not invoke buildCtx on parse-error events (handleError path)', async () => {
+      // The error path writes the navigation-error attribute and runs
+      // `onError`; no lifecycle runs, so no ctx is needed. Asserting
+      // `buildCtx` was not invoked stops a regression that
+      // pre-emptively built ctx on the error path (wasted allocation
+      // and a misleading "fresh navigation" signal to mode listeners).
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: () => undefined,
+      });
+
+      loader.handleError(new Error('navigation grammar is invalid: parse failure'));
+      await loader.idle();
+
+      expect(probe.modes).toEqual([]);
+    });
+
+    it('rejects a constructed target with an unknown mode (defense-in-depth for ADR-007)', async () => {
+      // `parseNavigationSearch` already rejects unknown modes, but
+      // `NavigationTarget` is an exported type and a non-parser caller
+      // could construct one directly. The loader re-enforces the
+      // ADR-007 mode allowlist before any side effect so a hand-built
+      // target does not bypass the grammar invariant the parser would
+      // have caught — same defense-in-depth pattern used for `beat`.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      const malformedMode: NavigationTarget = {
+        locator: { kind: 'scene', scene: 'intro' },
+        mode: 'shouty-mode' as unknown as NavigationMode,
+      };
+
+      await loader.handle(malformedMode);
+
+      expect(probe.modes).toEqual([]);
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
+        /^navigation grammar is invalid: "mode"/,
+      );
+      expect(captured).toHaveLength(1);
+    });
+
+    it('surfaces a buildCtx exception via onError and resets stage attrs (no stale targets)', async () => {
+      // A throwing builder must NOT leave stale `data-pulsar-scene-target`
+      // / `data-pulsar-composition-target` attrs on the stage, must
+      // surface the error through the configured `onError` sink, and
+      // must keep the navigation queue healthy (subsequent handle()
+      // calls succeed). Without this contract, a workbench with a
+      // crashing ctx-builder would lie to the operator about a
+      // half-loaded scene and reject every queued navigation.
+      const captured: unknown[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const outro = buildScene({ id: 'outro' });
+      const stage = buildStage();
+      let ctxCalls = 0;
+      const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => {
+        ctxCalls += 1;
+        if (ctxCalls === 1) {
+          throw new Error('builder bug');
+        }
+        return { stage: null, mode };
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro, outro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+      expect(stage.attrs.has('data-pulsar-composition-target')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(/builder bug/);
+      expect(captured).toHaveLength(1);
+      expect((captured[0] as Error).message).toBe('builder bug');
+
+      // The queue is still healthy: a subsequent navigation runs
+      // through the lifecycle normally.
+      await loader.handle(sceneTarget('outro'));
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('outro');
+    });
+
+    it('aborts the per-load AbortController when buildCtx throws (no signal-tied resource leak)', async () => {
+      // The preloader factory has already received the controller's
+      // signal before buildCtx runs. If buildCtx then throws, the
+      // controller would otherwise be GC'd in the never-aborted state
+      // and any abort-keyed listener registered against the signal
+      // (e.g. a fetch listener) would never see cancellation. Pin
+      // that the loader explicitly aborts on the buildCtx-throw path.
+      let capturedSignal: AbortSignal | undefined;
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: () => {
+          throw new Error('builder bug');
+        },
+        createPreloader: (signal) => {
+          capturedSignal = signal;
+          return () => undefined;
+        },
+        runTimeline: noopRunner,
+        onError: () => undefined,
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('does not invoke buildCtx when the preloader factory throws (no wasted builder allocation)', async () => {
+      // ADR-007 / PUL-F012 ordering: the loader builds the preloader
+      // FIRST. If the preloader factory throws, no lifecycle runs and
+      // no cleanup will consume any ctx. Asserting `buildCtx` was not
+      // invoked stops a regression that pre-emptively ran the builder
+      // (wasted side effects, plus a misleading "fresh navigation"
+      // signal to mode listeners).
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => {
+          throw new Error('preloader factory bug');
+        },
+        runTimeline: noopRunner,
+        onError: () => undefined,
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      expect(probe.modes).toEqual([]);
+    });
+
+    it('does not invoke buildCtx when scene resolution fails (no lifecycle, no ctx)', async () => {
+      // A target that names an unregistered scene fails resolution
+      // before the lifecycle starts. There is no ctx-handoff to do
+      // because nothing is mounted; charging buildCtx in this path
+      // would be wasted work and could leak mode-aware listeners on
+      // failed navigations.
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: () => undefined,
+      });
+
+      await loader.handle(sceneTarget('does-not-exist'));
+
+      expect(probe.modes).toEqual([]);
     });
   });
 });

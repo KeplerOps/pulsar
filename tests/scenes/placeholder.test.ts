@@ -36,21 +36,21 @@ describe('placeholderScene', () => {
 
   it('writes the lifecycle attribute on `create` against the ctx stage', () => {
     const stage = buildStage();
-    placeholderScene.create({ stage: stage.element });
+    placeholderScene.create({ stage: stage.element, mode: 'present' });
     expect(stage.attrs.get('data-pulsar-scene-lifecycle')).toBe('create');
   });
 
   it('overwrites the lifecycle attribute on `timeline`', () => {
     const stage = buildStage();
-    placeholderScene.create({ stage: stage.element });
-    placeholderScene.timeline({ stage: stage.element });
+    placeholderScene.create({ stage: stage.element, mode: 'present' });
+    placeholderScene.timeline({ stage: stage.element, mode: 'present' });
     expect(stage.attrs.get('data-pulsar-scene-lifecycle')).toBe('timeline');
   });
 
   it('removes the lifecycle attribute on `cleanup`', () => {
     const stage = buildStage();
-    placeholderScene.create({ stage: stage.element });
-    placeholderScene.cleanup({ stage: stage.element });
+    placeholderScene.create({ stage: stage.element, mode: 'present' });
+    placeholderScene.cleanup({ stage: stage.element, mode: 'present' });
     expect(stage.attrs.has('data-pulsar-scene-lifecycle')).toBe(false);
   });
 
@@ -63,6 +63,11 @@ describe('placeholderScene', () => {
   // a malformed ctx and the implementation accidentally reaches for
   // a different stage handle (or the global `document`) — a no-throw-
   // only assertion would miss that.
+  //
+  // PUL-F012: WorkbenchSceneCtx now also requires `mode`. Ctx values
+  // that have `stage` but no `mode` (or with a non-allowlisted mode)
+  // are treated as malformed and ignored — narrowing them would let
+  // future mode-aware scene code read `undefined` from `ctx.mode`.
   describe.each<[label: string, ctx: unknown]>([
     ['null', null],
     ['undefined', undefined],
@@ -70,6 +75,20 @@ describe('placeholderScene', () => {
     ['string primitive', 'ctx'],
     ['object without `stage` key', {}],
     ['object with `stage: null`', { stage: null }],
+    ['object with `stage` but no `mode`', { stage: {} }],
+    ['object with unknown `mode`', { stage: {}, mode: 'shouty-mode' }],
+    ['object with `mode: null`', { stage: {}, mode: null }],
+    [
+      'object with `stage` lacking setAttribute/removeAttribute (would crash writeLifecycle)',
+      { stage: {}, mode: 'present' },
+    ],
+    [
+      'object with `stage.setAttribute` non-function',
+      {
+        stage: { setAttribute: 'not-a-function', removeAttribute: () => undefined },
+        mode: 'present',
+      },
+    ],
   ])('is a no-op when ctx is %s', (_label, ctx) => {
     it('does not throw and does not mutate any concurrently-existing stage', () => {
       const sentinel = buildStage();

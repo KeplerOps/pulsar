@@ -8,6 +8,7 @@ import {
   PULSAR_NAVIGATE_ERROR_EVENT_TYPE,
   PULSAR_NAVIGATE_EVENT_TYPE,
   bootstrapNavigation,
+  effectiveMode,
   parseNavigationSearch,
   subscribeNavigation,
 } from '../../src/runtime/navigation';
@@ -363,6 +364,131 @@ describe('parseNavigationSearch — boundary discipline', () => {
     const target = parseNavigationSearch('composition=t&index=0&beat=hook&mode=loop');
     expect(Object.isFrozen(target)).toBe(true);
     expect(Object.isFrozen(target.locator)).toBe(true);
+  });
+});
+
+describe('effectiveMode — PUL-F012: derive workbench mode for runtime dispatch', () => {
+  // PUL-F012 / ADR-007 / ADR-013: the parser preserves absent `mode`
+  // on `NavigationTarget`; the runtime/core handoff (this helper)
+  // selects the effective mode. Absent → 'present'. Present → that
+  // mode value. The helper is the single dispatch point so the rule
+  // "URL is the only source of mode" cannot be violated by a caller
+  // sneaking a localStorage / sessionStorage / cookie / history.state
+  // read into the path.
+
+  it('returns "present" when no target is supplied (helper accepts undefined)', () => {
+    expect(effectiveMode(undefined)).toBe('present');
+  });
+
+  it('returns "present" when locator is "none" and mode is absent', () => {
+    expect(effectiveMode({ locator: { kind: 'none' } })).toBe('present');
+  });
+
+  it('returns "present" when locator is "scene" and mode is absent', () => {
+    expect(effectiveMode({ locator: { kind: 'scene', scene: 'intro' } })).toBe('present');
+  });
+
+  it.each(ALL_MODES)('returns the explicit mode "%s" when target carries it', (mode) => {
+    // Per-mode round-trip — every workbench mode in NAVIGATION_MODES
+    // is selectable via the URL parameter.
+    expect(effectiveMode({ locator: { kind: 'none' }, mode })).toBe(mode);
+  });
+
+  it('round-trips through parseNavigationSearch — explicit mode is selected', () => {
+    expect(effectiveMode(parseNavigationSearch('mode=screenshot'))).toBe('screenshot');
+  });
+
+  it('round-trips through parseNavigationSearch — empty URL defaults to "present"', () => {
+    expect(effectiveMode(parseNavigationSearch(''))).toBe('present');
+    expect(effectiveMode(parseNavigationSearch('?'))).toBe('present');
+    expect(effectiveMode(parseNavigationSearch('scene=intro'))).toBe('present');
+  });
+
+  it('round-trips an explicit "mode=present" identically to absent (both → "present")', () => {
+    // Per ADR-013: parser preserves absent mode as absent (test-only
+    // observation), but the dispatch boundary collapses both shapes to
+    // the same effective `present`. Two equivalent ways to get the
+    // default — both must work.
+    expect(effectiveMode(parseNavigationSearch('mode=present'))).toBe('present');
+    expect(effectiveMode(parseNavigationSearch(''))).toBe('present');
+  });
+
+  it('does not read browser-storage globals (URL is the only source)', () => {
+    // ADR-007 risk-table: "A previous non-`present` mode leaks into a
+    // URL without `mode`" — mitigation is "treat omitted mode as a
+    // fresh `present` selection on every startup and `popstate`; do
+    // not cache the last effective mode." A pure helper trivially
+    // satisfies this, but a future maintainer might add a fallback
+    // ("read from localStorage if the URL didn't say"). This test
+    // pins the contract by installing throwing getter spies on every
+    // forbidden source (`localStorage`, `sessionStorage`,
+    // `document.cookie`, `history.state`) before invoking the helper.
+    // Any read — even a benign existence check — fails the test.
+    type GlobalThisRecord = Record<string, unknown>;
+    const installSpy = (host: object, key: string, message: string): (() => void) => {
+      const original = Object.getOwnPropertyDescriptor(host, key);
+      const spy = vi.fn(() => {
+        throw new Error(message);
+      });
+      Object.defineProperty(host, key, { configurable: true, get: spy });
+      return () => {
+        if (original) {
+          Object.defineProperty(host, key, original);
+        } else {
+          Reflect.deleteProperty(host, key);
+        }
+      };
+    };
+
+    // `document` and `history` may or may not exist in the vitest
+    // node env. Install a fake host when absent so the cookie /
+    // history.state spy still gets a chance to fire if a regression
+    // walks `globalThis.document.cookie` etc.
+    const ensureHost = (key: 'document' | 'history'): (() => void) => {
+      const root = globalThis as GlobalThisRecord;
+      if (root[key] !== undefined) return () => undefined;
+      root[key] = {};
+      return () => {
+        Reflect.deleteProperty(root, key);
+      };
+    };
+
+    const restorers: (() => void)[] = [];
+    const restoreDocumentHost = ensureHost('document');
+    const restoreHistoryHost = ensureHost('history');
+    restorers.push(restoreDocumentHost, restoreHistoryHost);
+
+    restorers.push(installSpy(globalThis, 'localStorage', 'localStorage must not be read'));
+    restorers.push(installSpy(globalThis, 'sessionStorage', 'sessionStorage must not be read'));
+    restorers.push(
+      installSpy(
+        (globalThis as GlobalThisRecord).document as object,
+        'cookie',
+        'document.cookie must not be read',
+      ),
+    );
+    restorers.push(
+      installSpy(
+        (globalThis as GlobalThisRecord).history as object,
+        'state',
+        'history.state must not be read',
+      ),
+    );
+
+    try {
+      expect(effectiveMode(undefined)).toBe('present');
+      expect(
+        effectiveMode({ locator: { kind: 'scene', scene: 'intro' }, mode: 'screenshot' }),
+      ).toBe('screenshot');
+      expect(effectiveMode({ locator: { kind: 'none' } })).toBe('present');
+    } finally {
+      // Restore in reverse order so spy descriptors are removed
+      // before the host objects they're attached to.
+      while (restorers.length > 0) {
+        const restore = restorers.pop();
+        restore?.();
+      }
+    }
   });
 });
 

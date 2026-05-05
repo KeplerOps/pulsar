@@ -24,13 +24,36 @@
 // composition context) and `trailerSafe: false` (it has nothing
 // trailer-worthy to show).
 
+import { NAVIGATION_MODES } from '../runtime/navigation';
 import type { SceneModule } from '../runtime/scene';
 import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 
 const LIFECYCLE_ATTR = 'data-pulsar-scene-lifecycle';
 
-const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx =>
-  typeof value === 'object' && value !== null && 'stage' in value;
+// PUL-F012: WorkbenchSceneCtx now requires `mode` alongside `stage`.
+// The predicate validates the full shape — `stage` must be `null` or
+// an object exposing `setAttribute` / `removeAttribute`, and `mode`
+// must be in `NAVIGATION_MODES`. Narrowing on a partial check would
+// pass a malformed `{ stage: {}, mode: 'present' }` that later
+// crashes inside `writeLifecycle` when it tries to call
+// `stage.setAttribute`, contradicting the no-op-on-malformed-ctx
+// contract these scene hooks document.
+const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
+  if (stage === null) return true;
+  if (typeof stage !== 'object') return false;
+  const candidate = stage as Partial<Record<'setAttribute' | 'removeAttribute', unknown>>;
+  return (
+    typeof candidate.setAttribute === 'function' && typeof candidate.removeAttribute === 'function'
+  );
+};
+
+const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx => {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('stage' in value) || !('mode' in value)) return false;
+  const { stage, mode } = value as { stage: unknown; mode: unknown };
+  if (!isStageShape(stage)) return false;
+  return typeof mode === 'string' && (NAVIGATION_MODES as readonly string[]).includes(mode);
+};
 
 const writeLifecycle = (ctx: unknown, phase: 'create' | 'timeline' | 'cleanup'): void => {
   if (!isWorkbenchCtx(ctx)) return;

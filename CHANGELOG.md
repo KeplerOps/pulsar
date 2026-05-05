@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `src/runtime/scene-loader.ts` — `SceneLoaderOptions.ctx: unknown`
+  replaced with `SceneLoaderOptions.buildCtx: (mode: NavigationMode)
+  => unknown`. The loader now derives the effective workbench mode
+  per navigation via `effectiveMode(target)` and calls `buildCtx` to
+  assemble the per-navigation scene context, so mode dispatch lives
+  at the runtime-core seam ADR-007 names (PUL-F012). `WorkbenchSceneCtx`
+  gained a `readonly mode: NavigationMode` field; the workbench's
+  `buildCtx` populates it. Constructing ctx per navigation is the
+  structural defense against ADR-007's "previous non-`present` mode
+  leaks into a `mode`-less URL" risk: there is no long-lived ctx slot
+  for mode to linger in. `buildCtx` is not invoked when the locator
+  is `kind: 'none'`, on parse-error events, or when scene resolution
+  fails — those paths run no lifecycle.
+- `src/main.ts` — workbench bootstrap now passes `buildCtx: (mode) =>
+  ({ stage, mode })` instead of a static ctx object. Type-checked
+  against the updated `WorkbenchSceneCtx` so a missing `mode` field
+  on a real ctx fails at compile time.
+- `docs/adrs/007-browser-workbench.md` — added the URL-only-source
+  invariant ("when `mode` is absent, the runtime selects the
+  effective mode `present`; it must not recover mode from
+  localStorage, sessionStorage, cookies, `history.state`, or prior
+  in-memory navigation state") and the matching risk-table row for
+  the leak case. PUL-F012 implementation expectation.
+- `docs/adrs/013-url-navigation-grammar-boundary.md` — added the
+  PUL-F012 paragraph spelling out the boundary contract: the parser
+  preserves absent `mode` as absent on `NavigationTarget`; the
+  runtime core derives effective `present` before dispatching mode
+  behavior or exposing `ctx.mode` to scenes. Corresponding risk-table
+  row added.
 - `src/runtime/composition-resolver.ts` / `src/runtime/scene-navigation.ts`
   — both now reject `headBeat` / `beat` supplied without a paired
   `onBeatMissing` callback. PUL-F011 / ADR-015 makes the callback the
@@ -27,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/navigation.ts` — `effectiveMode(target?:
+  NavigationTarget): NavigationMode` pure helper that returns
+  `target?.mode ?? 'present'`. The single dispatch point for
+  PUL-F012's "URL parameter selects the mode; absent defaults to
+  `present`" rule. Pure function — depends only on its argument so
+  the ADR-007 invariant "URL is the only source of mode" is enforced
+  by construction (no `localStorage` / `sessionStorage` / cookie /
+  `history.state` access).
 - `src/runtime/composition-resolver.ts` — `headBeat?: string` and
   `onBeatMissing?: () => void` fields on `ResolveCompositionOptions`,
   paired with `beat?: string` and `onBeatMissing?: () => void` on
