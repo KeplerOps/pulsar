@@ -31,14 +31,27 @@ import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 const LIFECYCLE_ATTR = 'data-pulsar-scene-lifecycle';
 
 // PUL-F012: WorkbenchSceneCtx now requires `mode` alongside `stage`.
-// The predicate must check both so the type narrowing matches the
-// declared shape — a value that has only `stage` is NOT a valid
-// WorkbenchSceneCtx, and narrowing it would mislead future
-// mode-aware scene code into reading `undefined` from `ctx.mode`.
+// The predicate validates the full shape — `stage` must be `null` or
+// an object exposing `setAttribute` / `removeAttribute`, and `mode`
+// must be in `NAVIGATION_MODES`. Narrowing on a partial check would
+// pass a malformed `{ stage: {}, mode: 'present' }` that later
+// crashes inside `writeLifecycle` when it tries to call
+// `stage.setAttribute`, contradicting the no-op-on-malformed-ctx
+// contract these scene hooks document.
+const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
+  if (stage === null) return true;
+  if (typeof stage !== 'object') return false;
+  const candidate = stage as Partial<Record<'setAttribute' | 'removeAttribute', unknown>>;
+  return (
+    typeof candidate.setAttribute === 'function' && typeof candidate.removeAttribute === 'function'
+  );
+};
+
 const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx => {
   if (typeof value !== 'object' || value === null) return false;
   if (!('stage' in value) || !('mode' in value)) return false;
-  const mode = (value as { mode: unknown }).mode;
+  const { stage, mode } = value as { stage: unknown; mode: unknown };
+  if (!isStageShape(stage)) return false;
   return typeof mode === 'string' && (NAVIGATION_MODES as readonly string[]).includes(mode);
 };
 

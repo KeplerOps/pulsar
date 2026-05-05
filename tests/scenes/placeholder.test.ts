@@ -78,6 +78,17 @@ describe('placeholderScene', () => {
     ['object with `stage` but no `mode`', { stage: {} }],
     ['object with unknown `mode`', { stage: {}, mode: 'shouty-mode' }],
     ['object with `mode: null`', { stage: {}, mode: null }],
+    [
+      'object with `stage` lacking setAttribute/removeAttribute (would crash writeLifecycle)',
+      { stage: {}, mode: 'present' },
+    ],
+    [
+      'object with `stage.setAttribute` non-function',
+      {
+        stage: { setAttribute: 'not-a-function', removeAttribute: () => undefined },
+        mode: 'present',
+      },
+    ],
   ])('is a no-op when ctx is %s', (_label, ctx) => {
     it('does not throw and does not mutate any concurrently-existing stage', () => {
       const sentinel = buildStage();
