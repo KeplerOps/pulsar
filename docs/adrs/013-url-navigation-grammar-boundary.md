@@ -79,6 +79,14 @@ state must not redefine the target. A navigation change hands off to
 the existing runtime orchestration layer so `cleanup(ctx)` and
 composition-level cancellation semantics remain centralized.
 
+For PUL-F012, the parser preserves the difference between absent
+`mode` and an explicit `mode=present`: absent mode remains absent on
+the parsed `NavigationTarget`, while the runtime core selects
+effective mode `present` before dispatching mode behavior or exposing
+`ctx.mode` to scenes. This keeps URL grammar validation separate from
+workbench state selection and prevents the parser from becoming the
+mode dispatcher.
+
 ## Consequences
 
 ### Positive
@@ -105,6 +113,7 @@ composition-level cancellation semantics remain centralized.
 |------|------------|
 | Parser starts resolving scenes or manifests | Keep URL parsing as a pure boundary step; resolve through the registry/composition orchestration layers. |
 | URL mode handling leaks into individual scenes | Dispatch modes in the runtime core per ADR-007; expose only mode hints through context where needed. |
+| Parser defaults absent mode and hides URL intent | Preserve absent `mode` in `NavigationTarget`; derive the effective `present` mode in the runtime core handoff. |
 | Positional navigation becomes identity | Treat `index` as a composition-scoped compatibility locator; scene id remains content identity. |
 | Query values become resource paths or dynamic imports | Query values are identifiers only. Do not load modules, files, or network resources directly from URL parameter values. |
 | PUL-F010 handling forks from the existing composition path | Reuse the `composition-index` locator and dispatch through the same composition registry, scene registry, resolver, preloader, cleanup, and error-surfacing layers. |

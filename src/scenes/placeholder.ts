@@ -24,13 +24,23 @@
 // composition context) and `trailerSafe: false` (it has nothing
 // trailer-worthy to show).
 
+import { NAVIGATION_MODES } from '../runtime/navigation';
 import type { SceneModule } from '../runtime/scene';
 import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 
 const LIFECYCLE_ATTR = 'data-pulsar-scene-lifecycle';
 
-const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx =>
-  typeof value === 'object' && value !== null && 'stage' in value;
+// PUL-F012: WorkbenchSceneCtx now requires `mode` alongside `stage`.
+// The predicate must check both so the type narrowing matches the
+// declared shape — a value that has only `stage` is NOT a valid
+// WorkbenchSceneCtx, and narrowing it would mislead future
+// mode-aware scene code into reading `undefined` from `ctx.mode`.
+const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx => {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('stage' in value) || !('mode' in value)) return false;
+  const mode = (value as { mode: unknown }).mode;
+  return typeof mode === 'string' && (NAVIGATION_MODES as readonly string[]).includes(mode);
+};
 
 const writeLifecycle = (ctx: unknown, phase: 'create' | 'timeline' | 'cleanup'): void => {
   if (!isWorkbenchCtx(ctx)) return;

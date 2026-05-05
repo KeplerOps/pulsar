@@ -28,6 +28,7 @@ import { createAssetPreloader } from './runtime/asset-preloader';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import type { SceneTimelineRunner } from './runtime/composition-resolver';
 import {
+  type NavigationMode,
   type NavigationTarget,
   PULSAR_NAVIGATE_ERROR_EVENT_TYPE,
   PULSAR_NAVIGATE_EVENT_TYPE,
@@ -105,17 +106,22 @@ const runTimeline: SceneTimelineRunner = (input) =>
     );
   });
 
-// Scene context carries the stage handle so scene lifecycle hooks
-// can mutate the DOM through an injected dependency rather than
-// reaching for the global `document` (ADR-008 #2 — explicit
-// dependencies over ambient globals).
-const ctx: WorkbenchSceneCtx = { stage };
+// Scene context carries the stage handle plus the per-navigation
+// effective workbench mode (PUL-F012 / ADR-007). The loader calls
+// this builder once per navigation that produces a runnable target,
+// passing the effective mode it derived from the URL via
+// `effectiveMode`. Constructing ctx per navigation enforces ADR-007's
+// "URL is the only source of mode" rule by construction — there is no
+// long-lived ctx slot for a previous mode to linger in. ADR-008 #2
+// (explicit dependencies over ambient globals) is satisfied as before
+// by passing `stage` through ctx rather than reaching for `document`.
+const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage, mode });
 
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
   stage,
-  ctx,
+  buildCtx,
   createPreloader,
   runTimeline,
 });

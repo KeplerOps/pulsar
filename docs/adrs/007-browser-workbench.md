@@ -95,6 +95,10 @@ presenter UI.
 ### Implementation expectations
 
 - The runtime parses URL parameters at startup and on `popstate`.
+- The URL is the only source of workbench mode selection. When
+  `mode` is absent, the runtime selects the effective mode `present`;
+  it must not recover mode from localStorage, sessionStorage, cookies,
+  `history.state`, or prior in-memory navigation state.
 - Mode is dispatched in the runtime core, not per scene. Scenes do not
   know which mode they are running in unless they need to (e.g.
   audio-suppressing when `mode=screenshot`).
@@ -132,6 +136,7 @@ presenter UI.
 | Modes accumulate scene-specific overrides until they aren't really modes | Hold the line: mode behavior is defined in the runtime core, not in individual scenes. Scene-specific behavior is rare and explicitly justified. |
 | `screenshot` mode is non-deterministic in subtle ways (fonts, async asset load, RNG) | Provide deterministic seeding and a preflight that resolves all promised assets before "ready"; the runtime's screenshot mode treats nondeterminism as a runtime bug, not an acceptance of reality. |
 | Agent reports URLs that depend on local state | URL parameters fully determine the targeted state; do not store inspection targets in localStorage or cookies. |
+| A previous non-`present` mode leaks into a URL without `mode` | Treat omitted `mode` as a fresh `present` selection on every startup and `popstate`; do not cache the last effective mode. |
 | Modes drift apart visually because each is touched independently | Audit each mode against `present` for the same target periodically; modes that diverge intentionally must say so in this ADR or its successor. |
 
 ## Related ADRs
