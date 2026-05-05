@@ -12,7 +12,9 @@ Accepted
 
 PUL-F007 requires the runtime to accept `scene`, `composition`,
 `index`, `beat`, and `mode` URL parameters, and to parse parameter
-combinations at startup and on `popstate`.
+combinations at startup and on `popstate`. PUL-F010 gives the
+`composition` + `index` combination runtime meaning: `index` is a
+zero-based positional locator inside the selected composition.
 
 [ADR-002](002-scene-registry-and-compositions.md) and
 [ADR-007](007-browser-workbench.md) define the public grammar, but the
@@ -37,7 +39,9 @@ String identifiers reuse the shared kebab-case predicate in
 `src/runtime/identifier.ts`. Do not add URL-specific regexes for
 `scene`, `composition`, or `beat`. `mode` is validated against the
 ADR-007 workbench mode set. `index` is a base-10, zero-based,
-non-negative safe integer scoped to a composition.
+non-negative safe integer scoped to a composition. It is not scene
+identity, a scene id alias, or a persistent bookmark independent of
+the composition's current order.
 
 `composition` is a composition identifier, not an inline manifest and
 not the manifest array itself. Looking up that identifier belongs to
@@ -103,6 +107,7 @@ composition-level cancellation semantics remain centralized.
 | URL mode handling leaks into individual scenes | Dispatch modes in the runtime core per ADR-007; expose only mode hints through context where needed. |
 | Positional navigation becomes identity | Treat `index` as a composition-scoped compatibility locator; scene id remains content identity. |
 | Query values become resource paths or dynamic imports | Query values are identifiers only. Do not load modules, files, or network resources directly from URL parameter values. |
+| PUL-F010 handling forks from the existing composition path | Reuse the `composition-index` locator and dispatch through the same composition registry, scene registry, resolver, preloader, cleanup, and error-surfacing layers. |
 
 ## Related ADRs
 

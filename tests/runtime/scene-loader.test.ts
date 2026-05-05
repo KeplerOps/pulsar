@@ -216,6 +216,102 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(log).toEqual(['create:middle', 'cleanup:middle', 'create:outro', 'cleanup:outro']);
     });
 
+    describe('composition + index positions playback (PUL-F010)', () => {
+      // PUL-F010: when the `index` URL parameter is present alongside a
+      // `composition`, the runtime SHALL position playback at the given
+      // zero-based index within the composition. The dispatcher and
+      // parser already implement this end-to-end (PUL-F007 / F008);
+      // these anchors pin the requirement-specific contract — *the
+      // index parameter selects the head position, zero-based* — at
+      // the loader boundary so a future refactor cannot silently break
+      // it. They would catch a regression that collapses
+      // `composition-index` to `kind: 'composition'` (head always at
+      // index 0), an off-by-one on `manifest[index]`, or a single-load
+      // of `manifest[index]` that drops trailing entries.
+      it('selects manifest[index] as the head when index > 1', async () => {
+        // 4-entry manifest with `index=2` proves zero-based positional
+        // semantics for N > 1: PUL-F009's anchor uses `index=1`, which
+        // does not distinguish "selected entry 1" from "off-by-one
+        // landed on entry 1". Index 2 in a 4-entry composition lands
+        // on the third entry and must include the fourth on slice.
+        const log: string[] = [];
+        const trace = (id: string): SceneModule =>
+          buildScene({
+            id,
+            create: () => {
+              log.push(`create:${id}`);
+            },
+            cleanup: () => {
+              log.push(`cleanup:${id}`);
+            },
+          });
+        const a = trace('scene-a');
+        const b = trace('scene-b');
+        const c = trace('scene-c');
+        const d = trace('scene-d');
+        const stage = buildStage();
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([a, b, c, d]),
+          compositions: createCompositionRegistry([
+            { id: 'trailer', manifest: ['scene-a', 'scene-b', 'scene-c', 'scene-d'] },
+          ]),
+          stage: stage.element,
+          ctx: {},
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+        });
+
+        await loader.handle(compositionIndexTarget('trailer', 2));
+
+        expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-c');
+        expect(stage.attrs.get('data-pulsar-composition-target')).toBe('trailer');
+        expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+        // No `scene-a` or `scene-b` in the log proves the slice did
+        // NOT start from the beginning; the trailing `scene-d` proves
+        // the slice continued from index 2 to the end (not a single-
+        // scene load of `manifest[2]`).
+        expect(log).toEqual([
+          'create:scene-c',
+          'cleanup:scene-c',
+          'create:scene-d',
+          'cleanup:scene-d',
+        ]);
+      });
+
+      it('different indices on the same composition select different heads', async () => {
+        // Two sequential navigations on the same loader instance
+        // against the same composition. The composition id is constant
+        // — the only thing that changes is the `index`. If the index
+        // were ignored (e.g. dispatcher collapsed `composition-index`
+        // to `kind: 'composition'`), both navigations would land at
+        // `manifest[0]` and this test would fail. This pins the
+        // positional contract: `index`, not `composition`, decides
+        // *where* in the composition playback starts.
+        const a = buildScene({ id: 'scene-a' });
+        const b = buildScene({ id: 'scene-b' });
+        const c = buildScene({ id: 'scene-c' });
+        const stage = buildStage();
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([a, b, c]),
+          compositions: createCompositionRegistry([
+            { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+          ]),
+          stage: stage.element,
+          ctx: {},
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+        });
+
+        await loader.handle(compositionIndexTarget('full-talk', 0));
+        expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-a');
+
+        await loader.handle(compositionIndexTarget('full-talk', 2));
+        expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-c');
+        expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+        expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+      });
+    });
+
     it('is a no-op for `kind: "none"` (no scene to load)', async () => {
       const stage = buildStage();
       const loader = createSceneLoader({
