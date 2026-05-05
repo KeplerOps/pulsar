@@ -1684,4 +1684,375 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(probe.modes).toEqual([]);
     });
   });
+
+  describe('present-mode adapter seams (PUL-F013 boundary, NOT a PUL-F013 implementation)', () => {
+    // PUL-F013 statement: in `mode=present`, the runtime SHALL render
+    // full chrome, audio, and inter-scene transitions, and SHALL respond
+    // to presenter input. NONE of the four facets has a corresponding
+    // rendering / input surface in this repo today — chrome is a future
+    // workbench-shell requirement, audio is reserved by ADR-004
+    // (Howler.js), inter-scene transition RENDERING is reserved by
+    // ADR-003 (GSAP timeline runner), and actual presenter input is
+    // PUL-F020 / PUL-F021 / PUL-F025. The tests below DO NOT pin
+    // PUL-F013's clauses end to end — they pin the underlying adapter
+    // seams those four future surfaces will plug into, asserted under
+    // `mode=present` so a future regression cannot quietly disable a
+    // seam for the present value.
+    //
+    // PUL-F013 stays DRAFT until every facet its statement names
+    // lands as a real rendering / input surface that adds its own
+    // end-to-end "X renders / responds under mode=present" test
+    // alongside these seam tests. ADR-016 records the boundary.
+    //
+    // The seams pinned here:
+    //
+    //   - The composition resolver's structural cleanup-before-next-
+    //     create ordering — the lifecycle hook the GSAP runner will
+    //     hang inter-scene transition rendering off (ADR-003 / ADR-011
+    //     / PUL-F004).
+    //   - The per-navigation `AbortSignal` forwarded to the runner —
+    //     the seam PUL-F020 / F021 / F025 will drive when actual
+    //     presenter input arrives (PUL-F006 / ADR-011).
+    //   - `ctx.mode === 'present'` carried into every lifecycle hook —
+    //     the hint chrome and audio surfaces will read when each lands
+    //     (PUL-F012 / ADR-007).
+    //   - Absence of any preemptive `data-pulsar-mode-*` suppression
+    //     attribute on the stage under `present`.
+
+    const presentTarget = (composition: string, index = 0): NavigationTarget => ({
+      locator: { kind: 'composition-index', composition, index },
+      mode: 'present',
+    });
+    const absentModeTarget = (composition: string, index = 0): NavigationTarget => ({
+      locator: { kind: 'composition-index', composition, index },
+    });
+
+    interface LifecycleProbe {
+      readonly log: string[];
+      readonly scenes: readonly SceneModule[];
+      readonly compositionId: string;
+    }
+
+    const buildLifecycleProbe = (compositionId = 'full-talk'): LifecycleProbe => {
+      const log: string[] = [];
+      const trace = (id: string): SceneModule =>
+        buildScene({
+          id,
+          create: () => {
+            log.push(`create:${id}`);
+          },
+          timeline: () => {
+            log.push(`timeline:${id}`);
+            return null;
+          },
+          cleanup: () => {
+            log.push(`cleanup:${id}`);
+          },
+        });
+      return {
+        log,
+        scenes: [trace('scene-a'), trace('scene-b'), trace('scene-c')],
+        compositionId,
+      };
+    };
+
+    it('runs every scene in a composition under `mode=present` with cleanup-before-next-create ordering (pins the inter-scene-transition seam, NOT transition rendering)', async () => {
+      // Inter-scene transition RENDERING is reserved by ADR-003's GSAP
+      // runner and not implemented in this repo yet. What this test
+      // pins is the lifecycle ordering the future runner will hang
+      // transition rendering off: under `mode=present` the resolver
+      // visits every entry in a composition slice in manifest order
+      // and runs cleanup before the next entry's create (ADR-011 /
+      // PUL-F004). A regression that collapsed `mode=present` to a
+      // single-scene load — or that re-ordered cleanup after the next
+      // create — would fail here and break every future inter-scene
+      // transition before it ships.
+      const probe = buildLifecycleProbe();
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([...probe.scenes]),
+        compositions: createCompositionRegistry([
+          {
+            id: probe.compositionId,
+            manifest: probe.scenes.map((s) => s.id),
+          },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(presentTarget(probe.compositionId));
+
+      expect(probe.log).toEqual([
+        'create:scene-a',
+        'timeline:scene-a',
+        'cleanup:scene-a',
+        'create:scene-b',
+        'timeline:scene-b',
+        'cleanup:scene-b',
+        'create:scene-c',
+        'timeline:scene-c',
+        'cleanup:scene-c',
+      ]);
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-a');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe(probe.compositionId);
+    });
+
+    it('produces the same multi-scene lifecycle when `mode` is absent (clause: present is the default)', async () => {
+      // PUL-F013 is paired with PUL-F012's "absent mode defaults to
+      // present" contract: a URL with no `mode=` parameter selects the
+      // same behavior as an explicit `mode=present`. Pinning a separate
+      // run of the multi-scene flow without `mode` proves the runtime
+      // does not branch on "explicit vs default" present in any way that
+      // would let PUL-F013 drift between the two.
+      const probe = buildLifecycleProbe();
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([...probe.scenes]),
+        compositions: createCompositionRegistry([
+          {
+            id: probe.compositionId,
+            manifest: probe.scenes.map((s) => s.id),
+          },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(absentModeTarget(probe.compositionId));
+
+      expect(probe.log).toEqual([
+        'create:scene-a',
+        'timeline:scene-a',
+        'cleanup:scene-a',
+        'create:scene-b',
+        'timeline:scene-b',
+        'cleanup:scene-b',
+        'create:scene-c',
+        'timeline:scene-c',
+        'cleanup:scene-c',
+      ]);
+    });
+
+    it('exposes `ctx.mode === "present"` in every lifecycle hook for both explicit and absent mode (mode-hint contract clauses 1/2 will consume)', async () => {
+      // Chrome and audio rendering, when those subsystems land, will
+      // read `ctx.mode` to decide whether to render / play. Pinning that
+      // every lifecycle hook in a multi-scene flow under `mode=present`
+      // (and absent mode) sees `ctx.mode === 'present'` is the
+      // executable form of "the runtime exposes the present hint to
+      // every scene that runs under it" — a regression that built ctx
+      // once per loader (instead of once per navigation) would leak the
+      // wrong mode into later hooks here.
+      const seen: { phase: string; sceneId: string; mode: unknown }[] = [];
+      const recordMode =
+        (phase: string, sceneId: string) =>
+        (ctx: unknown): unknown => {
+          seen.push({ phase, sceneId, mode: (ctx as { mode?: NavigationMode }).mode });
+          return null;
+        };
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: recordMode('create', 'scene-a'),
+        timeline: recordMode('timeline', 'scene-a') as SceneModule['timeline'],
+        cleanup: recordMode('cleanup', 'scene-a'),
+      });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        create: recordMode('create', 'scene-b'),
+        timeline: recordMode('timeline', 'scene-b') as SceneModule['timeline'],
+        cleanup: recordMode('cleanup', 'scene-b'),
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: stage.element,
+        buildCtx: (mode) => ({ stage: stage.element, mode }),
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(presentTarget('full-talk'));
+      await loader.handle(absentModeTarget('full-talk'));
+
+      // 6 hooks per navigation × 2 navigations = 12 entries; every
+      // single one carries `present`. The two-navigation shape also
+      // catches a regression where mode is captured into a closure once
+      // and reused across navigations.
+      expect(seen).toHaveLength(12);
+      for (const entry of seen) {
+        expect(entry.mode).toBe('present');
+      }
+    });
+
+    it('forwards a non-undefined `AbortSignal` to the runner under `mode=present` (pins the presenter-input seam, NOT presenter input itself)', async () => {
+      // Actual presenter input is PUL-F020's deliverable. What this
+      // test pins is the seam PUL-F020 will drive: the per-navigation
+      // `AbortSignal` (PUL-F006 / ADR-011) reaches the timeline
+      // runner's `input.signal` under `mode=present`. A regression
+      // that dropped the signal forwarding for present mode would
+      // disconnect the seam before PUL-F020 even lands.
+      const captured: { signalDefined: boolean; aborted: boolean }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          captured.push({
+            signalDefined: input.signal !== undefined,
+            aborted: input.signal?.aborted === true,
+          });
+        },
+      });
+
+      await loader.handle(presentTarget('full-talk'));
+
+      // One entry per scene the runner saw. Both must show a defined,
+      // un-aborted signal at the moment the runner observed it.
+      expect(captured).toEqual([
+        { signalDefined: true, aborted: false },
+        { signalDefined: true, aborted: false },
+      ]);
+    });
+
+    it('an in-flight abort under `mode=present` flips `signal.aborted` and triggers cleanup (pins the abort-to-cleanup connectedness PUL-F020 will drive)', async () => {
+      // Actual presenter input is PUL-F020's deliverable; here we
+      // pin the connectedness of the abort seam end to end under
+      // `mode=present`: when the per-navigation `AbortController` is
+      // aborted (PUL-F020 will drive this from a presenter control;
+      // the loader drives it from a superseding handle() in this
+      // test), the runner observes `signal.aborted === true`, the
+      // runner's promise can resolve from that signal, and the
+      // resolver's mandatory-cleanup invariant runs `cleanup(ctx)`
+      // on the in-flight scene. Without this connectedness, every
+      // future presenter-driven abort would either leak the signal
+      // or skip cleanup.
+      //
+      // Determinism: the test asserts the runner observed a defined
+      // signal BEFORE parking on the abort gate, so a regression that
+      // dropped signal forwarding fails fast with an assertion rather
+      // than via the test-runner timeout.
+      const cleanupRan: string[] = [];
+      let runnerSignal: AbortSignal | undefined;
+      // First runner call holds open until aborted; subsequent calls
+      // (the superseding navigation's runner) resolve immediately so
+      // the test does not hang waiting for an interrupt that never
+      // arrives.
+      let runnerCalls = 0;
+      const runner: SceneTimelineRunner = (input) => {
+        runnerCalls += 1;
+        if (runnerCalls !== 1) return undefined;
+        // Capture and assert signal presence synchronously, before
+        // returning the gate promise. A missing signal fails the
+        // test deterministically with the assertion below — not via
+        // the 5s test timeout the abort-listener path would otherwise
+        // hit.
+        runnerSignal = input.signal;
+        if (runnerSignal === undefined) {
+          throw new Error('mode=present did not forward a signal to the runner');
+        }
+        const signal = runnerSignal;
+        return new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const sceneA = buildScene({
+        id: 'scene-a',
+        cleanup: () => {
+          cleanupRan.push('scene-a');
+        },
+      });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        cleanup: () => {
+          cleanupRan.push('scene-b');
+        },
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        onError: () => undefined,
+      });
+
+      // First navigation: scene-a starts and the runner parks waiting
+      // for abort. We do NOT await this handle — we want the runner
+      // sitting on the gate when the abort arrives.
+      const first = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      while (runnerCalls === 0) {
+        await Promise.resolve();
+      }
+      // Signal MUST be present by the time the runner parked on it;
+      // assert before triggering the abort so a regression fails here
+      // rather than via timeout.
+      expect(runnerSignal).toBeDefined();
+      expect(runnerSignal?.aborted).toBe(false);
+
+      // Second navigation: simulates the presenter / popstate trigger
+      // that PUL-F020 will drive. The loader aborts the first load.
+      const second = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-b' },
+        mode: 'present',
+      });
+
+      await first;
+      await second;
+
+      expect(runnerSignal?.aborted).toBe(true);
+      // scene-a's cleanup ran (mandatory cleanup on every scene exit
+      // — PUL-F006). scene-b's cleanup ran on its normal-advance exit
+      // because the second navigation also completed.
+      expect(cleanupRan).toContain('scene-a');
+      expect(cleanupRan).toContain('scene-b');
+    });
+
+    it('writes no `data-pulsar-mode-*` suppression attribute on the stage under `mode=present`', async () => {
+      // The PUL-F013 invariant is narrow: under `mode=present` the
+      // loader MUST NOT preemptively write a suppression-style stage
+      // attribute under the `data-pulsar-mode-` namespace (e.g.
+      // `data-pulsar-mode-suppress-chrome`, `data-pulsar-mode-mute`).
+      // Future modes that DO suppress facets are free to do so
+      // through this namespace; PUL-F013 forbids it for `present`.
+      // The assertion is scoped to that namespace only — adding
+      // unrelated diagnostics or observability attributes (e.g. a
+      // future `data-pulsar-state-*`) does not break this test.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+
+      const modeAttrs = Array.from(stage.attrs.keys()).filter((name) =>
+        name.startsWith('data-pulsar-mode-'),
+      );
+      expect(modeAttrs).toEqual([]);
+    });
+  });
 });

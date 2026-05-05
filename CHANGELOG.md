@@ -56,6 +56,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/016-workbench-mode-present.md` — records the PUL-F013
+  contract boundary and the seams future rendering / input surfaces
+  will plug into. None of the four facets PUL-F013 names — render
+  full chrome, audio, inter-scene transitions, and respond to
+  presenter input — has a corresponding rendering / input surface in
+  the repo today (chrome, audio, GSAP runner, presenter UI are all
+  future deliverables). PUL-F013 today lands the contract layer plus
+  test pinning of the seams those surfaces will plug into; ACTIVE
+  transition is gated on at least one rendering / input surface
+  landing and adding its own end-to-end test. Mirrors the ADR-015 /
+  PUL-F011 precedent. Indexed in `docs/adrs/README.md`.
+- `docs/design/pul-f013-present-mode-preflight.md` — codex
+  architecture preflight design context for PUL-F013. Names the
+  cross-cutting concerns to reuse (`NAVIGATION_MODES`,
+  `effectiveMode()`, `loadSceneNavigationTarget()`,
+  `createAssetPreloader()`, `describeError()`, the per-navigation
+  `AbortController`) and the anti-patterns to avoid (duplicate mode
+  enums, scene-owned chrome, transitions encoded as fake scenes,
+  presenter UI calling scene `cleanup()` directly, persisting
+  mode/target state outside the URL).
+- `tests/runtime/scene-loader.test.ts` — new
+  `'present-mode adapter seams (PUL-F013 boundary, NOT a PUL-F013
+  implementation)'` describe block (6 tests) pinning the adapter
+  seams the four future rendering / input surfaces will plug into:
+  - Multi-scene composition under `mode=present` runs every scene's
+    `create → timeline → cleanup` with cleanup-before-next-create
+    ordering — the lifecycle hook ADR-003's GSAP runner will hang
+    inter-scene transition rendering off (NOT transition rendering
+    itself).
+  - Identical multi-scene behavior when `mode` is absent — pins
+    "present is the default."
+  - Every lifecycle hook in two consecutive multi-scene navigations
+    sees `ctx.mode === 'present'` — pins the mode hint chrome /
+    audio surfaces will read.
+  - Per-scene `AbortSignal` reaches the runner's `input.signal`
+    under `mode=present` — pins the seam PUL-F020 will drive (NOT
+    presenter input itself).
+  - An in-flight abort under `mode=present` flips `signal.aborted`
+    and triggers `cleanup(ctx)` on the active scene — pins the
+    abort-to-cleanup connectedness end to end. The runner's
+    signal-presence assertion runs before parking on the abort gate
+    so a regression that drops signal forwarding fails fast with an
+    assertion rather than via the test-runner timeout.
+  - No `data-pulsar-mode-*` suppression attribute is preemptively
+    written under `mode=present`. Scoped to the
+    `data-pulsar-mode-*` namespace only so unrelated future
+    diagnostics / observability attributes do not break the test.
 - `src/runtime/navigation.ts` — `effectiveMode(target?:
   NavigationTarget): NavigationMode` pure helper that returns
   `target?.mode ?? 'present'`. The single dispatch point for

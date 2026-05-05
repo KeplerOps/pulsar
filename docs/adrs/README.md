@@ -41,3 +41,4 @@ Each ADR includes:
 | [013](013-url-navigation-grammar-boundary.md) | URL Navigation Grammar Boundary | Accepted |
 | [014](014-url-scene-target-selection.md) | Loading the Addressed Scene as the Runtime Navigation Target | Accepted |
 | [015](015-url-beat-positioning.md) | URL Beat Positioning as Timeline-Runner State | Accepted |
+| [016](016-workbench-mode-present.md) | Workbench Mode `present` — Contract Boundary and Adapter Seams | Accepted |
