@@ -1209,3 +1209,127 @@ describe('per-scene cleanup invocation (PUL-F006)', () => {
     ]);
   });
 });
+
+describe('URL beat positioning forwarding (PUL-F011)', () => {
+  // PUL-F011: when `beat=<label>` is present, the runtime SHALL position
+  // the active scene's timeline at the named label; if the label does
+  // not exist, surface an error and remain at the scene's first beat.
+  // ADR-015 places label existence and seeking in the timeline-runner
+  // boundary. The resolver's job is forwarding URL beat state to the
+  // head scene's run input only; subsequent scenes in a composition
+  // slice do not receive `beat` (per ADR-015, `beat` targets the
+  // active head scene only).
+
+  it("forwards `headBeat` to plan[0]'s run input only — subsequent scenes get no beat", async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, headBeat: 'hook', onBeatMissing: () => undefined });
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[0]?.scene.id).toBe('scene-a');
+    expect(runCalls[0]?.beat).toBe('hook');
+    expect(runCalls[1]?.scene.id).toBe('scene-b');
+    expect(runCalls[1]?.beat).toBeUndefined();
+    // The `'beat' in input` check parallels how `range` / `behavior`
+    // are omitted when absent — the runner's branching can rely on key
+    // presence rather than checking for `undefined` separately.
+    expect('beat' in (runCalls[1] as object)).toBe(false);
+  });
+
+  it("forwards `onBeatMissing` to plan[0]'s run input only — subsequent scenes get no callback", async () => {
+    const callbacks: (SceneTimelineRunInput['onBeatMissing'] | undefined)[] = [];
+    const sentinel = (): void => undefined;
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        callbacks.push(input.onBeatMissing);
+      },
+    });
+    await resolveComposition({ ...options, headBeat: 'hook', onBeatMissing: sentinel });
+    expect(callbacks[0]).toBe(sentinel);
+    expect(callbacks[1]).toBeUndefined();
+  });
+
+  it('does not attach `beat` or `onBeatMissing` keys when neither option is supplied', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(1);
+    expect('beat' in (runCalls[0] as object)).toBe(false);
+    expect('onBeatMissing' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('does not attach `onBeatMissing` when `headBeat` is absent (paired contract)', async () => {
+    // The callback is meaningless without a beat to trigger it. If a
+    // caller passes `onBeatMissing` alone, the resolver drops it so
+    // the runner never sees `input.onBeatMissing` with no
+    // `input.beat` (an impossible state per the documented contract).
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, onBeatMissing: () => undefined });
+    expect(runCalls).toHaveLength(1);
+    expect('beat' in (runCalls[0] as object)).toBe(false);
+    expect('onBeatMissing' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('throws when `headBeat` is supplied without `onBeatMissing` (paired-required contract)', async () => {
+    // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing`
+    // would silently lose the missing-label diagnostic the runner
+    // is contracted to surface. The resolver fails fast at the
+    // boundary rather than running a doomed lifecycle that reports
+    // nothing.
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+    });
+    await expect(resolveComposition({ ...options, headBeat: 'hook' })).rejects.toThrow(
+      /^composition resolution failed: "onBeatMissing" is required when "headBeat" is supplied/,
+    );
+  });
+
+  it('does not interpret `headBeat` itself — a runner that silently consumes it does not error', async () => {
+    // Resolver delegates label-existence checking to the runner per
+    // ADR-015. A runner that receives `beat: 'unknown-label'` and
+    // returns void normally must NOT cause the resolver to throw or
+    // skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    await expect(
+      resolveComposition({
+        ...options,
+        headBeat: 'never-defined',
+        onBeatMissing: () => undefined,
+      }),
+    ).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+});

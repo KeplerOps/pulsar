@@ -117,6 +117,29 @@ export interface LoadSceneNavigationTargetOptions {
    * defined for composition-level abort.
    */
   readonly signal?: AbortSignal;
+  /**
+   * URL beat label (PUL-F011) the runner should seek to before
+   * playing the head scene's timeline. Forwarded to
+   * {@link resolveComposition} as `headBeat` — the resolver scopes
+   * delivery to the head scene's run input only, per ADR-015. Absent
+   * when the navigation target had no `beat=` URL parameter.
+   */
+  readonly beat?: string;
+  /**
+   * Non-fatal callback invoked by the runner when {@link beat} is
+   * supplied but the named timeline label does not exist (PUL-F011 /
+   * ADR-015). Forwarded to {@link resolveComposition} as
+   * `onBeatMissing`. The runner MUST NOT throw or reject in response
+   * to a missing label; the loader uses this hook to surface a
+   * navigation-positioning diagnostic without unmounting the active
+   * scene.
+   *
+   * REQUIRED whenever {@link beat} is supplied: a beat without a
+   * diagnostic surface would silently lose the missing-label error
+   * the runner reports — the bridge throws when this invariant is
+   * violated rather than letting the diagnostic vanish.
+   */
+  readonly onBeatMissing?: () => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -361,6 +384,21 @@ export async function loadSceneNavigationTarget(
   // registry, so dedupe is identity-preserving.
   const uniqueScenes = Array.from(new Map(scenes.map((s) => [s.id, s])).values());
 
+  // PUL-F011 / ADR-015: a `beat` without an `onBeatMissing` would
+  // silently lose the missing-label diagnostic the runner is
+  // contracted to surface. Mirror the resolver's check at this
+  // boundary so the bridge's direct callers fail at construction
+  // time, not after the lifecycle started. Routed through the
+  // module's `fail(...)` helper so the error carries the documented
+  // `scene navigation failed:` envelope — same prefix as every
+  // other navigation-level failure (unknown scene, out-of-range
+  // index, etc.).
+  if (options.beat !== undefined && options.onBeatMissing === undefined) {
+    fail(
+      '"onBeatMissing" is required when "beat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+    );
+  }
+
   await resolveComposition({
     registry: createSceneRegistry(uniqueScenes),
     manifest,
@@ -368,5 +406,15 @@ export async function loadSceneNavigationTarget(
     preloadAssets: options.preloadAssets,
     runTimeline: options.runTimeline,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    // `onBeatMissing` is paired with `beat` per ADR-015 — a callback
+    // without a label has no trigger condition, so dropping it when
+    // `beat` is absent prevents misuse-by-spread (e.g. a caller
+    // accidentally passing `onBeatMissing` with no `beat`).
+    ...(options.beat === undefined
+      ? {}
+      : {
+          headBeat: options.beat,
+          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
+        }),
   });
 }
