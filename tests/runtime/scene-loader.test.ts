@@ -1891,17 +1891,21 @@ describe('createSceneLoader (PUL-F008)', () => {
       }
     });
 
-    it('forwards a non-undefined `AbortSignal` to the runner under `mode=present` (pins the presenter-input seam, NOT presenter input itself)', async () => {
+    it('forwards a non-undefined `AbortSignal` to the runner under `mode=present` AND under absent `mode` (pins the presenter-input seam, NOT presenter input itself)', async () => {
       // Actual presenter input is PUL-F020's deliverable. What this
       // test pins is the seam PUL-F020 will drive: the per-navigation
       // `AbortSignal` (PUL-F006 / ADR-011) reaches the timeline
-      // runner's `input.signal` under `mode=present`. A regression
-      // that dropped the signal forwarding for present mode would
-      // disconnect the seam before PUL-F020 even lands.
-      const captured: { signalDefined: boolean; aborted: boolean }[] = [];
+      // runner's `input.signal` under `mode=present` AND under absent
+      // `mode` (the URL form that defaults to `present` per
+      // PUL-F012 / ADR-007). Asserting both forms catches a regression
+      // that dropped signal forwarding for one but not the other —
+      // e.g. an "if mode is explicitly present" branch that skipped
+      // the absent-mode default.
+      const captured: { mode: string; signalDefined: boolean; aborted: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const sceneB = buildScene({ id: 'scene-b' });
       const stage = buildStage();
+      let phase: 'explicit-present' | 'absent-mode' = 'explicit-present';
       const loader = createSceneLoader({
         scenes: createSceneRegistry([sceneA, sceneB]),
         compositions: createCompositionRegistry([
@@ -1912,6 +1916,7 @@ describe('createSceneLoader (PUL-F008)', () => {
         createPreloader: () => () => undefined,
         runTimeline: (input) => {
           captured.push({
+            mode: phase,
             signalDefined: input.signal !== undefined,
             aborted: input.signal?.aborted === true,
           });
@@ -1919,12 +1924,18 @@ describe('createSceneLoader (PUL-F008)', () => {
       });
 
       await loader.handle(presentTarget('full-talk'));
+      phase = 'absent-mode';
+      await loader.handle(absentModeTarget('full-talk'));
 
-      // One entry per scene the runner saw. Both must show a defined,
-      // un-aborted signal at the moment the runner observed it.
+      // 2 scenes per navigation × 2 navigations = 4 entries. Every
+      // single one must show a defined, un-aborted signal — proving
+      // the seam reaches the runner identically for both URL forms
+      // that select `present`.
       expect(captured).toEqual([
-        { signalDefined: true, aborted: false },
-        { signalDefined: true, aborted: false },
+        { mode: 'explicit-present', signalDefined: true, aborted: false },
+        { mode: 'explicit-present', signalDefined: true, aborted: false },
+        { mode: 'absent-mode', signalDefined: true, aborted: false },
+        { mode: 'absent-mode', signalDefined: true, aborted: false },
       ]);
     });
 

@@ -64,9 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repo today (chrome, audio, GSAP runner, presenter UI are all
   future deliverables). PUL-F013 today lands the contract layer plus
   test pinning of the seams those surfaces will plug into; ACTIVE
-  transition is gated on at least one rendering / input surface
-  landing and adding its own end-to-end test. Mirrors the ADR-015 /
-  PUL-F011 precedent. Indexed in `docs/adrs/README.md`.
+  transition is gated on every facet PUL-F013's statement names
+  landing as a real rendering / input surface AND adding its own
+  end-to-end test (chrome, audio, inter-scene transitions, presenter
+  input — all four). Mirrors the ADR-015 / PUL-F011 precedent.
+  Indexed in `docs/adrs/README.md`.
 - `docs/design/pul-f013-present-mode-preflight.md` — codex
   architecture preflight design context for PUL-F013. Names the
   cross-cutting concerns to reuse (`NAVIGATION_MODES`,

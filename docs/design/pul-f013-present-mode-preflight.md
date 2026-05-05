@@ -1,8 +1,14 @@
 # PUL-F013 Present Mode Preflight
 
-PUL-F013 implements the default workbench behavior for `mode=present`:
+PUL-F013 specifies the default workbench behavior for `mode=present`:
 full chrome, audio, inter-scene transitions, and presenter input. It is
-an integration requirement, not a new runtime model.
+an integration requirement across existing runtime seams, not a new
+runtime model. None of the four facets has a rendering / input surface
+in this repo yet (see ADR-016): chrome and audio surfaces have not
+landed, inter-scene transition rendering is reserved by ADR-003's GSAP
+runner, and presenter input is PUL-F020 / PUL-F021 / PUL-F025.
+PUL-F013 ACTIVE requires every facet to land. This preflight defines
+the boundary and required reuse for that future work.
 
 ## Boundary
 
