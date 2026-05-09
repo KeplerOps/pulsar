@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/017-workbench-mode-standalone.md` — records the
+  PUL-F014 contract: under `mode=standalone` the loader truncates
+  the validated composition slice from `resolveSceneNavigation()`
+  to a one-entry slice (the addressed head, preserved verbatim
+  including object-form `range` / `behavior` overrides) and runs
+  only the head scene's lifecycle. Composition validation still
+  runs first, so unregistered compositions / unknown member scenes
+  / out-of-range indexes still surface as navigation errors. The
+  single-scene execution mechanism is materially shipped; the seam
+  (`ctx.mode === 'standalone'` reaches every lifecycle hook of the
+  head scene) is pinned. Surrounding chrome, audio-bed, and
+  inter-scene-transition suppression — the three named surfaces
+  that don't exist in the repo today — are deferred to the future
+  workbench-shell / audio-service / GSAP runner requirements that
+  will land them. Following the ADR-016 precedent, PUL-F014 stays
+  DRAFT and the issue ↔ requirement link is `DOCUMENTS`; ACTIVE
+  transitions when each surface actively reads
+  `ctx.mode === 'standalone'` and suppresses, with end-to-end
+  tests alongside the seam tests in this PR. Indexed in
+  `docs/adrs/README.md`.
+- `docs/design/pul-f014-standalone-mode-preflight.md` — codex
+  architecture preflight design context for PUL-F014. Names the
+  cross-cutting concerns to reuse (`NAVIGATION_MODES`,
+  `effectiveMode()`, `parseNavigationSearch()`,
+  `resolveSceneNavigation()`, `loadSceneNavigationTarget()`,
+  `resolveComposition()`, `createAssetPreloader()`,
+  `describeError()`, the per-navigation `AbortController`) and the
+  anti-patterns to avoid (second mode enum, `standalone` boolean,
+  manifest-mutation slicing, CSS-hide-after-the-fact, all-audio
+  suppression, persisting standalone state outside the URL).
+- `tests/runtime/scene-loader.test.ts` — new
+  `'standalone-mode single-scene execution (PUL-F014)'` describe
+  block (13 tests) pinning every clause of PUL-F014 under
+  `mode=standalone`:
+  - Single-scene execution at the addressed head scene for
+    `composition`, `composition+scene`, and `composition+index`
+    locators (no following composition entries fire).
+  - Direct `scene` target baseline parity (no slice to drop).
+  - `beat=` forwarding to the head scene's runner with the
+    non-fatal missing-label diagnostic preserved.
+  - `ctx.mode === 'standalone'` exposed to every lifecycle hook of
+    the head scene under all four locator shapes.
+  - Stage attributes communicate what the URL ADDRESSED:
+    `data-pulsar-scene-target` AND `data-pulsar-composition-target`
+    are both set when the URL named a composition under standalone.
+  - No `data-pulsar-mode-*` suppression attribute is preemptively
+    written (parity with ADR-016 invariant for `present`).
+  - Composition-not-registered, composition-member-not-found, and
+    index-out-of-range errors STILL surface under `mode=standalone`
+    (no silent fallback to direct scene lookup).
+  - Object-form head entry's `range` and `behavior` overrides reach
+    the runner unchanged — standalone is single-scene EXECUTION,
+    not direct-scene flattening.
+  - Cleanup runs exactly once for the head scene, never for dropped
+    slice entries.
 - `.github/workflows/ci.yml` — `osv-scan` blocking job. Installs
   the OSV-Scanner CLI binary directly (release `v2.3.8`, pinned by
   SHA256 against `osv-scanner_SHA256SUMS`), scans the root
@@ -28,6 +83,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `src/runtime/scene-loader.ts` — `runTarget` truncates the validated
+  composition slice to a single entry — the addressed head — when
+  `effectiveMode(target) === 'standalone'` AND
+  `resolved.composition !== undefined`. The truncation preserves the
+  head entry verbatim (object-form `{ id, range, behavior }` entries
+  stay object-form), so the runner receives `range` / `behavior`
+  overrides unchanged; following entries are dropped, so no
+  inter-scene transition runs and no later scene's lifecycle fires.
+  Validation still runs first via `resolveSceneNavigation()`, so a
+  malformed standalone target surfaces as a navigation error, not a
+  silent direct scene fallback. Stage attrs continue to record both
+  `data-pulsar-scene-target` and `data-pulsar-composition-target` to
+  preserve observability of what the URL addressed (PUL-F014 /
+  ADR-017).
 - `src/runtime/scene-loader.ts` — `SceneLoaderOptions.ctx: unknown`
   replaced with `SceneLoaderOptions.buildCtx: (mode: NavigationMode)
   => unknown`. The loader now derives the effective workbench mode
