@@ -39,6 +39,7 @@ import {
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
 import { deepFreeze } from './object';
+import type { PresenterController } from './presenter';
 import { type SceneRegistry, createSceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
@@ -193,6 +194,44 @@ export interface LoadSceneNavigationTargetOptions {
    * coherence — ctx is opaque per ADR-011.
    */
   readonly screenshot?: 'capture';
+  /**
+   * URL present-mode presenter controller (PUL-F020 / ADR-023). The
+   * loader builds a per-navigation
+   * {@link import('./presenter').PresenterController} bound to its
+   * `AbortController.signal` when `effectiveMode(target) === 'present'`
+   * AND the workbench supplied a `presenterCommands` source, then
+   * forwards it here. The bridge passes it to {@link resolveComposition}
+   * as `presenter`; the resolver hands it to EVERY scene's run input
+   * (NOT head-only) because mode=present runs the FULL composition
+   * slice and presenter commands act on whichever scene is active.
+   *
+   * The bridge does NOT truncate the slice when `presenter` is
+   * supplied — `presenter` is independent of the four head-only
+   * runner-input hints (`repeat` / `hold` / `cueGate` /
+   * `screenshot`), every one of which corresponds to a single-
+   * scene-execution mode where truncation enforces "no following
+   * entries run." Mode=present has no such promise; truncating
+   * would silently drop tail-scene presenter handling.
+   *
+   * Absent for every mode other than `present` because the loader
+   * scopes delivery (the bridge does not enforce mode coherence;
+   * mode dispatch is a loader concern per ADR-007). Direct bridge
+   * callers — outside the loader path — supplying `presenter` for
+   * a non-present-mode navigation will see the controller forwarded
+   * to every scene's run input, but production navigation through
+   * the loader cannot reach that state.
+   */
+  readonly presenter?: PresenterController;
+  /**
+   * Optional diagnostic sink for the per-scene presenter wrapper
+   * (PUL-F020 / ADR-023). Forwarded to {@link resolveComposition}
+   * as `onPresenterError`. The loader threads its own `onError`
+   * here so a runner-handler exception (or an unknown command kind
+   * that reaches a per-scene wrapper) surfaces through the same
+   * diagnostic channel as every other navigation-level error.
+   * Absent: the per-scene wrapper drops diagnostics silently.
+   */
+  readonly onPresenterError?: (err: unknown) => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -584,5 +623,25 @@ export async function loadSceneNavigationTarget(
     // `'screenshot' in input` sees an absent key rather than
     // `undefined`.
     ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
+    // `presenter` is independent of `beat`, `repeat`, `hold`,
+    // `cueGate`, and `screenshot` per ADR-023: presenter input is
+    // only valid under `mode=present` (the loader scopes delivery),
+    // and that mode has no head-only structural promise to defend.
+    // Spread `presenter` only when the caller supplied it so a
+    // runner that branches on `'presenter' in input` sees an absent
+    // key rather than `undefined`. The resolver forwards it to
+    // EVERY scene's run input (NOT head-only) — mode=present runs
+    // the full slice and presenter commands act on whichever scene
+    // is active.
+    ...(options.presenter === undefined ? {} : { presenter: options.presenter }),
+    // `onPresenterError` is paired with `presenter` per ADR-023 —
+    // a sink without a controller has nothing to surface
+    // diagnostics from. Drop the sink when no presenter is
+    // supplied; otherwise spread it so the per-scene wrapper inside
+    // the resolver routes its boundary diagnostics through the
+    // loader's `onError` channel.
+    ...(options.presenter === undefined || options.onPresenterError === undefined
+      ? {}
+      : { onPresenterError: options.onPresenterError }),
   });
 }

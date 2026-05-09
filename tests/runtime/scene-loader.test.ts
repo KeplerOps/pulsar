@@ -2137,6 +2137,501 @@ describe('createSceneLoader (PUL-F008)', () => {
     });
   });
 
+  describe('presenter-controls dispatch (PUL-F020 / ADR-023)', () => {
+    // PUL-F020 statement: in `mode=present`, the runtime SHALL accept
+    // presenter input to advance to the next beat, hold the current
+    // beat, skip forward, and skip backward. Beat progression SHALL
+    // be interruptible without breaking timeline state.
+    //
+    // This block pins the loader-side dispatch — the seam by which a
+    // workbench-supplied `PresenterCommandSource` reaches the
+    // timeline runner under `mode=present` only, with per-navigation
+    // auto-cleanup tied to the existing `AbortSignal`. This PR does
+    // NOT deliver the visible presenter UI surface (keyboard
+    // listener, on-screen controls); the placeholder source is omitted
+    // in `src/main.ts` so production reaches the loader's
+    // graceful-degradation path. PUL-F020 stays DRAFT until a real
+    // presenter UI lands AND end-to-end tests confirm advance / hold
+    // / skip-forward / skip-backward actually move beat state without
+    // breaking the timeline (ADR-023 records the gating delivery).
+    //
+    // Materially-implementable parts pinned here:
+    //   - `input.presenter` reaches the runner under `mode=present`
+    //     when the workbench supplies `presenterCommands`.
+    //   - `input.presenter` is forwarded to EVERY scene in a
+    //     composition slice (NOT head-only — mode=present runs the
+    //     full slice).
+    //   - `input.presenter` is forwarded under absent-mode URLs
+    //     (mode defaults to present per PUL-F012 / ADR-007).
+    //   - `input.presenter` is omitted under every non-present mode.
+    //   - `input.presenter` is omitted when the workbench does not
+    //     supply `presenterCommands` (graceful degradation).
+    //   - Commands flow through every kind PUL-F020 names (advance,
+    //     hold, skip-forward, skip-backward).
+    //   - Aborting the navigation tears down the runner's
+    //     subscription so emissions after abort do not reach it
+    //     (auto-cleanup on the per-navigation AbortSignal).
+    //   - Cleanup-before-handoff: a navigation that supersedes
+    //     a presenter-mounted scene runs `cleanup(ctx)` on the
+    //     in-flight scene exactly once (PUL-F006 invariant; the
+    //     "interruptible without breaking timeline state" clause).
+    //   - Unknown command kinds are dropped at the controller
+    //     boundary; the loader's `onError` sees a diagnostic.
+
+    interface FakeSource {
+      readonly source: import('../../src/runtime/presenter').PresenterCommandSource;
+      readonly emit: (cmd: unknown) => void;
+      readonly handlerCount: () => number;
+    }
+    const buildFakeSource = (): FakeSource => {
+      const handlers = new Set<
+        (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
+      >();
+      return {
+        source: {
+          subscribe(handler) {
+            handlers.add(handler);
+            return () => {
+              handlers.delete(handler);
+            };
+          },
+        },
+        emit(cmd) {
+          for (const h of handlers) {
+            h(cmd as import('../../src/runtime/presenter').PresenterCommand);
+          }
+        },
+        handlerCount: () => handlers.size,
+      };
+    };
+
+    it('forwards `input.presenter` to the runner under `mode=present` for a single-scene target', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const seen: { hasPresenter: boolean }[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          seen.push({ hasPresenter: input.presenter !== undefined });
+        },
+        presenterCommands: fake.source,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+
+      expect(seen).toEqual([{ hasPresenter: true }]);
+    });
+
+    it('forwards `input.presenter` to EVERY scene in a composition under `mode=present` (NOT head-only)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const seen: { id: string; hasPresenter: boolean }[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          seen.push({ id: input.scene.id, hasPresenter: input.presenter !== undefined });
+        },
+        presenterCommands: fake.source,
+      });
+
+      await loader.handle({
+        locator: { kind: 'composition', composition: 'full-talk' },
+        mode: 'present',
+      });
+
+      expect(seen).toEqual([
+        { id: 'scene-a', hasPresenter: true },
+        { id: 'scene-b', hasPresenter: true },
+        { id: 'scene-c', hasPresenter: true },
+      ]);
+    });
+
+    it('forwards `input.presenter` under absent-mode URLs (mode defaults to present)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const seen: boolean[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.presenter !== undefined);
+        },
+        presenterCommands: fake.source,
+      });
+
+      // Absent `mode` URL — defaults to present per PUL-F012 /
+      // ADR-007. A regression that branched on `target.mode ===
+      // 'present'` instead of `effectiveMode(target) === 'present'`
+      // would skip the presenter forwarding here.
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' } });
+
+      expect(seen).toEqual([true]);
+    });
+
+    it.each(NAVIGATION_MODES.filter((m) => m !== 'present'))(
+      'does NOT forward `input.presenter` under non-present mode `%s` even when `presenterCommands` is supplied',
+      async (mode) => {
+        const sceneA = buildScene({ id: 'scene-a' });
+        const stage = buildStage();
+        const fake = buildFakeSource();
+        const seen: { presenterPresent: boolean }[] = [];
+        const noopRendererForPrompter: PrompterRenderer = () => undefined;
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([sceneA]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          runTimeline: (input) => {
+            seen.push({ presenterPresent: 'presenter' in input });
+          },
+          renderPrompter: noopRendererForPrompter,
+          presenterCommands: fake.source,
+        });
+
+        await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
+
+        if (mode === 'prompter') {
+          // mode=prompter bypasses the lifecycle entirely (ADR-022),
+          // so `runTimeline` is never invoked and `seen` stays empty.
+          // The "presenter does not leak into prompter" invariant
+          // holds vacuously through the lifecycle bypass — the
+          // captions data path has no `input.presenter` slot.
+          expect(seen).toEqual([]);
+        } else {
+          expect(seen).toEqual([{ presenterPresent: false }]);
+        }
+        // Source should NOT have been subscribed under any non-present
+        // mode — the loader must not even build a controller.
+        expect(fake.handlerCount()).toBe(0);
+      },
+    );
+
+    it('does NOT forward `input.presenter` when `presenterCommands` is omitted (graceful degradation)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const seen: { presenterPresent: boolean }[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: (input) => {
+          seen.push({ presenterPresent: 'presenter' in input });
+        },
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+
+      expect(seen).toEqual([{ presenterPresent: false }]);
+    });
+
+    it('delivers every command kind PUL-F020 names (advance, hold, skip-forward, skip-backward) to the runner', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const received: string[] = [];
+      // The runner subscribes to the presenter, captures every
+      // command it observes, then parks until aborted so the test
+      // can drive commands while the scene is "running."
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const runner: SceneTimelineRunner = (input) => {
+        input.presenter?.subscribe((cmd) => received.push(cmd.kind));
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      await runnerEnteredPromise;
+
+      fake.emit({ kind: 'advance' });
+      fake.emit({ kind: 'hold' });
+      fake.emit({ kind: 'skip-forward' });
+      fake.emit({ kind: 'skip-backward' });
+
+      loader.dispose();
+      await loader.idle();
+
+      expect(received).toEqual(['advance', 'hold', 'skip-forward', 'skip-backward']);
+    });
+
+    it('aborting the navigation detaches the runner subscription so post-abort emissions do not reach it', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const received: string[] = [];
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const runner: SceneTimelineRunner = (input) => {
+        if (input.scene.id === 'scene-a') {
+          input.presenter?.subscribe((cmd) => received.push(cmd.kind));
+          runnerEntered();
+          return new Promise<void>((resolve) => {
+            input.signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+        return undefined;
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        presenterCommands: fake.source,
+        onError: () => undefined,
+      });
+
+      const first = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      await runnerEnteredPromise;
+      fake.emit({ kind: 'advance' });
+
+      // Superseding navigation aborts scene-a's controller; the
+      // runner's subscription must be detached BEFORE the next
+      // emission so commands do not leak across navigations.
+      const second = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-b' },
+        mode: 'present',
+      });
+      await first;
+      await second;
+
+      fake.emit({ kind: 'hold' });
+
+      expect(received).toEqual(['advance']);
+    });
+
+    it('runs `cleanup(ctx)` on the in-flight scene when a presenter-driven supersede aborts mid-run (interruptible without breaking timeline state)', async () => {
+      // PUL-F020 statement clause: "Beat progression SHALL be
+      // interruptible without breaking timeline state." A
+      // superseding navigation under `mode=present` (which a
+      // presenter UI will drive) MUST trigger the resolver's
+      // mandatory-cleanup invariant on the in-flight scene exactly
+      // once. Without this, "interrupt" would mean "leak the
+      // previous scene's resources."
+      const sceneA = buildScene({
+        id: 'scene-a',
+        cleanup: () => {
+          cleanupRan.push('scene-a');
+        },
+      });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        cleanup: () => {
+          cleanupRan.push('scene-b');
+        },
+      });
+      const cleanupRan: string[] = [];
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      let runnerCalls = 0;
+      const runner: SceneTimelineRunner = (input) => {
+        runnerCalls += 1;
+        if (runnerCalls === 1) {
+          input.presenter?.subscribe(() => undefined);
+          runnerEntered();
+          return new Promise<void>((resolve) => {
+            input.signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+        return undefined;
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        presenterCommands: fake.source,
+        onError: () => undefined,
+      });
+
+      const first = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      await runnerEnteredPromise;
+      const second = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-b' },
+        mode: 'present',
+      });
+      await first;
+      await second;
+
+      expect(cleanupRan).toEqual(['scene-a', 'scene-b']);
+    });
+
+    it("routes a runner presenter handler's exception through the loader's `onError` sink (per-scene wrapper threads the diagnostic channel)", async () => {
+      // Codex review (cycle 2): without `onError` threaded through
+      // the resolver's per-scene wrapper, a runner-handler exception
+      // would be caught by the wrapper and silently dropped — the
+      // loader's diagnostic channel would lose the failure even
+      // though the navigation controller's own `onError` still
+      // exists. This test pins the threading: an exception from the
+      // runner's presenter handler reaches the loader's `onError`.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const errors: unknown[] = [];
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const runner: SceneTimelineRunner = (input) => {
+        input.presenter?.subscribe(() => {
+          throw new Error('runner-handler exception');
+        });
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        presenterCommands: fake.source,
+        onError: (err) => errors.push(err),
+      });
+
+      void loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      await runnerEnteredPromise;
+      fake.emit({ kind: 'advance' });
+      loader.dispose();
+      await loader.idle();
+
+      // Filter to the handler-exception diagnostic; the dispose
+      // path may surface unrelated errors depending on timing.
+      const handlerErrors = errors.filter(
+        (e) => e instanceof Error && /runner-handler exception/.test(e.message),
+      );
+      expect(handlerErrors).toHaveLength(1);
+    });
+
+    it('drops unknown command kinds at the controller boundary and surfaces a diagnostic via `onError`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const errors: unknown[] = [];
+      const received: string[] = [];
+      let runnerEntered: () => void = () => undefined;
+      const runnerEnteredPromise = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const runner: SceneTimelineRunner = (input) => {
+        input.presenter?.subscribe((cmd) => received.push(cmd.kind));
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        presenterCommands: fake.source,
+        onError: (err) => errors.push(err),
+      });
+
+      void loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      await runnerEnteredPromise;
+      fake.emit({ kind: 'rewind' });
+      fake.emit({ kind: 'advance' });
+      loader.dispose();
+      await loader.idle();
+
+      expect(received).toEqual(['advance']);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(Error);
+      expect((errors[0] as Error).message).toMatch(/presenter/i);
+    });
+
+    it('writes no `data-pulsar-mode-*` suppression attribute under `mode=present` even when `presenterCommands` is supplied', async () => {
+      // Layered with the existing PUL-F013-boundary invariant
+      // (ADR-016): adding presenter dispatch must not introduce a
+      // new `data-pulsar-mode-*` suppression attribute under
+      // `mode=present`.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const fake = buildFakeSource();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        presenterCommands: fake.source,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+
+      const modeAttrs = Array.from(stage.attrs.keys()).filter((name) =>
+        name.startsWith('data-pulsar-mode-'),
+      );
+      expect(modeAttrs).toEqual([]);
+    });
+  });
+
   describe('standalone-mode single-scene execution (PUL-F014)', () => {
     // PUL-F014 statement: in `mode=standalone`, the runtime SHALL render
     // a single scene with surrounding chrome, inter-scene transitions,

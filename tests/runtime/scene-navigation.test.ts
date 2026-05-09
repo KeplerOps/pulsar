@@ -20,6 +20,7 @@ import {
   createCompositionRegistry,
 } from '../../src/runtime/composition-registry';
 import type { NavigationTarget } from '../../src/runtime/navigation';
+import { createPresenterController } from '../../src/runtime/presenter';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
 import {
@@ -1602,6 +1603,142 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
           screenshot: 'capture',
         },
       ]);
+    });
+  });
+
+  describe('URL present-mode presenter forwarding (PUL-F020)', () => {
+    // ADR-023: under `mode=present` the loader builds a per-navigation
+    // PresenterController bound to the per-navigation AbortSignal and
+    // forwards it via the bridge. The bridge's only job is to forward
+    // the `presenter` option from the loader to the resolver as
+    // `presenter`. Unlike the head-only forwardings, the resolver
+    // hands the controller to EVERY scene in the composition slice
+    // (mode=present runs the full slice; commands act on the active
+    // scene). The bridge does not interpret the controller; runner-
+    // side translation of commands is the runner's contract.
+
+    it('forwards `presenter` to the runner for a single-scene target', async () => {
+      const seen: { hasPresenter: boolean }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+      const ac = new AbortController();
+      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          // Per ADR-023 the runner sees a per-scene wrapper, not
+          // the navigation controller directly. The bridge contract
+          // is "a controller reaches the runner" — the per-scene
+          // wrapping is exercised by the resolver test.
+          seen.push({ hasPresenter: input.presenter !== undefined });
+        },
+        presenter,
+      });
+
+      expect(seen).toEqual([{ hasPresenter: true }]);
+    });
+
+    it('forwards `presenter` to EVERY scene in a composition slice (NOT head-only)', async () => {
+      // Mode=present is the only mode that runs the full composition
+      // slice, and presenter commands act on whichever scene is
+      // currently active. A regression that scoped `presenter` to
+      // plan[0] (matching the head-only `repeat` / `hold` /
+      // `cueGate` / `screenshot` pattern) would silently drop
+      // presenter input for every scene after the head.
+      const seen: { id: string; hasPresenter: boolean }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+      const ac = new AbortController();
+      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          // Per ADR-023 the runner sees a per-scene wrapper around
+          // the navigation controller. The bridge contract here is
+          // "a controller reaches every scene" — the per-scene
+          // wrapping detail is exercised by the resolver's
+          // per-scene-detach test.
+          seen.push({ id: input.scene.id, hasPresenter: input.presenter !== undefined });
+        },
+        presenter,
+      });
+
+      expect(seen).toEqual([
+        { id: 'intro', hasPresenter: true },
+        { id: 'middle', hasPresenter: true },
+      ]);
+    });
+
+    it('does not truncate a composition slice when `presenter` is supplied — present-mode runs the full slice', async () => {
+      // The loader's `applySingleSceneSlice` truncates only the five
+      // single-scene-execution modes (standalone / loop / paused /
+      // scrub / screenshot); the bridge's `truncateToHead` truncates
+      // only when one of the four head-only runner-input hints is
+      // supplied. A regression that added `presenter` to either
+      // truncation path would silently drop the tail of every
+      // present-mode composition.
+      const seen: string[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+      const ac = new AbortController();
+      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene.id);
+        },
+        presenter,
+      });
+
+      expect(seen).toEqual(['intro', 'middle']);
+    });
+
+    it('does not forward `presenter` when the option is omitted', async () => {
+      const presenterPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          presenterPresence.push('presenter' in input);
+        },
+      });
+
+      expect(presenterPresence).toEqual([false]);
     });
   });
 });
