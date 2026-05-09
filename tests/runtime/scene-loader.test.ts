@@ -2827,20 +2827,17 @@ describe('createSceneLoader (PUL-F008)', () => {
       // none of them produce `repeat` on the runner input. Catching
       // every non-loop mode discriminates against an over-broad fix
       // that gated `repeat` on `mode !== undefined` rather than
-      // `mode === 'loop'`.
+      // `mode === 'loop'`. Capturing the per-iteration mode alongside
+      // the `'repeat' in input` flag means the assertion failure
+      // identifies WHICH mode regressed, not just "some mode did."
       const nonLoopModes = NAVIGATION_MODES.filter((m) => m !== 'loop');
       const captured: { mode: NavigationMode; hasRepeat: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      const runner: SceneTimelineRunner = (input) => {
-        const ctx = (input as { scene: { id: string } }).scene;
-        const mode = (
-          captured.length < nonLoopModes.length ? nonLoopModes[captured.length] : 'present'
-        ) as NavigationMode;
-        captured.push({ mode, hasRepeat: 'repeat' in input });
-        void ctx;
-      };
       for (const mode of nonLoopModes) {
+        const runner: SceneTimelineRunner = (input) => {
+          captured.push({ mode, hasRepeat: 'repeat' in input });
+        };
         const loader = createSceneLoader({
           scenes: createSceneRegistry([sceneA]),
           compositions: createCompositionRegistry([]),
@@ -2852,10 +2849,10 @@ describe('createSceneLoader (PUL-F008)', () => {
         await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
       }
 
-      expect(captured).toHaveLength(nonLoopModes.length);
-      for (const entry of captured) {
-        expect(entry.hasRepeat).toBe(false);
-      }
+      // One entry per non-loop mode, each must have `hasRepeat: false`.
+      // Building the expected array from `nonLoopModes` keeps the
+      // assertion in sync if the mode allowlist ever changes.
+      expect(captured).toEqual(nonLoopModes.map((mode) => ({ mode, hasRepeat: false })));
     });
 
     it('exposes `ctx.mode === "loop"` to every lifecycle hook of the head scene under all locator shapes', async () => {
