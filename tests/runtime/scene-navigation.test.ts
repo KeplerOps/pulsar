@@ -1389,4 +1389,219 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       ]);
     });
   });
+
+  describe('URL screenshot-mode capture forwarding (PUL-F018)', () => {
+    // ADR-021: under `mode=screenshot` the runner renders the
+    // addressed scene at the addressed beat (or first frame), holds
+    // the timeline still, suppresses all audio, and sources any
+    // randomness from a deterministic seed. The bridge's only job is
+    // to forward the `screenshot` option from the loader to the
+    // resolver as `headScreenshot`. The resolver scopes delivery to
+    // the head scene's run input only — honoring the capture bundle
+    // is the runner's contract.
+
+    it('forwards `screenshot` to the runner for a single-scene target', async () => {
+      const seen: { screenshot?: 'capture' }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        // Direct bridge callers (this test, future export
+        // pipelines, etc.) MUST build a ctx coherent with the
+        // runner-input `screenshot` flag, because PUL-F018's
+        // determinism clause flows through the scene-side
+        // `ctx.mode === 'screenshot'` seam (ADR-021's split).
+        // Passing `screenshot: 'capture'` to the bridge with a
+        // ctx whose mode disagreed (e.g. `mode: 'present'`)
+        // would leave scene `create(ctx)` thinking it's not in
+        // capture mode while the runner thinks it is.
+        ctx: { mode: 'screenshot' },
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { screenshot?: 'capture' } = {};
+          if ('screenshot' in input) captured.screenshot = input.screenshot;
+          seen.push(captured);
+        },
+        screenshot: 'capture',
+      });
+
+      expect(seen).toEqual([{ screenshot: 'capture' }]);
+    });
+
+    it('truncates a composition slice to the addressed head when `screenshot` is supplied — structural defense against runner non-conformance', async () => {
+      // PUL-F018 / ADR-021: under `screenshot: 'capture'`
+      // screenshot is single-scene-execution at the addressed head —
+      // by definition following composition entries do not run
+      // because the runtime is rendering one deterministic frame.
+      // The bridge truncates the slice to a single entry as a
+      // structural defense so a runner that ignores
+      // `input.screenshot` cannot silently degrade screenshot-mode
+      // navigation into normal composition playback. This is
+      // layered with the loader's `applySingleSceneSlice` so direct
+      // bridge callers — outside the loader path — get the same
+      // guarantee. Mirrors the layered defense ADR-018 / ADR-019 /
+      // ADR-020 record for `repeat` / `hold` / `cueGate`.
+      const seen: { id: string; screenshot: 'capture' | undefined }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        // ADR-021's split: callers supplying `screenshot:
+        // 'capture'` to the bridge must also build a ctx whose
+        // mode is coherent. See the prior test for rationale.
+        ctx: { mode: 'screenshot' },
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push({ id: input.scene.id, screenshot: input.screenshot });
+        },
+        screenshot: 'capture',
+      });
+
+      // Only the head ran; the tail (`middle`) was structurally
+      // dropped. A regression that omitted bridge-level truncation
+      // under `screenshot` would observe `middle` as a second
+      // runner entry here.
+      expect(seen).toEqual([{ id: 'intro', screenshot: 'capture' }]);
+    });
+
+    it('does not truncate a composition slice when `screenshot` is absent — non-screenshot navigations run the full slice', async () => {
+      // The structural defense fires only under `screenshot` (or
+      // `repeat` / `hold` / `cueGate`). Composition navigation
+      // under any non-screenshot, non-loop, non-paused, non-scrub
+      // mode must still run every entry — a regression that always
+      // truncated would silently break normal composition playback.
+      const seen: string[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene.id);
+        },
+      });
+
+      expect(seen).toEqual(['intro', 'middle']);
+    });
+
+    it('does not forward `screenshot` when the option is omitted', async () => {
+      const screenshotPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          screenshotPresence.push('screenshot' in input);
+        },
+      });
+
+      expect(screenshotPresence).toEqual([false]);
+    });
+
+    it('forwards `screenshot`, `beat`, `repeat`, `hold`, and `cueGate` independently — all five reach the head without coupling', async () => {
+      // The bridge plumbs five independent head-only forwardings. A
+      // regression that paired them — e.g. dropping `screenshot`
+      // when `cueGate` is also supplied, or vice versa — would
+      // break valid combinations a programmatic caller can
+      // legitimately request. Note that `mode=screenshot`,
+      // `mode=scrub`, `mode=loop`, and `mode=paused` are mutually
+      // exclusive at the URL boundary (mode is a single field),
+      // but a programmatic caller can supply any combination of
+      // these options to the bridge and all must reach the runner
+      // so the runner-side policy decides. This is also the
+      // regression test for URLs like
+      // `?scene=x&beat=midpoint&mode=screenshot` — the natural
+      // deterministic-frame-capture-at-named-beat path PUL-F018
+      // names directly.
+      const seen: {
+        beat?: string;
+        cueGate?: 'monotonic-forward';
+        hold?: 'first-frame';
+        repeat?: 'until-aborted';
+        screenshot?: 'capture';
+      }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        // This test exercises a programmatic caller that supplies
+        // combinations the URL grammar can't produce (modes are
+        // mutually exclusive at the URL boundary). There is no
+        // single coherent `ctx.mode` for "all four modes at once,"
+        // so an opaque `{}` ctx is intentional here — the
+        // assertion is about runner-input plumbing, not about the
+        // scene-side `ctx.mode` seam. Production callers (loader
+        // path) always pair the runner-input fields with a
+        // coherent `ctx.mode`; that pairing is exercised by the
+        // single-mode tests above.
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: {
+            beat?: string;
+            cueGate?: 'monotonic-forward';
+            hold?: 'first-frame';
+            repeat?: 'until-aborted';
+            screenshot?: 'capture';
+          } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          if ('cueGate' in input) captured.cueGate = input.cueGate;
+          if ('hold' in input) captured.hold = input.hold;
+          if ('repeat' in input) captured.repeat = input.repeat;
+          if ('screenshot' in input) captured.screenshot = input.screenshot;
+          seen.push(captured);
+        },
+        beat: 'midpoint',
+        onBeatMissing: () => undefined,
+        cueGate: 'monotonic-forward',
+        hold: 'first-frame',
+        repeat: 'until-aborted',
+        screenshot: 'capture',
+      });
+
+      expect(seen).toEqual([
+        {
+          beat: 'midpoint',
+          cueGate: 'monotonic-forward',
+          hold: 'first-frame',
+          repeat: 'until-aborted',
+          screenshot: 'capture',
+        },
+      ]);
+    });
+  });
 });

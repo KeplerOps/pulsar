@@ -1658,3 +1658,130 @@ describe('URL scrub-mode runner cue-gate-hint forwarding (PUL-F017)', () => {
     expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
   });
 });
+
+describe('URL screenshot-mode runner capture-hint forwarding (PUL-F018)', () => {
+  // PUL-F018: in `mode=screenshot`, the runtime SHALL render the
+  // addressed scene at the addressed beat (or first frame if no beat)
+  // with all asset preloads resolved, no animation in progress, all
+  // audio suppressed, and any randomness sourced from a deterministic
+  // seed. ADR-021 places mode dispatch at the loader and the
+  // capture-bundle semantics at the timeline-runner adapter. The
+  // resolver's job is forwarding the URL-derived `headScreenshot`
+  // hint to the head scene's run input only; subsequent scenes in a
+  // composition slice do not receive `screenshot` because under
+  // screenshot the slice is truncated upstream and the captured frame
+  // belongs to one scene. The resolver does NOT interpret
+  // `headScreenshot` itself; honoring "freeze at addressed frame, all
+  // audio suppressed, deterministic randomness" is the runner's
+  // contract.
+
+  it("forwards `headScreenshot` to plan[0]'s run input only — subsequent scenes get no screenshot", async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, headScreenshot: 'capture' });
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[0]?.scene.id).toBe('scene-a');
+    expect(runCalls[0]?.screenshot).toBe('capture');
+    expect(runCalls[1]?.scene.id).toBe('scene-b');
+    expect(runCalls[1]?.screenshot).toBeUndefined();
+    // Parallel to `beat` / `repeat` / `hold` / `cueGate` / `range` /
+    // `behavior`: the key is OMITTED from the input object when
+    // absent, not set to `undefined`. The runner can branch on
+    // `'screenshot' in input` rather than checking for `undefined`.
+    expect('screenshot' in (runCalls[1] as object)).toBe(false);
+  });
+
+  it('does not attach `screenshot` when `headScreenshot` is absent', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(1);
+    expect('screenshot' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('does not interpret `headScreenshot` itself — a runner that ignores the hint and returns normally does not error', async () => {
+    // Resolver delegates the screenshot capture bundle (frame freeze,
+    // audio suppression, deterministic seed) to the runner per
+    // ADR-021. A runner that receives `screenshot: 'capture'` and
+    // returns void normally (e.g. the placeholder runner that has no
+    // real timeline, no audio engine, and no scene-side randomness)
+    // must NOT cause the resolver to throw or skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    await expect(
+      resolveComposition({
+        ...options,
+        headScreenshot: 'capture',
+      }),
+    ).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+
+  it('forwards `headScreenshot` alongside `headBeat`, `headRepeat`, `headHold`, and `headCueGate` independently — all five reach plan[0] without coupling', async () => {
+    // `headScreenshot`, `headBeat`, `headRepeat`, `headHold`, and
+    // `headCueGate` are five independent head-only forwardings. A
+    // regression that paired them — e.g. dropping `headBeat` when
+    // `headScreenshot` is set, or dropping `headScreenshot` when
+    // `headHold` is also supplied — would break valid combinations a
+    // programmatic bridge caller (test harness, future export
+    // pipeline) can legitimately request. The URL grammar makes the
+    // parent modes (`mode=loop`, `mode=paused`, `mode=scrub`,
+    // `mode=screenshot`) mutually exclusive (mode is a single
+    // field), so production callers won't supply more than one of
+    // `headRepeat` / `headHold` / `headCueGate` / `headScreenshot`
+    // at once; the test exercises a programmatic caller scenario to
+    // pin that the resolver does not invent coupling between the
+    // five head-only fields. All five must reach plan[0] when all
+    // five are supplied — this is also the regression test for URLs
+    // like `?scene=x&beat=midpoint&mode=screenshot` (screenshot at
+    // a named beat — the natural deterministic-frame-capture
+    // anchor PUL-F018 names directly) which only sets `headBeat` +
+    // `headScreenshot`.
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({
+      ...options,
+      headBeat: 'midpoint',
+      onBeatMissing: () => undefined,
+      headRepeat: 'until-aborted',
+      headHold: 'first-frame',
+      headCueGate: 'monotonic-forward',
+      headScreenshot: 'capture',
+    });
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]?.beat).toBe('midpoint');
+    expect(runCalls[0]?.repeat).toBe('until-aborted');
+    expect(runCalls[0]?.hold).toBe('first-frame');
+    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
+    expect(runCalls[0]?.screenshot).toBe('capture');
+  });
+});

@@ -4379,4 +4379,594 @@ describe('createSceneLoader (PUL-F008)', () => {
       ]);
     });
   });
+
+  describe('screenshot-mode runner capture-hint forwarding (PUL-F018)', () => {
+    // PUL-F018 statement: in `mode=screenshot`, the runtime SHALL
+    // render the addressed scene at the addressed beat (or first
+    // frame if no beat) with all asset preloads resolved, no
+    // animation in progress, all audio suppressed, and any
+    // randomness sourced from a deterministic seed.
+    //
+    // Materially-implementable parts of the statement that this
+    // block pins (ADR-021 records the contract boundary):
+    //   - The loader passes `screenshot: 'capture'` to the
+    //     timeline runner adapter when
+    //     `effectiveMode(target) === 'screenshot'`. The runner is
+    //     responsible for honoring the bundle (frame freeze at
+    //     beat-or-zero, no animation, all audio suppressed,
+    //     deterministic seed).
+    //   - The hint is HEAD-ONLY: under composition targets the head
+    //     scene's runner input carries `screenshot`; following
+    //     entries do not. Following entries do not run at all
+    //     because the slice is truncated to the addressed head —
+    //     same structural defense ADR-018 / ADR-019 / ADR-020 record
+    //     for `mode=loop` / `mode=paused` / `mode=scrub`.
+    //   - `ctx.mode === 'screenshot'` reaches every lifecycle hook
+    //     of the head scene — the seam future capture tooling reads
+    //     when it observes the stage.
+    //   - Other modes (`present`, `standalone`, `loop`, `paused`,
+    //     `scrub`, `prompter`) and a `mode`-less URL DO NOT set
+    //     `screenshot`. A regression that broadcast `screenshot`
+    //     under any mode would break URLs that depend on normal
+    //     playback semantics.
+    //   - No `data-pulsar-mode-*` suppression attribute is preempt-
+    //     ively written under `screenshot` (parity with ADR-016 /
+    //     ADR-017 / ADR-018 / ADR-019 / ADR-020).
+    //   - Composition validation (unregistered composition, unknown
+    //     member scene, out-of-range index) STILL surfaces as a
+    //     navigation error under `mode=screenshot` — no silent
+    //     fallback to direct scene lookup.
+    //   - Beat semantics under `mode=screenshot` are honored as the
+    //     captured-frame anchor: PUL-F018 explicitly says "at the
+    //     addressed beat (or first frame if no beat)," unlike
+    //     `mode=paused` where ADR-019 records "first frame wins."
+    //     The loader forwards `input.beat` alongside
+    //     `input.screenshot`; missing-label diagnostics surface
+    //     via `data-pulsar-navigation-error` / `onError` without
+    //     unmounting.
+    //   - Object-form head entry's `range` / `behavior` overrides
+    //     reach the runner unchanged. Screenshot is single-scene-
+    //     mount with deterministic capture at the head, NOT
+    //     direct-scene flattening.
+    //
+    // PUL-F018 stays DRAFT after this PR (ADR-021 records the
+    // boundary; following the ADR-016 / ADR-017 / ADR-018 / ADR-019
+    // / ADR-020 / PUL-F013 / PUL-F014 / PUL-F015 / PUL-F016 /
+    // PUL-F017 precedent). The seam — the loader passes
+    // `screenshot: 'capture'` and `ctx.mode === 'screenshot'` — IS
+    // materially shipped. The actual capture-bundle behavior
+    // (frame freeze, audio suppression, deterministic randomness)
+    // is the runner's contract (ADR-003's GSAP runner + ADR-004's
+    // audio engine + a deterministic-randomness convention when
+    // they land); all three are required for ACTIVE.
+
+    const screenshotSceneTarget = (id: string): NavigationTarget => ({
+      locator: { kind: 'scene', scene: id },
+      mode: 'screenshot',
+    });
+    const screenshotCompositionTarget = (composition: string): NavigationTarget => ({
+      locator: { kind: 'composition', composition },
+      mode: 'screenshot',
+    });
+    const screenshotCompositionSceneTarget = (
+      composition: string,
+      scene: string,
+    ): NavigationTarget => ({
+      locator: { kind: 'composition-scene', composition, scene },
+      mode: 'screenshot',
+    });
+    const screenshotCompositionIndexTarget = (
+      composition: string,
+      index: number,
+    ): NavigationTarget => ({
+      locator: { kind: 'composition-index', composition, index },
+      mode: 'screenshot',
+    });
+
+    it('passes `screenshot: "capture"` to the runner for a `scene` target under `mode=screenshot`', async () => {
+      // Direct-scene navigation is the simplest screenshot path:
+      // the addressed scene IS the head, no slice resolution. A
+      // regression that gated `screenshot` on `target.composition`
+      // being defined would silently drop the hint here.
+      const captured: { sceneId: string; screenshot: 'capture' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, screenshot: input.screenshot });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(screenshotSceneTarget('scene-a'));
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', screenshot: 'capture' }]);
+    });
+
+    it('runs only the head scene of a `composition` target under `mode=screenshot` (slice truncation; runner sees `screenshot: "capture"` for the head)', async () => {
+      // PUL-F018 / ADR-021: screenshot truncates the validated
+      // composition slice to the addressed head, parallel to
+      // standalone (ADR-017), loop (ADR-018), paused (ADR-019), and
+      // scrub (ADR-020). Truncation makes "no following entries
+      // run" a structural guarantee — a runner bug or no-op runner
+      // under `mode=screenshot` MUST NOT silently degrade into
+      // normal composition playback. The plain `composition`
+      // locator (no scene id, no index) exercises the path that
+      // resolves the head from the manifest's first entry; a
+      // regression that only dropped `screenshot: 'capture'` for
+      // this locator (vs the composition+index path the next test
+      // covers) would slip past a test that named itself
+      // "composition target" but actually used composition+index.
+      const captured: { sceneId: string; screenshot: 'capture' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, screenshot: input.screenshot });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(screenshotCompositionTarget('full-talk'));
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', screenshot: 'capture' }]);
+    });
+
+    it('runs only the head scene of a `composition+index` target under `mode=screenshot` (slice truncation pinned for the index locator too)', async () => {
+      // The composition+index locator exercises the slice-from-N
+      // path; pins parity with the plain composition target above.
+      // Use a non-final-index navigation so the slice has
+      // successors that would be observable if truncation were
+      // missing.
+      const captured: { sceneId: string; screenshot: 'capture' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, screenshot: input.screenshot });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(screenshotCompositionIndexTarget('full-talk', 0));
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', screenshot: 'capture' }]);
+    });
+
+    it('runs only the addressed scene of a `composition+scene` target under `mode=screenshot`', async () => {
+      // composition+scene targeting a non-final entry exercises the
+      // slice transform from a different locator shape; pins parity
+      // with the composition-target case above.
+      const captured: { sceneId: string; screenshot: 'capture' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, screenshot: input.screenshot });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(screenshotCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(captured).toEqual([{ sceneId: 'scene-b', screenshot: 'capture' }]);
+    });
+
+    it('runs cleanup exactly once for the head scene under `mode=screenshot`, never for dropped slice entries', async () => {
+      // Same invariant as PUL-F014 (ADR-017) under standalone,
+      // PUL-F015 (ADR-018) under loop, PUL-F016 (ADR-019) under
+      // paused, PUL-F017 (ADR-020) under scrub: a regression that
+      // dropped the slice for execution but left following scenes
+      // wired through the synthesized registry could double-clean
+      // or skip-clean. Pin exactly-once cleanup on the head and
+      // zero cleanup for the dropped entries.
+      const cleaned: string[] = [];
+      const trace = (id: string): SceneModule =>
+        buildScene({
+          id,
+          cleanup: () => {
+            cleaned.push(id);
+          },
+        });
+      const scenes = [trace('scene-a'), trace('scene-b'), trace('scene-c')];
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry(scenes),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: scenes.map((s) => s.id) },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(screenshotCompositionTarget('full-talk'));
+
+      expect(cleaned).toEqual(['scene-a']);
+    });
+
+    it('omits the `screenshot` key on the runner input when `mode=screenshot` is absent (key-presence semantics)', async () => {
+      // The runner input uses key-presence semantics for optional
+      // fields (parallel to `beat` / `repeat` / `hold` / `cueGate`
+      // / `range` / `behavior`): a runner can branch on
+      // `'screenshot' in input` rather than `=== undefined`. A
+      // regression that always set `input.screenshot = undefined`
+      // (or any non-`'capture'` value) under non-screenshot modes
+      // would break that contract.
+      const captured: { hasScreenshot: boolean; screenshot: unknown }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ hasScreenshot: 'screenshot' in input, screenshot: input.screenshot });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      // No mode at all (defaults to `present`).
+      await loader.handle(sceneTarget('scene-a'));
+
+      expect(captured).toEqual([{ hasScreenshot: false, screenshot: undefined }]);
+    });
+
+    it('does not set `screenshot` for any non-screenshot mode', async () => {
+      // Walk the seven-mode allowlist (minus `screenshot`) and
+      // confirm that none of them produce `screenshot` on the
+      // runner input. Catching every non-screenshot mode
+      // discriminates against an over-broad fix that gated
+      // `screenshot` on `mode !== undefined` rather than
+      // `mode === 'screenshot'`. Capturing the per-iteration mode
+      // alongside the `'screenshot' in input` flag means the
+      // assertion failure identifies WHICH mode regressed, not
+      // just "some mode did."
+      const nonScreenshotModes = NAVIGATION_MODES.filter((m) => m !== 'screenshot');
+      const captured: { mode: NavigationMode; hasScreenshot: boolean }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      for (const mode of nonScreenshotModes) {
+        const runner: SceneTimelineRunner = (input) => {
+          captured.push({ mode, hasScreenshot: 'screenshot' in input });
+        };
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([sceneA]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          runTimeline: runner,
+        });
+        await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
+      }
+
+      // One entry per non-screenshot mode, each must have
+      // `hasScreenshot: false`. Building the expected array from
+      // `nonScreenshotModes` keeps the assertion in sync if the
+      // mode allowlist ever changes.
+      expect(captured).toEqual(nonScreenshotModes.map((mode) => ({ mode, hasScreenshot: false })));
+    });
+
+    it('exposes `ctx.mode === "screenshot"` to every lifecycle hook of the head scene under all locator shapes', async () => {
+      // Parallel to the PUL-F014 standalone, PUL-F015 loop,
+      // PUL-F016 paused, and PUL-F017 scrub seam tests. Future
+      // capture tooling that observes the runtime reads `ctx.mode`
+      // (or the equivalent stage seam) to decide its own behavior;
+      // this test pins the seam end to end across all four locator
+      // shapes that can appear under `mode=screenshot`.
+      const seen: { phase: string; locatorKind: string; mode: unknown }[] = [];
+      const recordMode =
+        (phase: string, locatorKind: string) =>
+        (ctx: unknown): unknown => {
+          seen.push({ phase, locatorKind, mode: (ctx as { mode?: NavigationMode }).mode });
+          return null;
+        };
+      const makeScene = (locatorKind: string): SceneModule =>
+        buildScene({
+          id: 'scene-a',
+          create: recordMode('create', locatorKind),
+          timeline: recordMode('timeline', locatorKind) as SceneModule['timeline'],
+          cleanup: recordMode('cleanup', locatorKind),
+        });
+      const stage = buildStage();
+      const buildLoader = (sceneId: string, locatorKind: string) =>
+        createSceneLoader({
+          scenes: createSceneRegistry([makeScene(locatorKind)]),
+          compositions: createCompositionRegistry([{ id: 'full-talk', manifest: [sceneId] }]),
+          stage: stage.element,
+          buildCtx: (mode) => ({ stage: stage.element, mode }),
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+        });
+
+      await buildLoader('scene-a', 'scene').handle(screenshotSceneTarget('scene-a'));
+      await buildLoader('scene-a', 'composition').handle(screenshotCompositionTarget('full-talk'));
+      await buildLoader('scene-a', 'composition-scene').handle(
+        screenshotCompositionSceneTarget('full-talk', 'scene-a'),
+      );
+      await buildLoader('scene-a', 'composition-index').handle(
+        screenshotCompositionIndexTarget('full-talk', 0),
+      );
+
+      // 3 hooks per navigation × 4 locator shapes = 12 entries;
+      // every single one must carry `screenshot`.
+      expect(seen).toHaveLength(12);
+      for (const entry of seen) {
+        expect(entry.mode).toBe('screenshot');
+      }
+    });
+
+    it('forwards `beat` to the head scene runner alongside `screenshot` under `mode=screenshot`, and surfaces missing-beat as a non-fatal diagnostic', async () => {
+      // PUL-F018 explicitly says "at the addressed beat (or first
+      // frame if no beat)," so a URL like
+      // `?scene=x&beat=midpoint&mode=screenshot` must deliver both
+      // `beat` and `screenshot` to the runner. Unlike `mode=paused`
+      // (ADR-019: "first frame wins"), screenshot HONORS the beat
+      // as the addressed-frame anchor; the runner seeks to the
+      // beat and then freezes. A regression that dropped `beat`
+      // when `mode=screenshot` is set would silently break the
+      // natural deterministic-frame-capture-at-named-beat path
+      // PUL-F018 names directly.
+      const captured: {
+        sceneId: string;
+        beat: string | undefined;
+        screenshot: 'capture' | undefined;
+      }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({
+          sceneId: input.scene.id,
+          beat: input.beat,
+          screenshot: input.screenshot,
+        });
+        if (input.beat !== undefined && input.onBeatMissing !== undefined) {
+          input.onBeatMissing();
+        }
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'screenshot',
+        beat: 'midpoint',
+      });
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', beat: 'midpoint', screenshot: 'capture' }]);
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain('beat positioning failed');
+      expect((errors[0] as Error).message).toContain('"midpoint"');
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBeDefined();
+    });
+
+    it('writes no `data-pulsar-mode-*` suppression attribute on the stage under `mode=screenshot`', async () => {
+      // Mirrors ADR-016 / ADR-017 / ADR-018 / ADR-019 / ADR-020
+      // invariant. PUL-F018 forbids the loader from preemptively
+      // writing a stage attribute for screenshot mode; runner-side
+      // or future-tooling-side signaling lives at those surfaces,
+      // not at the loader.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(screenshotSceneTarget('scene-a'));
+
+      const modeAttrs = Array.from(stage.attrs.keys()).filter((name) =>
+        name.startsWith('data-pulsar-mode-'),
+      );
+      expect(modeAttrs).toEqual([]);
+    });
+
+    it('writes both `data-pulsar-scene-target` and `data-pulsar-composition-target` for a composition target under `mode=screenshot` (preserves observability of what the URL addressed)', async () => {
+      // The stage attrs communicate "what was addressed," not "what
+      // ran." Truncation drops following entries from execution
+      // but does not drop the composition id from the stage attrs
+      // — mirrors the standalone / loop / paused / scrub
+      // invariant.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(screenshotCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-b');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+    });
+
+    it('surfaces composition-not-registered as a navigation error under `mode=screenshot` (no silent fallback)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(screenshotCompositionTarget('not-registered'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'composition "not-registered" is not registered',
+      );
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBeDefined();
+    });
+
+    it('surfaces composition-member error under `mode=screenshot` for an unknown scene in `composition+scene`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneZ = buildScene({ id: 'scene-z' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneZ]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(screenshotCompositionSceneTarget('full-talk', 'scene-z'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'scene "scene-z" is not a member of composition "full-talk"',
+      );
+    });
+
+    it('surfaces index-out-of-range under `mode=screenshot`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(screenshotCompositionIndexTarget('full-talk', 5));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain('index 5 is out of range');
+    });
+
+    it("preserves the addressed head entry's `range` and `behavior` overrides on the runner input under `mode=screenshot` (composition+index with object-form entry)", async () => {
+      // PUL-F018 / ADR-021: screenshot truncates the validated
+      // composition slice to the addressed head and forwards
+      // `screenshot` to that head's runner input. The slice is
+      // TRUNCATED rather than flattened — a flat `{ scene }` would
+      // lose object-form `range` / `behavior` overrides on the
+      // head entry, turning screenshot into direct-scene
+      // flattening (parity with ADR-017's standalone, ADR-018's
+      // loop, ADR-019's paused, and ADR-020's scrub invariant).
+      // This pins all three slots — `range`, `behavior`, and
+      // `screenshot` — through to the head runner, plus the
+      // truncation itself (the runner runs exactly once).
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const captured: {
+        sceneId: string;
+        range: unknown;
+        behavior: unknown;
+        screenshot: unknown;
+      }[] = [];
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({
+          sceneId: input.scene.id,
+          range: input.range,
+          behavior: input.behavior,
+          screenshot: input.screenshot,
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          {
+            id: 'full-talk',
+            manifest: [
+              'scene-a',
+              { id: 'scene-b', range: 'midpoint', behavior: { hold: true } },
+              'scene-c',
+            ],
+          },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(screenshotCompositionIndexTarget('full-talk', 1));
+
+      expect(captured).toEqual([
+        {
+          sceneId: 'scene-b',
+          range: 'midpoint',
+          behavior: { hold: true },
+          screenshot: 'capture',
+        },
+      ]);
+    });
+  });
 });

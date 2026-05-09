@@ -9,6 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/021-workbench-mode-screenshot.md` and
+  `docs/design/pul-f018-screenshot-mode-preflight.md` — record the
+  PUL-F018 contract layer for `mode=screenshot`. Single-scene
+  execution at the addressed head (parallel to `standalone`,
+  `loop`, `paused`, and `scrub`); a runner-side capture-bundle
+  hint (`screenshot: 'capture'`) for runners that own the timeline,
+  audio, and randomness paths to deliver the four-axis bundle —
+  frame freeze at `input.beat` (or 0), no animation in progress,
+  all audio suppressed, deterministic randomness — under
+  screenshot capture. Beat is honored as the captured-frame anchor
+  (unlike `mode=paused` where ADR-019 records "first frame wins"),
+  matching PUL-F018's "at the addressed beat (or first frame if no
+  beat)." See ADR-021 for the URL contract, the runner conformance
+  bar, the single-scene scope rationale, the bundle-vs-fragmented-
+  fields rationale, and the DRAFT → ACTIVE transition criteria.
+  Indexed in `docs/adrs/README.md`.
+- `src/runtime/composition-resolver.ts` —
+  `SceneTimelineRunInput` gains optional
+  `screenshot?: 'capture'` and `ResolveCompositionOptions` gains
+  optional `headScreenshot?: 'capture'`. The resolver forwards
+  `headScreenshot` to plan[0]'s run input only (head-only,
+  parallel to `headBeat`, `headRepeat`, `headHold`, and
+  `headCueGate`); subsequent scenes never receive `screenshot`.
+  Literal-typed union for future variant extension.
+- `src/runtime/scene-navigation.ts` —
+  `LoadSceneNavigationTargetOptions` gains optional
+  `screenshot?: 'capture'`; `loadSceneNavigationTarget()` forwards
+  it to `resolveComposition` as `headScreenshot`. The bridge
+  truncates a composition slice to its addressed head when
+  `screenshot` is supplied (the `truncateToHead` predicate widens
+  to fire when ANY of `repeat` / `hold` / `cueGate` / `screenshot`
+  is supplied), layered with the loader's `applySingleSceneSlice`.
+- `src/runtime/scene-loader.ts` — when
+  `effectiveMode(target) === 'screenshot'`, the loader passes
+  `screenshot: 'capture'` through the bridge; non-screenshot modes
+  leave the key absent (key-presence semantics). The single-scene-
+  execution helper that landed for `standalone`, `loop`, `paused`,
+  and `scrub` is widened to include `screenshot`.
+- `src/main.ts` — placeholder timeline runner docstring
+  acknowledges `input.screenshot`. The placeholder has no real
+  timeline, no audio engine, and no scene-side randomness, so it
+  vacuously satisfies the bundle (no animation runs, no audio
+  fires, no random source exists).
+- `tests/runtime/composition-resolver.test.ts`,
+  `tests/runtime/scene-navigation.test.ts`, and
+  `tests/runtime/scene-loader.test.ts` — new
+  `'... screenshot-mode … capture-hint … forwarding (PUL-F018)'`
+  describe blocks pinning the resolver, bridge, and loader
+  behavior: head-only delivery, key-presence semantics, no
+  contamination under non-screenshot modes, slice truncation,
+  cleanup-once, the `ctx.mode === 'screenshot'` seam across all
+  four locator shapes, beat / screenshot independence (and
+  beat-honoring under screenshot), composition validation
+  invariants, stage attribute behavior, and `range` / `behavior`
+  preservation through the truncated slice.
+
+PUL-F018 stays DRAFT after this PR; the issue ↔ requirement link
+is `DOCUMENTS` per the ADR-016 / ADR-017 / ADR-018 / ADR-019 /
+ADR-020 precedent. ACTIVE transitions when ADR-003's GSAP runner
+honoring `input.screenshot` + ADR-004's audio engine producing
+silence under screenshot + a deterministic-randomness convention
+all land with end-to-end tests (see ADR-021).
 - `docs/adrs/020-workbench-mode-scrub.md` and
   `docs/design/pul-f017-scrub-mode-preflight.md` — record the
   PUL-F017 contract layer for `mode=scrub`. Single-scene execution
