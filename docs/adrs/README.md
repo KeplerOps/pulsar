@@ -44,3 +44,4 @@ Each ADR includes:
 | [016](016-workbench-mode-present.md) | Workbench Mode `present` — Contract Boundary and Adapter Seams | Accepted |
 | [017](017-workbench-mode-standalone.md) | Workbench Mode `standalone` — Single-Scene Execution at the Loader | Accepted |
 | [018](018-workbench-mode-loop.md) | Workbench Mode `loop` — Runner Repeat Hint at the Loader/Runner Seam | Accepted |
+| [019](019-workbench-mode-paused.md) | Workbench Mode `paused` — Runner Hold-at-First-Frame Hint at the Loader/Runner Seam | Accepted |

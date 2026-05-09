@@ -86,6 +86,25 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // uses GSAP's native repeat (e.g. `timeline.repeat(-1)`); the
 // placeholder's no-op is the correct stand-in until then.
 //
+// PUL-F016 / ADR-019: when the URL carries `mode=paused` the loader
+// sets `input.hold = 'first-frame'`. The placeholder ignores the
+// hint — it has no real timeline to advance, and parking until abort
+// vacuously satisfies "hold at first frame without advancing"
+// because no frame ever advances. The future GSAP runner (ADR-003)
+// reads the hint, seeks to time 0, calls `timeline.pause()`, AND
+// keeps its returned promise pending until the per-navigation
+// `AbortSignal` fires. The pending-until-abort part is structurally
+// load-bearing: `resolveComposition()` awaits `runTimeline()` and
+// then runs `cleanup(ctx)`, so a runner that does `seek(0)` +
+// `pause()` and returns synchronously would unmount the scene one
+// turn after mount, contradicting the requirement's "hold." The
+// placeholder already parks until abort, so it models the correct
+// shape; the GSAP runner's contract is to keep doing so under
+// `hold` even after issuing the pause. ADR-019 records the
+// runner-side policy that `hold` wins over `beat` and `repeat`
+// when multiple are set on the same input — paused is a
+// layout/styling-inspection mode, not a transport state.
+//
 // Abort ordering: the abort check runs BEFORE the missing-beat
 // diagnostic so a navigation that was superseded between
 // `scene.timeline(ctx)` resolution and the runner's first turn does

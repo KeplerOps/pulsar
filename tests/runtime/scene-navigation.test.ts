@@ -1042,4 +1042,170 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       expect(seen).toEqual([{ beat: 'hook', repeat: 'until-aborted' }]);
     });
   });
+
+  describe('URL paused-mode hold forwarding (PUL-F016)', () => {
+    // ADR-019: under `mode=paused` the runner mounts the addressed
+    // scene and holds it at its first frame without advancing the
+    // timeline. The bridge's only job is to forward the `hold` option
+    // from the loader to the resolver as `headHold`. The resolver
+    // scopes delivery to the head scene's run input only —
+    // hold-at-first-frame is the runner's contract.
+
+    it('forwards `hold` to the runner for a single-scene target', async () => {
+      const seen: { hold?: 'first-frame' }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { hold?: 'first-frame' } = {};
+          if ('hold' in input) captured.hold = input.hold;
+          seen.push(captured);
+        },
+        hold: 'first-frame',
+      });
+
+      expect(seen).toEqual([{ hold: 'first-frame' }]);
+    });
+
+    it('truncates a composition slice to the addressed head when `hold` is supplied — structural defense against runner non-conformance', async () => {
+      // PUL-F016 / ADR-019: under `hold: 'first-frame'` the head's
+      // timeline does not advance — by definition following
+      // composition entries cannot run. The bridge truncates the
+      // slice to a single entry as a structural defense so a runner
+      // that ignores `input.hold` (or returns synchronously by
+      // mistake) cannot silently degrade paused-mode navigation into
+      // normal composition playback. This is layered with the
+      // loader's `applySingleSceneSlice` so direct bridge callers —
+      // outside the loader path — get the same guarantee. Mirrors
+      // the layered defense ADR-018 records for `repeat`.
+      const seen: { id: string; hold: 'first-frame' | undefined }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push({ id: input.scene.id, hold: input.hold });
+        },
+        hold: 'first-frame',
+      });
+
+      // Only the head ran; the tail (`middle`) was structurally
+      // dropped. A regression that omitted bridge-level truncation
+      // under `hold` would observe `middle` as a second runner entry
+      // here.
+      expect(seen).toEqual([{ id: 'intro', hold: 'first-frame' }]);
+    });
+
+    it('does not truncate a composition slice when `hold` is absent — non-paused navigations run the full slice', async () => {
+      // The structural defense fires only under `hold` (or `repeat`).
+      // Composition navigation under any non-paused, non-loop mode
+      // must still run every entry — a regression that always
+      // truncated would silently break normal composition playback.
+      const seen: string[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene.id);
+        },
+      });
+
+      expect(seen).toEqual(['intro', 'middle']);
+    });
+
+    it('does not forward `hold` when the option is omitted', async () => {
+      const holdPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          holdPresence.push('hold' in input);
+        },
+      });
+
+      expect(holdPresence).toEqual([false]);
+    });
+
+    it('forwards `hold`, `beat`, and `repeat` independently — all three reach the head without coupling', async () => {
+      // The bridge plumbs three independent head-only forwardings. A
+      // regression that paired them — e.g. dropping `hold` when
+      // `repeat` is also supplied, or vice versa — would break valid
+      // URL combinations. Note that `mode=paused` and `mode=loop` are
+      // mutually exclusive at the URL boundary (mode is a single
+      // field), but a programmatic caller can supply both options to
+      // the bridge and both must reach the runner so the runner
+      // policy decides.
+      const seen: {
+        beat?: string;
+        hold?: 'first-frame';
+        repeat?: 'until-aborted';
+      }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: {
+            beat?: string;
+            hold?: 'first-frame';
+            repeat?: 'until-aborted';
+          } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          if ('hold' in input) captured.hold = input.hold;
+          if ('repeat' in input) captured.repeat = input.repeat;
+          seen.push(captured);
+        },
+        beat: 'hook',
+        onBeatMissing: () => undefined,
+        hold: 'first-frame',
+        repeat: 'until-aborted',
+      });
+
+      expect(seen).toEqual([{ beat: 'hook', hold: 'first-frame', repeat: 'until-aborted' }]);
+    });
+  });
 });
