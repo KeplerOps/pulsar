@@ -140,6 +140,15 @@ export interface LoadSceneNavigationTargetOptions {
    * violated rather than letting the diagnostic vanish.
    */
   readonly onBeatMissing?: () => void;
+  /**
+   * URL loop-mode repeat hint (PUL-F015 / ADR-018) the runner uses to
+   * decide whether to restart the addressed scene's timeline on
+   * completion. Forwarded to {@link resolveComposition} as `headRepeat`
+   * — the resolver scopes delivery to the head scene's run input only,
+   * so following composition entries never receive `repeat`. Absent
+   * when the navigation target had no `mode=loop` parameter.
+   */
+  readonly repeat?: 'until-aborted';
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -275,6 +284,46 @@ function resolveCompositionAndIndex(
 }
 
 /**
+ * PUL-F015 / ADR-018 bridge-level structural defense for loop-mode.
+ * When a caller supplies `repeat` alongside a composition slice, the
+ * head's timeline restarts on completion — by definition the head's
+ * timeline never naturally completes, so following composition entries
+ * cannot run. Truncating the slice at the bridge guarantees that
+ * structural promise without depending on the runner's adapter
+ * conformance to `input.repeat`. A direct bridge caller (test harness,
+ * future export pipeline, etc.) gets the same guarantee the loader's
+ * `applySingleSceneSlice` provides on the loader→bridge path; the two
+ * truncations are idempotent (truncating a single-entry slice is a
+ * no-op).
+ *
+ * Pure function — no closure captures. Returns the input unchanged
+ * when `repeat` is absent, when there is no composition slice, or
+ * when the slice is already empty (the bridge would surface that as
+ * a navigation error elsewhere).
+ */
+function truncateForRepeat(
+  target: SceneNavigationTarget,
+  repeat: 'until-aborted' | undefined,
+): SceneNavigationTarget {
+  if (repeat === undefined || target.composition === undefined) {
+    return target;
+  }
+  const headEntry = target.composition.manifestSlice[0];
+  const headScene = target.composition.sceneSlice[0];
+  if (headEntry === undefined || headScene === undefined) {
+    return target;
+  }
+  return {
+    scene: target.scene,
+    composition: {
+      id: target.composition.id,
+      manifestSlice: Object.freeze([headEntry]),
+      sceneSlice: Object.freeze([headScene]),
+    },
+  };
+}
+
+/**
  * Resolves a {@link NavigationTarget} (from PUL-F007's parser) against
  * the runtime registries and returns a {@link SceneNavigationTarget}
  * the bridge can run, or `null` when the locator is `kind: 'none'`
@@ -362,15 +411,29 @@ export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
-  const composition = target.composition;
+  // PUL-F015 / ADR-018: under `repeat: 'until-aborted'` the addressed
+  // scene's timeline restarts on completion — by definition the head's
+  // timeline never naturally completes, so following composition
+  // entries cannot run. Truncating the slice at the bridge layer makes
+  // "no following entries run" a structural guarantee that does not
+  // depend on the runner honoring `input.repeat` (codex pre-push
+  // review): a runner bug or no-op runner under `repeat` MUST NOT
+  // silently degrade into normal composition playback. The truncation
+  // is layered with the loader's `applySingleSceneSlice` (which already
+  // truncates for `mode=standalone` and `mode=loop`) so direct bridge
+  // callers — outside the loader path — still benefit from the
+  // structural guarantee. Truncating an already-single-entry slice is
+  // a no-op, so the layering is idempotent.
+  const effectiveTarget = truncateForRepeat(target, options.repeat);
+  const composition = effectiveTarget.composition;
   // Collapse the single-scene vs composition-slice paths into one
   // assignment so the two values cannot drift (e.g. picking
   // composition manifest with single-scene registry, or vice versa).
   let scenes: readonly SceneModule[];
   let manifest: CompositionManifest;
   if (composition === undefined) {
-    scenes = [target.scene];
-    manifest = [target.scene.id];
+    scenes = [effectiveTarget.scene];
+    manifest = [effectiveTarget.scene.id];
   } else {
     scenes = composition.sceneSlice;
     manifest = composition.manifestSlice;
@@ -416,5 +479,11 @@ export async function loadSceneNavigationTarget(
           headBeat: options.beat,
           ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
         }),
+    // `repeat` is independent of `beat` per ADR-018: a URL like
+    // `?scene=x&mode=loop` (no beat) and `?scene=x&beat=hook&mode=loop`
+    // (beat + loop) are both valid. Spread `headRepeat` only when the
+    // caller supplied it so a runner that branches on `'repeat' in
+    // input` sees an absent key rather than `undefined`.
+    ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
   });
 }
