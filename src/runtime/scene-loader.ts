@@ -63,7 +63,8 @@ export interface StageElement {
  *
  * `mode` exposes the effective workbench mode the runtime selected
  * for the current navigation (PUL-F012 / ADR-007). Scenes that need
- * mode-aware behavior — `screenshot` audio suppression, `loop`
+ * mode-aware behavior — `screenshot` capture-bundle (frame freeze,
+ * audio suppression, deterministic seed) per ADR-021, `loop`
  * indefinite repetition — read it here rather than re-implementing
  * mode detection. Per ADR-007 the runtime core is the dispatch
  * point; the field is set per navigation by {@link createSceneLoader}.
@@ -459,6 +460,20 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // here.
     const cueGate: 'monotonic-forward' | undefined =
       mode === 'scrub' ? 'monotonic-forward' : undefined;
+    // PUL-F018 / ADR-021: under `mode=screenshot` the runner renders
+    // the addressed scene at the addressed beat (or first frame),
+    // holds the timeline still, suppresses all audio, and sources
+    // any randomness from a deterministic seed. Same dispatch-point
+    // pattern as `repeat` / `hold` / `cueGate`: when
+    // `effectiveMode === 'screenshot'`, pass `screenshot: 'capture'`
+    // through the bridge. The bridge and resolver scope delivery to
+    // the head scene only — following composition entries do not
+    // see `screenshot`, because the slice is truncated upstream and
+    // the captured frame belongs to one scene. `mode=screenshot`,
+    // `mode=scrub`, `mode=loop`, and `mode=paused` are mutually
+    // exclusive at the URL boundary, so at most one of `repeat` /
+    // `hold` / `cueGate` / `screenshot` is non-undefined here.
+    const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -471,6 +486,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(repeat === undefined ? {} : { repeat }),
         ...(hold === undefined ? {} : { hold }),
         ...(cueGate === undefined ? {} : { cueGate }),
+        ...(screenshot === undefined ? {} : { screenshot }),
       }),
       silent: false,
     };
@@ -509,13 +525,26 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * one timeline of controls, one head scene; following composition
    * entries cannot be part of the interactive scrub UX.
    *
-   * All four modes share the same slice-shape transform — they
+   * PUL-F018 / ADR-021 (`screenshot`): the runtime renders the
+   * addressed scene at the addressed beat (or first frame) with
+   * the timeline held still, all audio suppressed, and any
+   * randomness sourced from a deterministic seed. Truncating the
+   * slice makes "no following entries run" a structural guarantee
+   * even if the runner ignores the `screenshot: 'capture'` hint —
+   * a runner bug or no-op runner under `mode=screenshot` MUST NOT
+   * silently degrade into normal composition playback. Screenshot
+   * is single-frame-capture by construction: one deterministic
+   * frame, one head scene; following composition entries cannot
+   * be part of a single-frame snapshot.
+   *
+   * All five modes share the same slice-shape transform — they
    * differ only in the head's runner-side semantic: standalone
    * plays normally, loop sets `input.repeat = 'until-aborted'`,
    * paused sets `input.hold = 'first-frame'`, scrub sets
-   * `input.cueGate = 'monotonic-forward'`. The shape transform is
-   * shared because the structural promise ("no following entries
-   * run") is identical.
+   * `input.cueGate = 'monotonic-forward'`, screenshot sets
+   * `input.screenshot = 'capture'`. The shape transform is shared
+   * because the structural promise ("no following entries run") is
+   * identical.
    *
    * The composition slice — already validated by
    * `resolveSceneNavigation` so unregistered compositions /
@@ -526,8 +555,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * `range` / `behavior` overrides (object-form entries per ADR-002
    * / ADR-011) reach the runner unchanged: a flat `{ scene }` would
    * lose them and turn the mode into direct-scene flattening,
-   * contradicting ADR-017 / ADR-018 / ADR-019 / ADR-020's "preserve
-   * head-entry overrides" contract.
+   * contradicting ADR-017 / ADR-018 / ADR-019 / ADR-020 / ADR-021's
+   * "preserve head-entry overrides" contract.
    *
    * Stage attrs (set by the caller before this transform) reflect
    * what the URL ADDRESSED, not what runs:
@@ -543,7 +572,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   ): SceneNavigationTarget => {
     const mode = effectiveMode(target);
     if (
-      (mode !== 'standalone' && mode !== 'loop' && mode !== 'paused' && mode !== 'scrub') ||
+      (mode !== 'standalone' &&
+        mode !== 'loop' &&
+        mode !== 'paused' &&
+        mode !== 'scrub' &&
+        mode !== 'screenshot') ||
       resolved.composition === undefined
     ) {
       return resolved;

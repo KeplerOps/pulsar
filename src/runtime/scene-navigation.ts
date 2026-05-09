@@ -169,6 +169,30 @@ export interface LoadSceneNavigationTargetOptions {
    * parameter.
    */
   readonly cueGate?: 'monotonic-forward';
+  /**
+   * URL screenshot-mode capture-bundle hint (PUL-F018 / ADR-021) the
+   * runner uses to decide whether to render the addressed scene at
+   * the addressed beat (or first frame), hold the timeline still,
+   * and suppress all audio. Forwarded to {@link resolveComposition}
+   * as `headScreenshot` — the resolver scopes delivery to the head
+   * scene's run input only, so following composition entries never
+   * receive `screenshot`. Absent when the navigation target had no
+   * `mode=screenshot` parameter.
+   *
+   * Direct bridge callers (test harnesses, future export pipelines)
+   * supplying `screenshot: 'capture'` MUST also build {@link ctx}
+   * with `mode: 'screenshot'` — PUL-F018's "any randomness sourced
+   * from a deterministic seed" clause flows through the scene-side
+   * `ctx.mode === 'screenshot'` seam (PUL-F012 / ADR-007), not
+   * through the runner input, because scene `create(ctx)` and
+   * `timeline(ctx)` run before this option reaches the runner. The
+   * loader path always pairs the two seams from the same parsed
+   * `target.mode`, so production navigation is coherent by
+   * construction; the contract here is for direct bridge callers.
+   * The bridge does not (and cannot) inspect ctx to enforce
+   * coherence — ctx is opaque per ADR-011.
+   */
+  readonly screenshot?: 'capture';
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -319,14 +343,19 @@ function resolveCompositionAndIndex(
  *   scrub-controls UI; following composition entries cannot run
  *   because there is no monotonic-forward completion to hand off
  *   on.
+ * - PUL-F018 / ADR-021 (`mode=screenshot`, `screenshot: 'capture'`):
+ *   the runtime renders one deterministic frame; the head's
+ *   timeline is held at the addressed beat (or first frame) and
+ *   does not advance, so following composition entries cannot run.
  *
  * Truncating the slice at the bridge guarantees that structural
  * promise without depending on the runner's adapter conformance to
- * `input.repeat` / `input.hold` / `input.cueGate`. A direct bridge
- * caller (test harness, future export pipeline, etc.) gets the same
- * guarantee the loader's `applySingleSceneSlice` provides on the
- * loader→bridge path; the two truncations are idempotent (truncating
- * a single-entry slice is a no-op).
+ * `input.repeat` / `input.hold` / `input.cueGate` /
+ * `input.screenshot`. A direct bridge caller (test harness, future
+ * export pipeline, etc.) gets the same guarantee the loader's
+ * `applySingleSceneSlice` provides on the loader→bridge path; the
+ * two truncations are idempotent (truncating a single-entry slice
+ * is a no-op).
  *
  * Pure function — no closure captures. Returns the input unchanged
  * when `headOnly` is `false`, when there is no composition slice, or
@@ -440,28 +469,34 @@ export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
-  // PUL-F015 / ADR-018 + PUL-F016 / ADR-019 + PUL-F017 / ADR-020:
-  // under `repeat: 'until-aborted'` the head's timeline restarts on
-  // completion (loop), under `hold: 'first-frame'` the head's
-  // timeline never advances (paused), and under
-  // `cueGate: 'monotonic-forward'` the head's timeline is driven
-  // interactively by the future scrub-controls UI (scrub). All three
-  // modes share the same structural promise: following composition
-  // entries cannot run. Truncating the slice at the bridge layer
-  // makes "no following entries run" a structural guarantee that
-  // does not depend on the runner honoring `input.repeat` /
-  // `input.hold` / `input.cueGate` (codex pre-push review): a
-  // runner bug or no-op runner under any of the three modes MUST
+  // PUL-F015 / ADR-018 + PUL-F016 / ADR-019 + PUL-F017 / ADR-020 +
+  // PUL-F018 / ADR-021: under `repeat: 'until-aborted'` the head's
+  // timeline restarts on completion (loop), under
+  // `hold: 'first-frame'` the head's timeline never advances
+  // (paused), under `cueGate: 'monotonic-forward'` the head's
+  // timeline is driven interactively by the future scrub-controls UI
+  // (scrub), and under `screenshot: 'capture'` the head's timeline
+  // is held at the addressed beat (or first frame) for a
+  // deterministic frame capture (screenshot). All four modes share
+  // the same structural promise: following composition entries
+  // cannot run. Truncating the slice at the bridge layer makes "no
+  // following entries run" a structural guarantee that does not
+  // depend on the runner honoring `input.repeat` / `input.hold` /
+  // `input.cueGate` / `input.screenshot` (codex pre-push review):
+  // a runner bug or no-op runner under any of the four modes MUST
   // NOT silently degrade into normal composition playback. The
   // truncation is layered with the loader's `applySingleSceneSlice`
   // (which already truncates for `mode=standalone`, `mode=loop`,
-  // `mode=paused`, and `mode=scrub`) so direct bridge callers —
-  // outside the loader path — still benefit from the structural
-  // guarantee. Truncating an already-single-entry slice is a no-op,
-  // so the layering is idempotent.
+  // `mode=paused`, `mode=scrub`, and `mode=screenshot`) so direct
+  // bridge callers — outside the loader path — still benefit from
+  // the structural guarantee. Truncating an already-single-entry
+  // slice is a no-op, so the layering is idempotent.
   const effectiveTarget = truncateToHead(
     target,
-    options.repeat !== undefined || options.hold !== undefined || options.cueGate !== undefined,
+    options.repeat !== undefined ||
+      options.hold !== undefined ||
+      options.cueGate !== undefined ||
+      options.screenshot !== undefined,
   );
   const composition = effectiveTarget.composition;
   // Collapse the single-scene vs composition-slice paths into one
@@ -539,5 +574,15 @@ export async function loadSceneNavigationTarget(
     // supplied it so a runner that branches on `'cueGate' in input`
     // sees an absent key rather than `undefined`.
     ...(options.cueGate === undefined ? {} : { headCueGate: options.cueGate }),
+    // `screenshot` is independent of `beat`, `repeat`, `hold`, and
+    // `cueGate` per ADR-021: a URL like `?scene=x&mode=screenshot`
+    // (no beat) is valid (renders at first frame), and so is
+    // `?scene=x&beat=midpoint&mode=screenshot` (the natural
+    // deterministic-frame-capture-at-named-beat path PUL-F018
+    // names directly). Spread `headScreenshot` only when the
+    // caller supplied it so a runner that branches on
+    // `'screenshot' in input` sees an absent key rather than
+    // `undefined`.
+    ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
   });
 }

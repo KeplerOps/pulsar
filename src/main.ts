@@ -118,6 +118,21 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // reads `ctx.mode === 'scrub'` (the seam), not `input.cueGate`;
 // the controls UI is a separate future surface beyond the runner.
 //
+// PUL-F018 / ADR-021: when the URL carries `mode=screenshot` the
+// loader sets `input.screenshot = 'capture'`. The placeholder
+// ignores the hint — it has no real timeline to seek-and-freeze,
+// no audio engine to suppress, and no scene-side randomness to
+// seed, and parking until abort vacuously satisfies "render at the
+// addressed frame with no animation, all audio suppressed, and
+// deterministic randomness" because none of those subsystems exist
+// yet. The future GSAP runner (ADR-003) reads the hint and seeks
+// to `input.beat` (or 0) before calling `timeline.pause()`;
+// ADR-004's audio engine reads the hint and produces no audio
+// output; a deterministic-randomness convention plumbed alongside
+// will let scenes source any random values from a stable seed so
+// captured frames are reproducible across runs. The placeholder's
+// no-op is the correct stand-in until then.
+//
 // Abort ordering: the abort check runs BEFORE the missing-beat
 // diagnostic so a navigation that was superseded between
 // `scene.timeline(ctx)` resolution and the runner's first turn does

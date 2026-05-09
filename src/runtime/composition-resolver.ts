@@ -230,6 +230,63 @@ export interface SceneTimelineRunInput {
    * and the runner's policy decides which wins.
    */
   readonly cueGate?: 'monotonic-forward';
+  /**
+   * Screenshot capture-bundle hint for the head scene's timeline
+   * (PUL-F018 / ADR-021). When `'capture'`, the runner MUST render
+   * the addressed scene at the addressed frame — `input.beat` if
+   * present, else frame 0 — and HOLD there (no animation in
+   * progress); the runner MUST also suppress all audio output it
+   * controls. These are the runner-side axes of PUL-F018's bundle:
+   * frame freeze at beat-or-zero, no animation, audio suppression
+   * via the runner's audio adapter (e.g. ADR-004's future Howler
+   * integration). Both are runner-input concerns because they
+   * happen on or after the runner sees this bundle.
+   *
+   * Scene-side concerns — specifically PUL-F018's "any randomness
+   * sourced from a deterministic seed" clause — are NOT delivered
+   * through this field. Scene `create(ctx)` and `timeline(ctx)`
+   * run BEFORE the runner ever sees `input.screenshot`, so a flag
+   * on the runner input cannot gate randomness consumed during
+   * those phases. Scene-side determinism flows through the
+   * existing PUL-F012 / ADR-007 `ctx.mode === 'screenshot'` seam
+   * (available from `create(ctx)` forward) plus a future
+   * deterministic-seed surface on `ctx` (e.g. `ctx.seed`) the
+   * scene reads. The runner-input `behavior` field is NOT this
+   * surface — `behavior` is a per-entry manifest override
+   * (ADR-002 / ADR-011) consumed by the runner at timeline
+   * execution time, not by `create(ctx)`. ADR-021 records the
+   * split.
+   *
+   * Only present on the run input for the FIRST scene of the
+   * resolved composition slice — subsequent scenes never receive
+   * `screenshot` because under screenshot the slice is truncated
+   * upstream and the captured frame belongs to one scene. Absent
+   * when the navigation target had no `mode=screenshot` parameter.
+   *
+   * Discriminated by literal type so future capture semantics (e.g.
+   * `'capture-still'` vs a future multi-frame variant) can extend
+   * the union without breaking existing runners — a runner that
+   * ignores the field, or that only recognizes `'capture'`,
+   * gracefully degrades to no-capture behavior. The placeholder
+   * timeline runner (which has no real timeline and no audio
+   * engine) ignores the field today and vacuously satisfies the
+   * runner-side axes because none of the affected subsystems are
+   * wired. ADR-003's GSAP runner + ADR-004's Howler integration
+   * deliver the active runner-side behavior; scene-side
+   * determinism is delivered through `ctx.mode` + a future seed
+   * surface. The resolver does not interpret the value.
+   *
+   * `screenshot`, `beat`, `repeat`, `hold`, and `cueGate` are
+   * independent fields on the runner input. The URL grammar makes
+   * the parent modes (`screenshot`, `loop`, `paused`, `scrub`)
+   * mutually exclusive (mode is a single field), but a programmatic
+   * caller could supply more than one and the runner's policy
+   * decides which wins. `beat` under `mode=screenshot` IS honored as
+   * the addressed-frame anchor (PUL-F018 explicitly calls for "at
+   * the addressed beat"), unlike `mode=paused` where ADR-019 records
+   * "first frame wins."
+   */
+  readonly screenshot?: 'capture';
 }
 
 /**
@@ -347,6 +404,37 @@ export interface ResolveCompositionOptions {
    * where mode dispatch lives).
    */
   readonly headCueGate?: 'monotonic-forward';
+  /**
+   * URL screenshot-mode capture hint (PUL-F018 / ADR-021) to forward
+   * to the FIRST scene's run input as
+   * {@link SceneTimelineRunInput.screenshot}. Subsequent scenes
+   * never receive a screenshot hint — under `mode=screenshot` the
+   * slice is truncated upstream so the captured frame belongs to
+   * one scene; following composition entries cannot run because the
+   * runtime is rendering a single deterministic frame. Absent when
+   * the navigation target had no `mode=screenshot` parameter.
+   *
+   * The resolver does not interpret the value — honoring the
+   * runner-side axes of the capture bundle (frame freeze at
+   * beat-or-zero, no animation, all audio suppressed) is the
+   * runner's contract per ADR-021. The fourth axis of PUL-F018's
+   * statement — "any randomness sourced from a deterministic
+   * seed" — is NOT the runner's contract via this field; it
+   * flows through the scene-side `ctx.mode === 'screenshot'` seam
+   * (PUL-F012 / ADR-007) plus a future scene-side seed surface
+   * on `ctx`, because scene `create(ctx)` and `timeline(ctx)`
+   * run BEFORE this field reaches the runner. A runner that
+   * ignores the field gracefully degrades (the placeholder runner
+   * today vacuously satisfies the runner-side axes because none
+   * of the affected subsystems exist; ADR-003's GSAP runner +
+   * ADR-004's audio engine deliver active runner-side behavior
+   * when they land; scene-side determinism is delivered through
+   * `ctx`). A regression that gated `headScreenshot` on an
+   * unrelated condition is pinned by the seam tests in
+   * `scene-loader.test.ts` against the loader boundary, where
+   * mode dispatch lives.
+   */
+  readonly headScreenshot?: 'capture';
 }
 
 /**
@@ -426,6 +514,7 @@ function buildRunInput(
   repeat: 'until-aborted' | undefined,
   hold: 'first-frame' | undefined,
   cueGate: 'monotonic-forward' | undefined,
+  screenshot: 'capture' | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -439,6 +528,7 @@ function buildRunInput(
   if (repeat !== undefined) input.repeat = repeat;
   if (hold !== undefined) input.hold = hold;
   if (cueGate !== undefined) input.cueGate = cueGate;
+  if (screenshot !== undefined) input.screenshot = screenshot;
   return input;
 }
 
@@ -507,6 +597,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     headRepeat,
     headHold,
     headCueGate,
+    headScreenshot,
   } = options;
 
   // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
@@ -545,6 +636,30 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // PUL-F011: `headBeat` / `onBeatMissing` (when supplied) are forwarded
   // to the FIRST scene's run input only. Subsequent scenes do not
   // receive them — ADR-015 scopes URL beat to the active head scene.
+  // Snapshot the resolved head-only forwardings once. Each is
+  // delivered to the run input of the FIRST plan step only —
+  // subsequent steps see `undefined` for every field. Bundling them
+  // in a single object keeps the per-iteration call site small and
+  // bounds `resolveComposition`'s cognitive complexity as more
+  // mode-specific head fields land (ADR-018 / ADR-019 / ADR-020 /
+  // ADR-021).
+  const headOnly = resolveHeadOnly({
+    headBeat,
+    onBeatMissing,
+    headRepeat,
+    headHold,
+    headCueGate,
+    headScreenshot,
+  });
+  const noHeadOnly: HeadOnlyFields = {
+    beat: undefined,
+    onBeatMissing: undefined,
+    repeat: undefined,
+    hold: undefined,
+    cueGate: undefined,
+    screenshot: undefined,
+  };
+
   let lastCompletedSceneId: string | undefined;
   for (const [index, step] of plan.entries()) {
     throwIfAborted(
@@ -558,45 +673,66 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
       signal,
       `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
     );
-    const isHead = index === 0;
-    // `onBeatMissing` is paired with `headBeat` per ADR-015. Drop the
-    // callback when no beat is supplied — otherwise the runner would
-    // see `input.onBeatMissing` with no `input.beat` to trigger it
-    // against, an impossible state per the documented contract.
-    const stepBeat = isHead ? headBeat : undefined;
-    const stepOnBeatMissing = stepBeat === undefined ? undefined : onBeatMissing;
-    // `headRepeat` is head-only per ADR-018: under `mode=loop` the
-    // head's timeline never naturally completes, so subsequent scenes
-    // cannot run. Forwarding repeat to non-head scenes would imply a
-    // following entry could itself loop, which contradicts the
-    // requirement's "the addressed scene's timeline" scoping.
-    const stepRepeat = isHead ? headRepeat : undefined;
-    // `headHold` is head-only per ADR-019: under `mode=paused` the
-    // head's timeline never advances, so subsequent scenes cannot
-    // run. Forwarding hold to non-head scenes would imply a
-    // following entry could itself be held at frame 0, which
-    // contradicts the requirement's "the addressed scene" scoping.
-    const stepHold = isHead ? headHold : undefined;
-    // `headCueGate` is head-only per ADR-020: under `mode=scrub` the
-    // slice is truncated upstream so the head's interactive timeline
-    // does not hand off to following composition entries. Forwarding
-    // the cue gate to non-head scenes would imply a following entry
-    // could itself run under scrub semantics, which contradicts the
-    // requirement's single-timeline-controls scoping.
-    const stepCueGate = isHead ? headCueGate : undefined;
-    await runScene(
-      step,
-      ctx,
-      runTimeline,
-      signal,
-      stepBeat,
-      stepOnBeatMissing,
-      stepRepeat,
-      stepHold,
-      stepCueGate,
-    );
+    const stepHeadOnly = index === 0 ? headOnly : noHeadOnly;
+    await runScene(step, ctx, runTimeline, signal, stepHeadOnly);
     lastCompletedSceneId = step.scene.id;
   }
+}
+
+/**
+ * The head-only forwardings the resolver hands to plan[0]'s run
+ * input. Every field is independently optional. Subsequent plan
+ * steps receive a struct with every field set to `undefined` so
+ * the runner sees absent keys (the same key-presence semantics
+ * ADR-015 / ADR-018 / ADR-019 / ADR-020 / ADR-021 record).
+ */
+interface HeadOnlyFields {
+  readonly beat: string | undefined;
+  readonly onBeatMissing: (() => void) | undefined;
+  readonly repeat: 'until-aborted' | undefined;
+  readonly hold: 'first-frame' | undefined;
+  readonly cueGate: 'monotonic-forward' | undefined;
+  readonly screenshot: 'capture' | undefined;
+}
+
+/**
+ * Map the caller-supplied resolver options to the head-only field
+ * struct. Pure function — extracted from `resolveComposition` so the
+ * latter stays within Sonar's cognitive-complexity budget as more
+ * mode-specific head fields land.
+ *
+ * `onBeatMissing` is paired with `headBeat` per ADR-015. Drop the
+ * callback when no beat is supplied — otherwise the runner would
+ * see `input.onBeatMissing` with no `input.beat` to trigger it
+ * against, an impossible state per the documented contract.
+ *
+ * `headRepeat` (ADR-018), `headHold` (ADR-019), `headCueGate`
+ * (ADR-020), and `headScreenshot` (ADR-021) are head-only because
+ * each mode's structural promise (no following entries run under
+ * `mode=loop` / `paused` / `scrub` / `screenshot`) means
+ * forwarding any of them to non-head scenes would imply a
+ * following entry could itself run under that mode's semantics,
+ * which contradicts the requirement scoping. The slice truncation
+ * at the loader / bridge enforces "no following entries run" as a
+ * structural defense; forwarding head-only here is the resolver's
+ * complementary scoping.
+ */
+function resolveHeadOnly(options: {
+  readonly headBeat: string | undefined;
+  readonly onBeatMissing: (() => void) | undefined;
+  readonly headRepeat: 'until-aborted' | undefined;
+  readonly headHold: 'first-frame' | undefined;
+  readonly headCueGate: 'monotonic-forward' | undefined;
+  readonly headScreenshot: 'capture' | undefined;
+}): HeadOnlyFields {
+  return {
+    beat: options.headBeat,
+    onBeatMissing: options.headBeat === undefined ? undefined : options.onBeatMissing,
+    repeat: options.headRepeat,
+    hold: options.headHold,
+    cueGate: options.headCueGate,
+    screenshot: options.headScreenshot,
+  };
 }
 
 /**
@@ -649,11 +785,7 @@ async function runScene(
   ctx: unknown,
   runTimeline: SceneTimelineRunner,
   signal: AbortSignal | undefined,
-  beat: string | undefined,
-  onBeatMissing: (() => void) | undefined,
-  repeat: 'until-aborted' | undefined,
-  hold: 'first-frame' | undefined,
-  cueGate: 'monotonic-forward' | undefined,
+  headOnly: HeadOnlyFields,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -672,7 +804,17 @@ async function runScene(
     // are unaffected.
     const timeline = await scene.timeline(ctx);
     await runTimeline(
-      buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat, hold, cueGate),
+      buildRunInput(
+        step,
+        timeline,
+        signal,
+        headOnly.beat,
+        headOnly.onBeatMissing,
+        headOnly.repeat,
+        headOnly.hold,
+        headOnly.cueGate,
+        headOnly.screenshot,
+      ),
     );
   } catch (err) {
     phaseFailed = true;
