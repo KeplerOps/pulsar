@@ -446,6 +446,19 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // boundary (mode is a single field), so at most one of `repeat` /
     // `hold` is non-undefined here.
     const hold: 'first-frame' | undefined = mode === 'paused' ? 'first-frame' : undefined;
+    // PUL-F017 / ADR-020: under `mode=scrub` the runner gates audio
+    // cues to monotonic forward playback only. Same dispatch-point
+    // pattern as `repeat` and `hold`: when `effectiveMode === 'scrub'`,
+    // pass `cueGate: 'monotonic-forward'` through the bridge. The
+    // bridge and resolver scope delivery to the head scene only —
+    // following composition entries do not see `cueGate`, because the
+    // slice is truncated upstream and the head's interactive timeline
+    // never hands off to following entries. `mode=scrub`, `mode=loop`,
+    // and `mode=paused` are mutually exclusive at the URL boundary,
+    // so at most one of `repeat` / `hold` / `cueGate` is non-undefined
+    // here.
+    const cueGate: 'monotonic-forward' | undefined =
+      mode === 'scrub' ? 'monotonic-forward' : undefined;
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -457,6 +470,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
         ...(repeat === undefined ? {} : { repeat }),
         ...(hold === undefined ? {} : { hold }),
+        ...(cueGate === undefined ? {} : { cueGate }),
       }),
       silent: false,
     };
@@ -484,11 +498,23 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * `mode=paused` MUST NOT silently degrade into normal composition
    * playback (parallel to the ADR-018 codex-review argument).
    *
-   * All three modes share the same slice-shape transform — they
+   * PUL-F017 / ADR-020 (`scrub`): the runtime displays timeline
+   * controls allowing the user to scrub forward, backward, and to
+   * named beats while audio cues fire only on monotonic forward
+   * playback. Truncating the slice makes "no following entries run"
+   * a structural guarantee even if the runner ignores the
+   * `cueGate: 'monotonic-forward'` hint — a runner bug or no-op
+   * runner under `mode=scrub` MUST NOT silently degrade into normal
+   * composition playback. Scrub is single-timeline by construction:
+   * one timeline of controls, one head scene; following composition
+   * entries cannot be part of the interactive scrub UX.
+   *
+   * All four modes share the same slice-shape transform — they
    * differ only in the head's runner-side semantic: standalone
    * plays normally, loop sets `input.repeat = 'until-aborted'`,
-   * paused sets `input.hold = 'first-frame'`. The shape transform
-   * is shared because the structural promise ("no following entries
+   * paused sets `input.hold = 'first-frame'`, scrub sets
+   * `input.cueGate = 'monotonic-forward'`. The shape transform is
+   * shared because the structural promise ("no following entries
    * run") is identical.
    *
    * The composition slice — already validated by
@@ -500,8 +526,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * `range` / `behavior` overrides (object-form entries per ADR-002
    * / ADR-011) reach the runner unchanged: a flat `{ scene }` would
    * lose them and turn the mode into direct-scene flattening,
-   * contradicting ADR-017 / ADR-018 / ADR-019's "preserve head-entry
-   * overrides" contract.
+   * contradicting ADR-017 / ADR-018 / ADR-019 / ADR-020's "preserve
+   * head-entry overrides" contract.
    *
    * Stage attrs (set by the caller before this transform) reflect
    * what the URL ADDRESSED, not what runs:
@@ -517,7 +543,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   ): SceneNavigationTarget => {
     const mode = effectiveMode(target);
     if (
-      (mode !== 'standalone' && mode !== 'loop' && mode !== 'paused') ||
+      (mode !== 'standalone' && mode !== 'loop' && mode !== 'paused' && mode !== 'scrub') ||
       resolved.composition === undefined
     ) {
       return resolved;

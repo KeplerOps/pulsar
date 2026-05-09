@@ -181,6 +181,55 @@ export interface SceneTimelineRunInput {
    * completes for the repeat to fire on.
    */
   readonly hold?: 'first-frame';
+  /**
+   * Cue-gate hint for the head scene's timeline (PUL-F017 / ADR-020).
+   * When `'monotonic-forward'`:
+   *
+   * - A runner that schedules audio cues MUST fire each cue only on
+   *   monotonic forward crossings of its trigger time. Backwards
+   *   scrub, jump-to-beat, hydration, and direct seek MUST NOT
+   *   produce cue-fire events. This is the runner-side enforcement
+   *   of PUL-F017's "audio cues SHALL fire only on monotonic
+   *   forward playback" SHALL — the runtime-level SHALL is
+   *   delivered by combining loader mode dispatch (`cueGate` set on
+   *   the head's run input under `mode=scrub`) + runner conformance
+   *   (this field's MUST).
+   * - A runner that does NOT have an audio-cue subsystem (e.g., the
+   *   placeholder timeline runner today; a future Node-side test
+   *   harness that never schedules audio) has no cues to gate and
+   *   trivially satisfies the gate. The placeholder runner's
+   *   "ignore the field" behavior is correct because there are no
+   *   cues to suppress.
+   *
+   * The hint also signals scrub-mode is active; the future
+   * scrub-controls UI surface drives the timeline's playhead through
+   * the runner's transport API while the runner consults
+   * `input.cueGate` to decide whether each cue's time crossing
+   * counts as monotonic-forward.
+   *
+   * Only present on the run input for the FIRST scene of the resolved
+   * composition slice — subsequent scenes never receive `cueGate`
+   * because under scrub the slice is truncated upstream and the
+   * head's interactive timeline never hands off to following
+   * entries. Absent when the navigation target had no `mode=scrub`
+   * parameter.
+   *
+   * Discriminated by literal type so future cue-gating semantics
+   * (e.g. an `'all-suppressed'` variant for deterministic frame
+   * capture under `mode=screenshot`) can extend the union without
+   * breaking audio-capable runners that only recognize the existing
+   * variant. A runner that recognizes a future variant it does not
+   * understand SHOULD log a warning and fall back to its strictest
+   * known gating policy (rather than silently dropping the gate).
+   * The resolver does not interpret the value.
+   *
+   * `cueGate`, `repeat`, and `hold` are independent fields on the
+   * runner input; the URL grammar makes their parent modes
+   * (`scrub`, `loop`, `paused`) mutually exclusive (mode is a single
+   * field), but a programmatic caller could supply more than one
+   * and the runner's policy decides which wins.
+   */
+  readonly cueGate?: 'monotonic-forward';
 }
 
 /**
@@ -281,6 +330,23 @@ export interface ResolveCompositionOptions {
    * the loader boundary, where mode dispatch lives).
    */
   readonly headHold?: 'first-frame';
+  /**
+   * URL scrub-mode cue-gate hint (PUL-F017 / ADR-020) to forward to
+   * the FIRST scene's run input as
+   * {@link SceneTimelineRunInput.cueGate}. Subsequent scenes never
+   * receive a cue-gate hint — under `mode=scrub` the slice is
+   * truncated upstream so the head's interactive timeline does not
+   * hand off to following composition entries. Absent when the
+   * navigation target had no `mode=scrub` parameter.
+   *
+   * The resolver does not interpret the value — honoring "audio
+   * cues fire only on monotonic forward playback" is the runner's
+   * contract per ADR-020. A runner that ignores the field
+   * gracefully degrades to no-gating (a regression the seam tests
+   * in `scene-loader.test.ts` pin against the loader boundary,
+   * where mode dispatch lives).
+   */
+  readonly headCueGate?: 'monotonic-forward';
 }
 
 /**
@@ -359,6 +425,7 @@ function buildRunInput(
   onBeatMissing: (() => void) | undefined,
   repeat: 'until-aborted' | undefined,
   hold: 'first-frame' | undefined,
+  cueGate: 'monotonic-forward' | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -371,6 +438,7 @@ function buildRunInput(
   if (onBeatMissing !== undefined) input.onBeatMissing = onBeatMissing;
   if (repeat !== undefined) input.repeat = repeat;
   if (hold !== undefined) input.hold = hold;
+  if (cueGate !== undefined) input.cueGate = cueGate;
   return input;
 }
 
@@ -438,6 +506,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     onBeatMissing,
     headRepeat,
     headHold,
+    headCueGate,
   } = options;
 
   // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
@@ -508,6 +577,13 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     // following entry could itself be held at frame 0, which
     // contradicts the requirement's "the addressed scene" scoping.
     const stepHold = isHead ? headHold : undefined;
+    // `headCueGate` is head-only per ADR-020: under `mode=scrub` the
+    // slice is truncated upstream so the head's interactive timeline
+    // does not hand off to following composition entries. Forwarding
+    // the cue gate to non-head scenes would imply a following entry
+    // could itself run under scrub semantics, which contradicts the
+    // requirement's single-timeline-controls scoping.
+    const stepCueGate = isHead ? headCueGate : undefined;
     await runScene(
       step,
       ctx,
@@ -517,6 +593,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
       stepOnBeatMissing,
       stepRepeat,
       stepHold,
+      stepCueGate,
     );
     lastCompletedSceneId = step.scene.id;
   }
@@ -576,6 +653,7 @@ async function runScene(
   onBeatMissing: (() => void) | undefined,
   repeat: 'until-aborted' | undefined,
   hold: 'first-frame' | undefined,
+  cueGate: 'monotonic-forward' | undefined,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -593,7 +671,9 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat, hold));
+    await runTimeline(
+      buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat, hold, cueGate),
+    );
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

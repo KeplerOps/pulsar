@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/020-workbench-mode-scrub.md` and
+  `docs/design/pul-f017-scrub-mode-preflight.md` — record the
+  PUL-F017 contract layer for `mode=scrub`. Single-scene execution
+  at the addressed head (parallel to `standalone`, `loop`, and
+  `paused`); a runner-side cue-gate hint
+  (`cueGate: 'monotonic-forward'`) for runners with an audio-cue
+  subsystem to gate cue firing to monotonic forward playback only.
+  See ADR-020 for the URL contract, the runner conformance bar,
+  the single-scene scope rationale, and the DRAFT → ACTIVE
+  transition criteria. Indexed in `docs/adrs/README.md`.
+- `src/runtime/composition-resolver.ts` —
+  `SceneTimelineRunInput` gains optional
+  `cueGate?: 'monotonic-forward'` and `ResolveCompositionOptions`
+  gains optional `headCueGate?: 'monotonic-forward'`. The resolver
+  forwards `headCueGate` to plan[0]'s run input only (head-only,
+  parallel to `headBeat`, `headRepeat`, and `headHold`); subsequent
+  scenes never receive `cueGate`. Literal-typed union for future
+  variant extension.
+- `src/runtime/scene-navigation.ts` —
+  `LoadSceneNavigationTargetOptions` gains optional
+  `cueGate?: 'monotonic-forward'`;
+  `loadSceneNavigationTarget()` forwards it to
+  `resolveComposition` as `headCueGate`. The bridge truncates a
+  composition slice to its addressed head when `cueGate` is
+  supplied (the `truncateToHead` predicate widens to fire when ANY
+  of `repeat` / `hold` / `cueGate` is supplied), layered with the
+  loader's `applySingleSceneSlice`.
+- `src/runtime/scene-loader.ts` — when
+  `effectiveMode(target) === 'scrub'`, the loader passes
+  `cueGate: 'monotonic-forward'` through the bridge; non-scrub
+  modes leave the key absent (key-presence semantics). The
+  single-scene-execution helper that landed for `standalone`,
+  `loop`, and `paused` is widened to include `scrub`.
+- `src/main.ts` — placeholder timeline runner docstring
+  acknowledges `input.cueGate`. The placeholder has no audio-cue
+  subsystem so it trivially satisfies the gate (no cues to fire).
+- `tests/runtime/composition-resolver.test.ts`,
+  `tests/runtime/scene-navigation.test.ts`, and
+  `tests/runtime/scene-loader.test.ts` — new
+  `'... scrub-mode … cue-gate … forwarding (PUL-F017)'` describe
+  blocks pinning the resolver, bridge, and loader behavior:
+  head-only delivery, key-presence semantics, no contamination
+  under non-scrub modes, slice truncation, cleanup-once, the
+  `ctx.mode === 'scrub'` seam across all four locator shapes,
+  beat / cueGate independence, composition validation invariants,
+  stage attribute behavior, and `range` / `behavior` preservation
+  through the truncated slice.
+
+PUL-F017 stays DRAFT after this PR; the issue ↔ requirement link
+is `DOCUMENTS` per the ADR-016 / ADR-017 / ADR-018 / ADR-019
+precedent. ACTIVE transitions when ADR-003's GSAP runner +
+ADR-004's audio engine + a workbench scrub-controls UI surface
+all land with end-to-end tests (see ADR-020).
 - `docs/adrs/019-workbench-mode-paused.md` — records the PUL-F016
   contract: under `mode=paused` the loader truncates the validated
   composition slice to the addressed head entry (parallel to
