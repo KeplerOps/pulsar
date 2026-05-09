@@ -5721,10 +5721,21 @@ describe('createSceneLoader (PUL-F008)', () => {
       // nothing, dispatch is fully complete after the renderer's
       // promise resolves. `loader.idle()` should settle WITHOUT a
       // second navigation aborting the dispatch. A regression that
-      // always parked would hang `idle()` here.
+      // always parked would hang `idle()` here (vitest's per-test
+      // timeout would surface the hang as a failure).
+      //
+      // Beyond the no-hang behavior, also verify that the renderer
+      // was invoked exactly once and that `loader.idle()` is
+      // settled by the time we observe it (proving the dispatch
+      // completed, not that idle() simply returned the still-
+      // pending queue promise).
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      const renderPrompter: PrompterRenderer = () => undefined;
+      let renderCount = 0;
+      const renderPrompter: PrompterRenderer = () => {
+        renderCount += 1;
+        return undefined;
+      };
       const loader = createSceneLoader({
         scenes: createSceneRegistry([sceneA]),
         compositions: createCompositionRegistry([]),
@@ -5738,10 +5749,13 @@ describe('createSceneLoader (PUL-F008)', () => {
       // Single navigation — no supersession, no abort. With void
       // return, idle() must still settle.
       await loader.handle(prompterSceneTarget('scene-a'));
-      await loader.idle();
-      // If we got here, idle() settled. Sentinel assertion to
-      // make the test's success condition explicit.
-      expect(true).toBe(true);
+      const idleSettled = await Promise.race([
+        loader.idle().then(() => 'settled' as const),
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 0)),
+      ]);
+
+      expect(renderCount).toBe(1);
+      expect(idleSettled).toBe('settled');
     });
 
     it('aborts a long-running `renderPrompter` when superseded by another navigation (the renderer signal honors abort)', async () => {

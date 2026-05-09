@@ -39,7 +39,12 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
-import { type PrompterDispose, type PrompterRenderer, buildPrompterScript } from './prompter';
+import {
+  type PrompterDispose,
+  type PrompterRenderer,
+  type PrompterScript,
+  buildPrompterScript,
+} from './prompter';
 import type { SceneRegistry } from './registry';
 import {
   type SceneNavigationTarget,
@@ -196,6 +201,22 @@ export interface SceneLoader {
 const ATTR_SCENE = 'data-pulsar-scene-target';
 const ATTR_COMPOSITION = 'data-pulsar-composition-target';
 const ATTR_ERROR = 'data-pulsar-navigation-error';
+
+/**
+ * Resolve when `signal` is aborted (or immediately if already
+ * aborted). Pure helper hoisted to module scope so the prompter
+ * dispatch path can keep its callback nesting under Sonar's
+ * S2004 4-level limit (the inline `addEventListener` arrow inside
+ * an IIFE inside `buildPrompterLoad` would put the listener at
+ * level 5; routing through this helper keeps every callback at
+ * level ≤ 2).
+ */
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
 
 /**
  * Returns true when `err` is the resolver's own "aborted" wrapper
@@ -627,6 +648,38 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   };
 
   /**
+   * Run a `mode=prompter` dispatch end-to-end: invoke the renderer
+   * and, when the renderer returned a {@link PrompterDispose}
+   * callback, park until abort and then run the callback.
+   *
+   * Hoisted out of `buildPrompterLoad` so the IIFE chain stays under
+   * Sonar's nested-function limit (S2004): the inline addEventListener
+   * arrow inside an IIFE inside an arrow function inside an arrow
+   * function would put the listener at level 5; pulling the work
+   * into a top-level helper keeps every callback at level ≤ 2.
+   */
+  const dispatchPrompter = async (
+    renderer: PrompterRenderer,
+    script: PrompterScript,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const result = await renderer(script, signal);
+    if (typeof result !== 'function') {
+      // `void` / `undefined` return: renderer indicated nothing
+      // persistent was mounted. Dispatch is fully complete; do not
+      // park.
+      return;
+    }
+    // PrompterDispose callback: renderer mounted persistent state
+    // and delegated cleanup ordering to the loader. Park until
+    // abort (next navigation, dispose(), etc.), then run the
+    // callback.
+    const dispose: PrompterDispose = result;
+    await waitForAbort(signal);
+    await dispose();
+  };
+
+  /**
    * PUL-F019 / ADR-022: build the in-flight record for a `mode=prompter`
    * dispatch. Mirrors {@link buildLoad}'s contract — returns an
    * {@link InFlightLoad} carrying a fresh `AbortController` and a
@@ -636,18 +689,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * invoke the lifecycle that would render scenes visually."
    *
    * The renderer's return value drives the cleanup lifecycle (see
-   * {@link PrompterRenderer}):
-   *  - `void` / `undefined`: no persistent state mounted. Dispatch
-   *    is complete; the loader does not park.
-   *  - {@link PrompterDispose} callback: persistent state mounted.
-   *    The loader parks until `signal.aborted`, then invokes the
-   *    callback for cleanup before resolving the dispatch.
-   *  - `Promise<void | PrompterDispose>`: async variants of the
-   *    above, awaited identically.
-   *
-   * `renderPrompter` is optional. Without it the loader still pays
-   * the structural-suppression cost (lifecycle is bypassed) but
-   * resolves immediately — there is no captions consumer.
+   * {@link PrompterRenderer} and {@link dispatchPrompter}). When
+   * `renderPrompter` is undefined the loader still pays the
+   * structural-suppression cost (lifecycle is bypassed) but resolves
+   * immediately — there is no captions consumer.
    */
   const buildPrompterLoad = (resolved: SceneNavigationTarget): InFlightLoad => {
     const controller = new AbortController();
@@ -656,27 +701,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       return { controller, settled: Promise.resolve(), silent: false };
     }
     const script = buildPrompterScript(resolved);
-    const settled = (async () => {
-      const result = await renderer(script, controller.signal);
-      if (typeof result !== 'function') {
-        // `void` / `undefined` return: renderer indicated nothing
-        // persistent was mounted. Dispatch is fully complete; do
-        // not park.
-        return;
-      }
-      // PrompterDispose callback: renderer mounted persistent
-      // state and delegated cleanup ordering to the loader. Park
-      // until abort (next navigation, dispose(), etc.), then run
-      // the callback.
-      const dispose: PrompterDispose = result;
-      if (!controller.signal.aborted) {
-        await new Promise<void>((resolve) => {
-          controller.signal.addEventListener('abort', () => resolve(), { once: true });
-        });
-      }
-      await dispose();
-    })();
-    return { controller, settled, silent: false };
+    return {
+      controller,
+      settled: dispatchPrompter(renderer, script, controller.signal),
+      silent: false,
+    };
   };
 
   const runTarget = async (target: NavigationTarget): Promise<void> => {
