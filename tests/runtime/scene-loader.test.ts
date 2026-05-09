@@ -2133,8 +2133,14 @@ describe('createSceneLoader (PUL-F008)', () => {
     //     for `mode=present`; future modes are free to use that
     //     namespace if they actually need it).
     //
-    // PUL-F014 transitions DRAFT → ACTIVE in this PR. ADR-017 records
-    // the boundary.
+    // PUL-F014 stays DRAFT after this PR (ADR-017 records the
+    // boundary; following the ADR-016 / PUL-F013 precedent). The
+    // single-scene execution mechanism and the `ctx.mode` seam ARE
+    // materially shipped; the three named suppression surfaces
+    // (chrome, audio bed, inter-scene transitions) gate the
+    // DRAFT → ACTIVE transition — each must land as a real surface
+    // that actively reads `ctx.mode === 'standalone'` and suppresses,
+    // with end-to-end tests alongside these seam tests.
 
     const standaloneCompositionTarget = (composition: string): NavigationTarget => ({
       locator: { kind: 'composition', composition },
