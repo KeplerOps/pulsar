@@ -75,21 +75,45 @@ truncated `manifestSlice` (length 1) therefore continues through the
 composition branch in `loadSceneNavigationTarget()`, and the existing
 runner-input plumbing forwards `range` / `behavior` per ADR-011.
 
-PUL-F014 transitions DRAFT → ACTIVE in the PR that lands this ADR.
-The ACTIVE contract is single-scene execution at the addressed head
-scene under `mode=standalone`. Future chrome / audio / runner /
-presenter surfaces inherit `ctx.mode === 'standalone'` at *their*
-seam and decide their own suppression behavior — they extend
-PUL-F014's contract surface; they do not gate its ACTIVE transition.
+PUL-F014 stays DRAFT after this PR lands, mirroring the PUL-F013
+precedent in ADR-016. This PR ships:
 
-This is the deliberate contrast with ADR-016 / PUL-F013. PUL-F013's
-clauses (chrome / audio / inter-scene transitions / presenter input)
-each require a rendering or input surface that does not exist; the
-contract layer alone cannot render or respond, so the requirement
-stays DRAFT until those surfaces land. PUL-F014's clauses *all*
-collapse to "single-scene execution at the addressed head scene" or
-to facets whose suppression is structural under that contract — no
-absent rendering surface gates the transition.
+- The single-scene execution mechanism (slice truncation at the
+  loader) — the structural form of "the scene SHALL run as if no
+  surrounding composition existed," which IS materially implemented.
+- The seam — `ctx.mode === 'standalone'` reaches every lifecycle
+  hook of the head scene through the existing PUL-F012 plumbing.
+- Tests pinning the seam and the slice-truncation behavior.
+
+What it does NOT yet ship is the active *suppression* of the three
+named surfaces under standalone:
+
+- Surrounding chrome rendering does not exist anywhere in the repo.
+  When a future workbench-shell requirement lands chrome, it MUST
+  read `ctx.mode === 'standalone'` from the seam this PR pinned and
+  SUPPRESS. Today nothing renders chrome, so the suppression clause
+  is vacuously true — but vacuous truth is not enforcement.
+- Audio-bed playback does not exist (ADR-004's Howler audio service
+  is not implemented). When the future audio service lands, it MUST
+  read the seam and suppress the surrounding audio bed under
+  standalone. The "audio bed" qualifier is intentional: scene-owned
+  sound effects are a separate behavior the audio service decides at
+  its own contract.
+- Inter-scene transition rendering does not exist (ADR-003's GSAP
+  runner is a placeholder). Under standalone, single-scene execution
+  ensures no second scene runs, so no transition fires structurally
+  — but when the runner lands and starts scheduling transitions, it
+  MUST read the seam and suppress the leaving-transition out of the
+  head scene under standalone.
+
+Following the ADR-016 precedent, PUL-F014 transitions DRAFT → ACTIVE
+when each of the three rendering surfaces above lands AND its
+implementation explicitly reads `ctx.mode === 'standalone'` and
+suppresses the named facet, with an end-to-end test alongside the
+seam tests in this PR. Until then, the issue ↔ requirement link
+stays as `DOCUMENTS` and the status stays DRAFT — matching how
+ADR-016 / PUL-F013 records "land the contract layer; keep the
+requirement DRAFT until the dependent subsystems land."
 
 ### Boundary
 
@@ -137,16 +161,24 @@ to inspect — fully supported.
 
 ### Positive
 
-- PUL-F014 transitions to ACTIVE on the same PR that lands the
-  contract: the requirement is materially implementable today, and
-  ADR-016's "DRAFT until rendering surfaces land" pattern would be
-  the wrong precedent here.
-- The slice transform is one branch in `runTarget` — about five lines
-  of code. The lifecycle path, resolver, registry, and beat plumbing
-  are unchanged. Surface area for regressions is small.
+- The single-scene execution mechanism is materially shipped: the
+  loader truncates the validated composition slice to one entry,
+  preserving object-form `range` / `behavior` overrides. That
+  satisfies the "run as if no surrounding composition existed"
+  clause in code, not just in documentation.
+- Following ADR-016's precedent keeps the DRAFT → ACTIVE bar
+  consistent across mode requirements: ACTIVE means every facet the
+  statement names has a real surface that actively conforms.
+  Future authors reading the requirement set will see one rule, not
+  two.
+- The slice-truncation helper (`applyStandaloneSlice`) is one pure
+  function in `runTarget`. The lifecycle path, resolver, registry,
+  and beat plumbing are unchanged. Surface area for regressions is
+  small.
 - Future chrome / audio / runner adapters inherit `ctx.mode ===
   'standalone'` for free — they read the same hint they already plan
-  to read for `present`, no new wiring required.
+  to read for `present`, no new wiring required. When they conform,
+  PUL-F014 transitions to ACTIVE.
 - Composition validation is preserved: standalone is single-scene
   *execution*, not single-scene *lookup*. A malformed composition
   target fails the same way it does in any other mode.
@@ -216,7 +248,10 @@ to inspect — fully supported.
 - [ADR-015](015-url-beat-positioning.md) — beat semantics under
   standalone are unchanged: head-scope only, runner-side label
   resolution, non-fatal missing-label diagnostic.
-- [ADR-016](016-workbench-mode-present.md) — establishes the pattern
-  this ADR contrasts against: PUL-F013 stays DRAFT pending rendering
-  surfaces; PUL-F014 goes ACTIVE because its clauses are
-  materially implementable today.
+- [ADR-016](016-workbench-mode-present.md) — establishes the
+  precedent this ADR follows: land the contract layer plus seam
+  tests, keep the requirement DRAFT until each named facet has a
+  real rendering / input surface that actively conforms. PUL-F014's
+  ACTIVE transition is gated on chrome, audio-bed, and
+  inter-scene-transition surfaces all reading `ctx.mode ===
+  'standalone'` and suppressing.

@@ -16,15 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including object-form `range` / `behavior` overrides) and runs
   only the head scene's lifecycle. Composition validation still
   runs first, so unregistered compositions / unknown member scenes
-  / out-of-range indexes still surface as navigation errors. Inter-scene transition suppression is
-  structural (no second scene to transition to). Surrounding chrome
-  and audio-bed suppression — the parts of PUL-F014's statement
-  that name surfaces not yet in the repo — are inherited by future
-  workbench-shell / audio-service requirements through `ctx.mode
-  === 'standalone'` at their own seam, the same hint they will
-  read for `mode=present`. Contrasts with ADR-016: PUL-F014 is
-  materially implementable today and transitions DRAFT → ACTIVE in
-  this PR. Indexed in `docs/adrs/README.md`.
+  / out-of-range indexes still surface as navigation errors. The
+  single-scene execution mechanism is materially shipped; the seam
+  (`ctx.mode === 'standalone'` reaches every lifecycle hook of the
+  head scene) is pinned. Surrounding chrome, audio-bed, and
+  inter-scene-transition suppression — the three named surfaces
+  that don't exist in the repo today — are deferred to the future
+  workbench-shell / audio-service / GSAP runner requirements that
+  will land them. Following the ADR-016 precedent, PUL-F014 stays
+  DRAFT and the issue ↔ requirement link is `DOCUMENTS`; ACTIVE
+  transitions when each surface actively reads
+  `ctx.mode === 'standalone'` and suppresses, with end-to-end
+  tests alongside the seam tests in this PR. Indexed in
+  `docs/adrs/README.md`.
 - `docs/design/pul-f014-standalone-mode-preflight.md` — codex
   architecture preflight design context for PUL-F014. Names the
   cross-cutting concerns to reuse (`NAVIGATION_MODES`,
