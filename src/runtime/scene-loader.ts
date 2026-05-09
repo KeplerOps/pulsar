@@ -437,6 +437,48 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
+  /**
+   * PUL-F014 / ADR-017: under `mode=standalone` the runtime renders a
+   * single scene "as if no surrounding composition existed." The
+   * composition slice — already validated by `resolveSceneNavigation`
+   * so unregistered compositions / unknown member scenes /
+   * out-of-range indexes still surface as navigation errors — is
+   * truncated to a one-entry slice so the lifecycle runs only the
+   * addressed head scene. The slice is TRUNCATED rather than dropped
+   * so the head entry's per-entry `range` / `behavior` overrides
+   * (object-form entries per ADR-002 / ADR-011) reach the runner
+   * unchanged: a flat `{ scene }` would lose them and turn standalone
+   * into direct-scene flattening, contradicting ADR-017's contract.
+   * Stage attrs (set by the caller before this transform) reflect
+   * what the URL ADDRESSED, not what runs:
+   * `data-pulsar-composition-target` stays set so external observers
+   * (agents, screenshot tooling) see the URL-addressed composition
+   * even when only the head scene executes. Pure function — no
+   * closure captures — hoisted out of `runTarget` so the latter stays
+   * within Sonar's cognitive-complexity budget.
+   */
+  const applyStandaloneSlice = (
+    resolved: SceneNavigationTarget,
+    target: NavigationTarget,
+  ): SceneNavigationTarget => {
+    if (effectiveMode(target) !== 'standalone' || resolved.composition === undefined) {
+      return resolved;
+    }
+    const headEntry = resolved.composition.manifestSlice[0];
+    const headScene = resolved.composition.sceneSlice[0];
+    if (headEntry === undefined || headScene === undefined) {
+      return resolved;
+    }
+    return {
+      scene: resolved.scene,
+      composition: {
+        id: resolved.composition.id,
+        manifestSlice: Object.freeze([headEntry]),
+        sceneSlice: Object.freeze([headScene]),
+      },
+    };
+  };
+
   const runTarget = async (target: NavigationTarget): Promise<void> => {
     const beatErr = validateBeatGrammar(target);
     if (beatErr !== null) {
@@ -467,36 +509,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    // PUL-F014 / ADR-017: under `mode=standalone` the runtime renders a
-    // single scene "as if no surrounding composition existed." The
-    // composition slice — already validated by `resolveSceneNavigation`
-    // above so unregistered compositions / unknown member scenes /
-    // out-of-range indexes still surface as navigation errors — is
-    // truncated to a one-entry slice so the lifecycle runs only the
-    // addressed head scene. The slice is TRUNCATED rather than dropped
-    // so the head entry's per-entry `range` / `behavior` overrides
-    // (object-form entries per ADR-002 / ADR-011) reach the runner
-    // unchanged: a flat `{ scene }` would lose them and turn standalone
-    // into direct-scene flattening, contradicting ADR-017's contract.
-    // Stage attrs reflect what the URL ADDRESSED, not what runs:
-    // `data-pulsar-composition-target` stays set so external observers
-    // (agents, screenshot tooling) see the URL-addressed composition
-    // even when only the head scene executes.
-    let runnable: SceneNavigationTarget = resolved;
-    if (effectiveMode(target) === 'standalone' && resolved.composition !== undefined) {
-      const headEntry = resolved.composition.manifestSlice[0];
-      const headScene = resolved.composition.sceneSlice[0];
-      if (headEntry !== undefined && headScene !== undefined) {
-        runnable = {
-          scene: resolved.scene,
-          composition: {
-            id: resolved.composition.id,
-            manifestSlice: Object.freeze([headEntry]),
-            sceneSlice: Object.freeze([headScene]),
-          },
-        };
-      }
-    }
+    const runnable = applyStandaloneSlice(resolved, target);
 
     const load = buildLoad(runnable, target);
     if (load === null) return;
