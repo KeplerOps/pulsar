@@ -1434,3 +1434,107 @@ describe('URL loop-mode runner repeat-hint forwarding (PUL-F015)', () => {
     expect(runCalls[0]?.repeat).toBe('until-aborted');
   });
 });
+
+describe('URL paused-mode runner hold-hint forwarding (PUL-F016)', () => {
+  // PUL-F016: in `mode=paused`, the runtime SHALL mount the addressed
+  // scene and hold it at its first frame without advancing the
+  // timeline. ADR-019 places mode dispatch at the loader and the
+  // hold-at-first-frame semantics at the timeline-runner adapter. The
+  // resolver's job is forwarding the URL-derived `headHold` hint to
+  // the head scene's run input only; subsequent scenes in a
+  // composition slice do not receive `hold` because the head's
+  // timeline never advances under paused — following entries cannot
+  // run. The resolver does NOT interpret `headHold` itself; honoring
+  // hold-at-first-frame is the runner's contract.
+
+  it("forwards `headHold` to plan[0]'s run input only — subsequent scenes get no hold", async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, headHold: 'first-frame' });
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[0]?.scene.id).toBe('scene-a');
+    expect(runCalls[0]?.hold).toBe('first-frame');
+    expect(runCalls[1]?.scene.id).toBe('scene-b');
+    expect(runCalls[1]?.hold).toBeUndefined();
+    // Parallel to `beat` / `repeat` / `range` / `behavior`: the key is
+    // OMITTED from the input object when absent, not set to
+    // `undefined`. The runner can branch on `'hold' in input` rather
+    // than checking for `undefined`.
+    expect('hold' in (runCalls[1] as object)).toBe(false);
+  });
+
+  it('does not attach `hold` when `headHold` is absent', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(1);
+    expect('hold' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('does not interpret `headHold` itself — a runner that ignores the hint and returns normally does not error', async () => {
+    // Resolver delegates hold-at-first-frame to the runner per
+    // ADR-019. A runner that receives `hold: 'first-frame'` and
+    // returns void normally (e.g. the placeholder runner that has no
+    // real timeline to pause) must NOT cause the resolver to throw or
+    // skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    await expect(
+      resolveComposition({
+        ...options,
+        headHold: 'first-frame',
+      }),
+    ).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+
+  it('forwards `headHold` alongside `headBeat` and `headRepeat` independently — all three reach plan[0] without coupling', async () => {
+    // `headHold`, `headBeat`, and `headRepeat` are three independent
+    // head-only forwardings (PUL-F016, PUL-F011, PUL-F015). A
+    // regression that paired them — e.g. requiring `headBeat` or
+    // `headRepeat` whenever `headHold` is set — would break URLs like
+    // `?scene=x&beat=hook&mode=paused` and
+    // `?scene=x&mode=paused` (paused alone, no beat).
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({
+      ...options,
+      headBeat: 'hook',
+      onBeatMissing: () => undefined,
+      headHold: 'first-frame',
+    });
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]?.beat).toBe('hook');
+    expect(runCalls[0]?.hold).toBe('first-frame');
+    expect(runCalls[0]?.repeat).toBeUndefined();
+  });
+});

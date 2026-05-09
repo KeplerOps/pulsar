@@ -151,6 +151,36 @@ export interface SceneTimelineRunInput {
    * behavior. The resolver does not interpret the value.
    */
   readonly repeat?: 'until-aborted';
+  /**
+   * Hold hint for the head scene's timeline (PUL-F016 / ADR-019). When
+   * `'first-frame'`, the runner SHOULD render the addressed scene's
+   * timeline at time `0` and hold it there without advancing (e.g. a
+   * future GSAP runner calls `timeline.pause()` after seeking to time
+   * 0). The mount/preload/`create(ctx)`/`timeline(ctx)` flow runs
+   * normally; only timeline progression is suppressed.
+   *
+   * Only present on the run input for the FIRST scene of the resolved
+   * composition slice — subsequent scenes never receive `hold`
+   * because a head whose timeline never advances cannot reach the
+   * following entries. Absent when the navigation target had no
+   * `mode=paused` parameter.
+   *
+   * Discriminated by literal type so future hold semantics (e.g. a
+   * specific-frame variant for screenshot determinism) can extend
+   * the union without breaking existing runners — a runner that
+   * ignores the field, or that only recognizes `'first-frame'`,
+   * gracefully degrades to no-hold behavior. The resolver does not
+   * interpret the value.
+   *
+   * `hold` and `repeat` are independent fields on the runner input;
+   * the URL grammar makes their parent modes (`paused` and `loop`)
+   * mutually exclusive (mode is a single field), but a programmatic
+   * caller could supply both, and the runner's policy decides which
+   * wins. ADR-019 records the runner-side preference: `hold` wins
+   * over `repeat` when both are set, because a paused timeline never
+   * completes for the repeat to fire on.
+   */
+  readonly hold?: 'first-frame';
 }
 
 /**
@@ -236,6 +266,21 @@ export interface ResolveCompositionOptions {
    * boundary, where mode dispatch lives).
    */
   readonly headRepeat?: 'until-aborted';
+  /**
+   * URL paused-mode hold hint (PUL-F016 / ADR-019) to forward to the
+   * FIRST scene's run input as {@link SceneTimelineRunInput.hold}.
+   * Subsequent scenes never receive a hold hint — under `mode=paused`
+   * the head's timeline never advances, so following composition
+   * entries cannot run. Absent when the navigation target had no
+   * `mode=paused` parameter.
+   *
+   * The resolver does not interpret the value — honoring
+   * "hold at first frame" is the runner's contract per ADR-019. A
+   * runner that ignores the field gracefully degrades to no-hold (a
+   * regression the seam tests in `scene-loader.test.ts` pin against
+   * the loader boundary, where mode dispatch lives).
+   */
+  readonly headHold?: 'first-frame';
 }
 
 /**
@@ -313,6 +358,7 @@ function buildRunInput(
   beat: string | undefined,
   onBeatMissing: (() => void) | undefined,
   repeat: 'until-aborted' | undefined,
+  hold: 'first-frame' | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -324,6 +370,7 @@ function buildRunInput(
   if (beat !== undefined) input.beat = beat;
   if (onBeatMissing !== undefined) input.onBeatMissing = onBeatMissing;
   if (repeat !== undefined) input.repeat = repeat;
+  if (hold !== undefined) input.hold = hold;
   return input;
 }
 
@@ -390,6 +437,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     headBeat,
     onBeatMissing,
     headRepeat,
+    headHold,
   } = options;
 
   // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
@@ -454,7 +502,22 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     // following entry could itself loop, which contradicts the
     // requirement's "the addressed scene's timeline" scoping.
     const stepRepeat = isHead ? headRepeat : undefined;
-    await runScene(step, ctx, runTimeline, signal, stepBeat, stepOnBeatMissing, stepRepeat);
+    // `headHold` is head-only per ADR-019: under `mode=paused` the
+    // head's timeline never advances, so subsequent scenes cannot
+    // run. Forwarding hold to non-head scenes would imply a
+    // following entry could itself be held at frame 0, which
+    // contradicts the requirement's "the addressed scene" scoping.
+    const stepHold = isHead ? headHold : undefined;
+    await runScene(
+      step,
+      ctx,
+      runTimeline,
+      signal,
+      stepBeat,
+      stepOnBeatMissing,
+      stepRepeat,
+      stepHold,
+    );
     lastCompletedSceneId = step.scene.id;
   }
 }
@@ -512,6 +575,7 @@ async function runScene(
   beat: string | undefined,
   onBeatMissing: (() => void) | undefined,
   repeat: 'until-aborted' | undefined,
+  hold: 'first-frame' | undefined,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -529,7 +593,7 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat));
+    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat, hold));
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

@@ -9,6 +9,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/019-workbench-mode-paused.md` — records the PUL-F016
+  contract: under `mode=paused` the loader truncates the validated
+  composition slice to the addressed head entry (parallel to
+  `standalone` per ADR-017 and `loop` per ADR-018) and passes
+  `hold: 'first-frame'` through the bridge / resolver to that head's
+  timeline-runner input, where the runner is responsible for
+  pinning the timeline at time 0 (e.g. ADR-003's future GSAP runner
+  uses `timeline.seek(0)` + `timeline.pause()`). Slice truncation
+  makes "no following entries run" a structural guarantee — a
+  runner that ignores the `hold` hint cannot silently degrade
+  paused into normal composition playback. The single-scene-execution
+  helper ADR-017 introduced and ADR-018 extended is widened again
+  (`applySingleSceneSlice`) to fire under `paused`; the SHAPE
+  transform is shared between `standalone`, `loop`, and `paused`,
+  the runner-side semantic differences (`input.repeat` vs
+  `input.hold` vs neither) are what differentiate them. Composition
+  validation runs first, so unregistered compositions / unknown
+  member scenes / out-of-range indexes still surface as navigation
+  errors. The hint is head-only — following composition entries do
+  not receive `hold`, parallel to PUL-F011 / ADR-015's `headBeat`
+  and PUL-F015 / ADR-018's `headRepeat`. ADR-019 also records the
+  runner-side policy that `hold` wins over `beat` when both are
+  set under `mode=paused` (paused is layout/styling inspection;
+  `mode=scrub` is the appropriate mode for beat-targeted timeline
+  inspection); the loader does NOT strip `beat` when `mode=paused`
+  is set — the policy is a runner contract, not a loader-side
+  filter. The loader → runner contract IS materially shipped; the
+  seam (`ctx.mode === 'paused'` reaches every lifecycle hook of the
+  head scene) is pinned. The actual hold-at-first-frame behavior
+  depends on ADR-003's GSAP runner, which is not yet implemented;
+  the placeholder runner has no real timeline and parks until
+  abort, vacuously satisfying the requirement. Following the
+  ADR-016 / ADR-017 / ADR-018 precedent, PUL-F016 stays DRAFT and
+  the issue ↔ requirement link is `DOCUMENTS`; ACTIVE transitions
+  when the GSAP runner lands and actively reads `input.hold ===
+  'first-frame'`, with an end-to-end test alongside the seam tests
+  in this PR. Indexed in `docs/adrs/README.md`.
+- `docs/design/pul-f016-paused-mode-preflight.md` — codex
+  architecture preflight design context for PUL-F016. Names the
+  cross-cutting concerns to reuse (`NAVIGATION_MODES`,
+  `effectiveMode()`, `parseNavigationSearch()`,
+  `resolveSceneNavigation()`, `loadSceneNavigationTarget()`,
+  `resolveComposition()`, `createAssetPreloader()`,
+  `describeError()`, the per-navigation `AbortController`, and the
+  shared `applySingleSceneSlice` / `truncateToHead` helpers) and
+  the anti-patterns to avoid (per-scene `if (mode === 'paused')`
+  branches, raw `setTimeout` / `requestAnimationFrame` /
+  CSS-keyframe / canvas-loop / autoplay-audio in `create(ctx)`
+  that bypass runtime pause control, lifecycle short-circuits that
+  skip `create(ctx)` or `timeline(ctx)`, conflating paused with
+  screenshot or scrub, persisting paused state outside the URL,
+  stripping `beat=` at the loader when `mode=paused` is set). The
+  document records that codex's sandbox was unable to write design
+  files during preflight (`bwrap: loopback: Failed RTM_NEWADDR`),
+  so the guardrails are preserved verbatim from the preflight
+  tool's returned summary.
+- `src/runtime/composition-resolver.ts` —
+  `SceneTimelineRunInput` gains optional `hold?: 'first-frame'` and
+  `ResolveCompositionOptions` gains optional `headHold?:
+  'first-frame'`. The resolver forwards `headHold` to plan[0]'s
+  run input only (head-only, parallel to `headBeat` and
+  `headRepeat`); subsequent scenes never receive `hold`. The
+  literal-typed union lets future hold semantics extend without
+  breaking existing runners.
+- `src/runtime/scene-navigation.ts` —
+  `LoadSceneNavigationTargetOptions` gains optional `hold?:
+  'first-frame'`; `loadSceneNavigationTarget()` forwards the
+  option to `resolveComposition` as `headHold` (parallel to how
+  `repeat` becomes `headRepeat`). `hold`, `repeat`, and `beat` are
+  independent — a programmatic caller can supply any combination,
+  and the runner's policy decides which wins when more than one
+  reaches its input. The bridge ALSO truncates a composition slice
+  to its addressed head when `hold` is supplied (the previous
+  `truncateForRepeat` helper is renamed to a shared `truncateToHead`
+  predicate that fires when EITHER `repeat` or `hold` is supplied)
+  — a structural defense layered with the loader's
+  `applySingleSceneSlice` so direct bridge callers (test harnesses,
+  future export pipelines) get the same paused-mode single-scene-
+  execution guarantee. The two truncations are idempotent.
+- `src/runtime/scene-loader.ts` — when
+  `effectiveMode(target) === 'paused'`, the loader passes
+  `hold: 'first-frame'` through `loadSceneNavigationTarget()`.
+  Other modes (and a `mode`-less URL) leave the key absent on the
+  runner input — key-presence semantics, parallel to `beat` /
+  `repeat` / `range` / `behavior`. Mode dispatch lives at the
+  loader, the same place PUL-F012 derives `ctx.mode` and PUL-F015
+  derives `repeat`. The single-scene-execution helper that landed
+  for `standalone` (ADR-017) and `loop` (ADR-018) is widened to
+  also include `paused`, truncating the validated composition
+  slice to the addressed head entry under any of the three modes
+  (per ADR-019: structural defense against a runner that ignores
+  the `hold` hint).
+- `src/main.ts` — placeholder timeline runner docstring
+  acknowledges `input.hold`. The placeholder ignores the hint;
+  parking until abort vacuously satisfies "hold at first frame
+  without advancing" because no frame ever advances. ADR-003's
+  GSAP runner will read the hint and call `timeline.pause()`.
+- `tests/runtime/composition-resolver.test.ts` — new
+  `'URL paused-mode runner hold-hint forwarding (PUL-F016)'`
+  describe block (4 tests) pinning `headHold` head-only delivery,
+  key-presence semantics, resolver no-op on the value, and
+  independent forwarding alongside `headBeat` and `headRepeat`.
+- `tests/runtime/scene-navigation.test.ts` — new `'URL paused-mode
+  hold forwarding (PUL-F016)'` describe block under
+  `loadSceneNavigationTarget` (5 tests) pinning the bridge's
+  `hold` → `headHold` plumbing for single-scene targets, key
+  absence when option omitted, independence from `beat` and
+  `repeat`, bridge-level slice truncation under `hold` (the
+  structural defense added in response to the same codex pre-push
+  review reasoning ADR-018 records for `repeat`), and that
+  non-paused composition navigation still runs the full slice.
+- `tests/runtime/scene-loader.test.ts` — new `'paused-mode runner
+  hold-hint forwarding (PUL-F016)'` describe block pinning every
+  clause of PUL-F016 under `mode=paused`:
+  - `hold: 'first-frame'` on the head scene's runner input for a
+    `scene` target.
+  - Slice truncation under `composition` and `composition+scene`
+    targets — only the head runs, with `hold: 'first-frame'`
+    on its runner input. Non-final-index navigations are used so
+    a regression that dropped truncation would observe successor
+    entries running.
+  - cleanup runs exactly once for the head scene under
+    `mode=paused`, never for dropped slice entries (parallel to
+    ADR-017 / ADR-018).
+  - Key absence on the runner input when `mode` is unset.
+  - No `hold` for any non-paused mode (six modes walked from
+    `NAVIGATION_MODES`).
+  - `ctx.mode === 'paused'` exposed to every lifecycle hook of the
+    head scene under all four locator shapes.
+  - `beat=` forwarding alongside `hold` under `mode=paused` with
+    the non-fatal missing-label diagnostic preserved (the loader
+    forwards both; the runner's "first frame wins" policy decides
+    which wins at the runner contract).
+  - No `data-pulsar-mode-*` suppression attribute is preemptively
+    written (parity with ADR-016 / ADR-017 / ADR-018).
+  - Stage attrs `data-pulsar-scene-target` AND
+    `data-pulsar-composition-target` both set when URL named a
+    composition under paused (preserves observability of what the
+    URL addressed).
+  - Composition-not-registered, composition-member-not-found, and
+    index-out-of-range errors STILL surface under `mode=paused`
+    (no silent fallback to direct scene lookup).
+  - Object-form head entry's `range` and `behavior` overrides reach
+    the runner unchanged through the truncated slice alongside
+    `hold` — paused is single-scene-mount with held timeline at
+    the head, NOT direct-scene flattening.
+  - A hold-until-abort runner under `mode=paused` keeps the head
+    scene mounted until a new navigation supersedes it; cleanup
+    fires only on abort, not on `hold` arrival. Pins the
+    runner-side pending-until-abort contract through the
+    loader+resolver+navigation flow so a regression that made the
+    resolver bypass `runTimeline` under `hold`, or that dropped
+    signal forwarding to the runner under paused, would fail
+    here. Codex pre-push review (cycle 2) flagged that the
+    cleanup-once test alone — using a synchronous `noopRunner` —
+    would not catch a runner that resolved immediately after
+    `seek(0) + pause()` and unmounted the scene one turn after
+    mount; this test is the structural defense for that bug
+    class. ADR-019's two-part runner contract (freeze the
+    timeline at time 0 AND keep the runner promise pending until
+    abort) is what the future GSAP runner PR will additionally
+    pin end-to-end against a real timeline.
 - `docs/adrs/018-workbench-mode-loop.md` — records the PUL-F015
   contract: under `mode=loop` the loader truncates the validated
   composition slice to the addressed head entry (parallel to

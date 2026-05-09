@@ -149,6 +149,16 @@ export interface LoadSceneNavigationTargetOptions {
    * when the navigation target had no `mode=loop` parameter.
    */
   readonly repeat?: 'until-aborted';
+  /**
+   * URL paused-mode hold hint (PUL-F016 / ADR-019) the runner uses to
+   * decide whether to hold the addressed scene's timeline at its
+   * first frame. Forwarded to {@link resolveComposition} as
+   * `headHold` — the resolver scopes delivery to the head scene's
+   * run input only, so following composition entries never receive
+   * `hold`. Absent when the navigation target had no `mode=paused`
+   * parameter.
+   */
+  readonly hold?: 'first-frame';
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -284,28 +294,32 @@ function resolveCompositionAndIndex(
 }
 
 /**
- * PUL-F015 / ADR-018 bridge-level structural defense for loop-mode.
- * When a caller supplies `repeat` alongside a composition slice, the
- * head's timeline restarts on completion — by definition the head's
- * timeline never naturally completes, so following composition entries
- * cannot run. Truncating the slice at the bridge guarantees that
- * structural promise without depending on the runner's adapter
- * conformance to `input.repeat`. A direct bridge caller (test harness,
- * future export pipeline, etc.) gets the same guarantee the loader's
- * `applySingleSceneSlice` provides on the loader→bridge path; the two
- * truncations are idempotent (truncating a single-entry slice is a
- * no-op).
+ * Bridge-level structural defense for modes whose head-scene
+ * timeline does not naturally advance to completion:
+ *
+ * - PUL-F015 / ADR-018 (`mode=loop`, `repeat: 'until-aborted'`): the
+ *   head's timeline restarts on completion — by definition it never
+ *   naturally completes, so following composition entries cannot
+ *   run.
+ * - PUL-F016 / ADR-019 (`mode=paused`, `hold: 'first-frame'`): the
+ *   head's timeline holds at frame 0 and never advances, so
+ *   following composition entries cannot run.
+ *
+ * Truncating the slice at the bridge guarantees that structural
+ * promise without depending on the runner's adapter conformance to
+ * `input.repeat` / `input.hold`. A direct bridge caller (test
+ * harness, future export pipeline, etc.) gets the same guarantee
+ * the loader's `applySingleSceneSlice` provides on the loader→bridge
+ * path; the two truncations are idempotent (truncating a
+ * single-entry slice is a no-op).
  *
  * Pure function — no closure captures. Returns the input unchanged
- * when `repeat` is absent, when there is no composition slice, or
+ * when `headOnly` is `false`, when there is no composition slice, or
  * when the slice is already empty (the bridge would surface that as
  * a navigation error elsewhere).
  */
-function truncateForRepeat(
-  target: SceneNavigationTarget,
-  repeat: 'until-aborted' | undefined,
-): SceneNavigationTarget {
-  if (repeat === undefined || target.composition === undefined) {
+function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): SceneNavigationTarget {
+  if (!headOnly || target.composition === undefined) {
     return target;
   }
   const headEntry = target.composition.manifestSlice[0];
@@ -411,20 +425,26 @@ export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
-  // PUL-F015 / ADR-018: under `repeat: 'until-aborted'` the addressed
-  // scene's timeline restarts on completion — by definition the head's
-  // timeline never naturally completes, so following composition
-  // entries cannot run. Truncating the slice at the bridge layer makes
-  // "no following entries run" a structural guarantee that does not
-  // depend on the runner honoring `input.repeat` (codex pre-push
-  // review): a runner bug or no-op runner under `repeat` MUST NOT
-  // silently degrade into normal composition playback. The truncation
-  // is layered with the loader's `applySingleSceneSlice` (which already
-  // truncates for `mode=standalone` and `mode=loop`) so direct bridge
-  // callers — outside the loader path — still benefit from the
-  // structural guarantee. Truncating an already-single-entry slice is
-  // a no-op, so the layering is idempotent.
-  const effectiveTarget = truncateForRepeat(target, options.repeat);
+  // PUL-F015 / ADR-018 + PUL-F016 / ADR-019: under
+  // `repeat: 'until-aborted'` the head's timeline restarts on
+  // completion (loop), and under `hold: 'first-frame'` the head's
+  // timeline never advances (paused). Both modes share the same
+  // structural promise: following composition entries cannot run.
+  // Truncating the slice at the bridge layer makes "no following
+  // entries run" a structural guarantee that does not depend on the
+  // runner honoring `input.repeat` / `input.hold` (codex pre-push
+  // review): a runner bug or no-op runner under either mode MUST NOT
+  // silently degrade into normal composition playback. The
+  // truncation is layered with the loader's `applySingleSceneSlice`
+  // (which already truncates for `mode=standalone`, `mode=loop`, and
+  // `mode=paused`) so direct bridge callers — outside the loader
+  // path — still benefit from the structural guarantee. Truncating
+  // an already-single-entry slice is a no-op, so the layering is
+  // idempotent.
+  const effectiveTarget = truncateToHead(
+    target,
+    options.repeat !== undefined || options.hold !== undefined,
+  );
   const composition = effectiveTarget.composition;
   // Collapse the single-scene vs composition-slice paths into one
   // assignment so the two values cannot drift (e.g. picking
@@ -485,5 +505,13 @@ export async function loadSceneNavigationTarget(
     // caller supplied it so a runner that branches on `'repeat' in
     // input` sees an absent key rather than `undefined`.
     ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
+    // `hold` is independent of `beat` and `repeat` per ADR-019: a URL
+    // like `?scene=x&mode=paused` (no beat, no loop) is valid, and so
+    // is `?scene=x&beat=hook&mode=paused` (the runner's policy
+    // decides which wins — ADR-019 records that `hold` wins over
+    // `beat` for paused mode). Spread `headHold` only when the
+    // caller supplied it so a runner that branches on `'hold' in
+    // input` sees an absent key rather than `undefined`.
+    ...(options.hold === undefined ? {} : { headHold: options.hold }),
   });
 }

@@ -433,8 +433,19 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // head's timeline never naturally completes. Use a literal
     // `undefined` sentinel so the spread below cleanly omits the key
     // for non-loop modes (parity with the `beat` plumbing).
-    const repeat: 'until-aborted' | undefined =
-      effectiveMode(target) === 'loop' ? 'until-aborted' : undefined;
+    const mode = effectiveMode(target);
+    const repeat: 'until-aborted' | undefined = mode === 'loop' ? 'until-aborted' : undefined;
+    // PUL-F016 / ADR-019: under `mode=paused` the runner mounts the
+    // addressed scene and holds its timeline at the first frame.
+    // Same dispatch-point pattern as `repeat`: when
+    // `effectiveMode === 'paused'`, pass `hold: 'first-frame'`
+    // through the bridge. The bridge and resolver scope delivery to
+    // the head scene only — following composition entries do not see
+    // `hold`, because a paused head's timeline never advances.
+    // `mode=paused` and `mode=loop` are mutually exclusive at the URL
+    // boundary (mode is a single field), so at most one of `repeat` /
+    // `hold` is non-undefined here.
+    const hold: 'first-frame' | undefined = mode === 'paused' ? 'first-frame' : undefined;
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -445,6 +456,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(beat === undefined ? {} : { beat }),
         ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
         ...(repeat === undefined ? {} : { repeat }),
+        ...(hold === undefined ? {} : { hold }),
       }),
       silent: false,
     };
@@ -464,9 +476,20 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * (codex review): a runner bug or no-op runner under `mode=loop`
    * MUST NOT silently degrade into normal composition playback.
    *
-   * Both modes share the same slice-shape transform — they differ
-   * only in whether the head's timeline repeats (a runner-side
-   * concern via `input.repeat`).
+   * PUL-F016 / ADR-019 (`paused`): the runtime mounts the addressed
+   * scene and holds it at its first frame without advancing the
+   * timeline. Truncating the slice makes "no following entries run"
+   * a structural guarantee even if the runner ignores the
+   * `hold: 'first-frame'` hint — a runner bug or no-op runner under
+   * `mode=paused` MUST NOT silently degrade into normal composition
+   * playback (parallel to the ADR-018 codex-review argument).
+   *
+   * All three modes share the same slice-shape transform — they
+   * differ only in the head's runner-side semantic: standalone
+   * plays normally, loop sets `input.repeat = 'until-aborted'`,
+   * paused sets `input.hold = 'first-frame'`. The shape transform
+   * is shared because the structural promise ("no following entries
+   * run") is identical.
    *
    * The composition slice — already validated by
    * `resolveSceneNavigation` so unregistered compositions /
@@ -477,7 +500,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * `range` / `behavior` overrides (object-form entries per ADR-002
    * / ADR-011) reach the runner unchanged: a flat `{ scene }` would
    * lose them and turn the mode into direct-scene flattening,
-   * contradicting ADR-017 / ADR-018's "preserve head-entry
+   * contradicting ADR-017 / ADR-018 / ADR-019's "preserve head-entry
    * overrides" contract.
    *
    * Stage attrs (set by the caller before this transform) reflect
@@ -493,7 +516,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     target: NavigationTarget,
   ): SceneNavigationTarget => {
     const mode = effectiveMode(target);
-    if ((mode !== 'standalone' && mode !== 'loop') || resolved.composition === undefined) {
+    if (
+      (mode !== 'standalone' && mode !== 'loop' && mode !== 'paused') ||
+      resolved.composition === undefined
+    ) {
       return resolved;
     }
     const headEntry = resolved.composition.manifestSlice[0];
