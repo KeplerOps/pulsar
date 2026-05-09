@@ -119,6 +119,69 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod
 
+  osv-scan:
+    name: OSV-Scanner
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Pinned osv-scanner binary release. Update tag + SHA256 together;
+      # SHA256 comes from osv-scanner_SHA256SUMS attached to the release.
+      OSV_VERSION: v2.3.8
+      OSV_SHA256: bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OSV-Scanner
+        run: |
+          set -euo pipefail
+          url="https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
+          curl -fsSL --retry 3 --retry-delay 5 -o osv-scanner "${url}"
+          echo "${OSV_SHA256}  osv-scanner" | sha256sum --check --status
+          chmod +x osv-scanner
+      - name: Run OSV-Scanner (blocking)
+        id: scan
+        run: |
+          # GitHub Actions wraps `run:` with `bash -eo pipefail` by
+          # default. `set -e` would terminate the shell at the scanner
+          # invocation when osv-scanner exits 1 (vulnerabilities
+          # found), short-circuiting the JSON validation below. We
+          # capture the exit code via `|| rc=$?` (commands on the LHS
+          # of `||` do not trigger errexit) so we can validate the
+          # artifact regardless of scan outcome — every failure mode
+          # uploads a usable artifact for triage in the next step.
+          set -uo pipefail
+          # Exit codes (per osv-scanner):
+          #   0 = no vulnerabilities (pass)
+          #   1 = vulnerabilities found (fail — hard gate)
+          #   other = scanner / tooling error (fail)
+          rc=0
+          ./osv-scanner --lockfile=pnpm-lock.yaml --format=json --output=osv-results.json || rc=$?
+          echo "scan_exit=${rc}" >> "${GITHUB_OUTPUT}"
+          if [ ! -s osv-results.json ]; then
+            echo "::error::osv-scanner exited ${rc} but produced no JSON output — scanner/tooling failure." >&2
+            exit 1
+          fi
+          if ! python3 -c "import json,sys; json.load(open('osv-results.json'))"; then
+            echo "::error::osv-results.json is not valid JSON — scanner/tooling failure." >&2
+            exit 1
+          fi
+          if [ "${rc}" -eq 1 ]; then
+            echo "::error::osv-scanner reported vulnerabilities. Merge blocked — download the osv-results artifact, remediate (upgrade, patch, or pin), and re-run."
+            exit 1
+          fi
+          if [ "${rc}" -ne 0 ]; then
+            echo "::error::osv-scanner exited ${rc} — scanner/tooling error." >&2
+            exit "${rc}"
+          fi
+      - name: Upload OSV results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-results
+          path: osv-results.json
+          retention-days: 7
+          if-no-files-found: error
+
   sonarcloud:
     name: SonarCloud
     needs: [test]

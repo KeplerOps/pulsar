@@ -144,10 +144,11 @@ plug into.
 
 This PR delivers the contract boundary and seam-pinning layer:
 
-- `tests/runtime/scene-loader.test.ts` — `'present-mode contract
-  (PUL-F013)'` describe block pinning multi-scene lifecycle order,
-  AbortSignal forwarding, abort-to-cleanup connectedness,
-  `ctx.mode === 'present'` end-to-end propagation, and the
+- `tests/runtime/scene-loader.test.ts` — `'present-mode adapter
+  seams (PUL-F013 boundary, NOT a PUL-F013 implementation)'`
+  describe block pinning multi-scene lifecycle order, AbortSignal
+  forwarding, abort-to-cleanup connectedness, `ctx.mode ===
+  'present'` end-to-end propagation, and the
   no-`data-pulsar-mode-*` invariant.
 - `docs/design/pul-f013-present-mode-preflight.md` — the codex
   preflight design context naming the four facets and the

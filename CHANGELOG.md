@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `.github/workflows/ci.yml` — `osv-scan` blocking job. Installs
+  the OSV-Scanner CLI binary directly (release `v2.3.8`, pinned by
+  SHA256 against `osv-scanner_SHA256SUMS`), scans the root
+  `pnpm-lock.yaml`, emits JSON, and uploads it as the `osv-results`
+  workflow artifact (7-day retention). Vulnerability findings are
+  a hard gate: exit code 1 (vulns found) emits a GitHub `::error::`
+  annotation and fails the job. Scanner/tooling errors (any other
+  non-zero exit) also fail. The artifact is uploaded on every
+  outcome so triage can proceed from the failed run. Permissions
+  are scoped to `contents: read` only — JSON output avoids the
+  `security-events: write` expansion SARIF would require. Coexists
+  with `dependency-audit` (`pnpm audit --prod`), `gitleaks`, and
+  SonarCloud; none are weakened. Boundary and guardrails captured
+  in `docs/design/issue-078-osv-scanner-preflight.md`. To enforce
+  the gate at merge time, mark the `OSV-Scanner` check as required
+  on `main` and `dev` branch protection rules.
+
 ### Changed
 
 - `src/runtime/scene-loader.ts` — `SceneLoaderOptions.ctx: unknown`
