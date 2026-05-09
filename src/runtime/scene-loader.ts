@@ -39,6 +39,7 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
+import { type PrompterDispose, type PrompterRenderer, buildPrompterScript } from './prompter';
 import type { SceneRegistry } from './registry';
 import {
   type SceneNavigationTarget,
@@ -134,6 +135,35 @@ export interface SceneLoaderOptions {
   readonly createPreloader: (signal: AbortSignal) => AssetPreloader;
   /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
   readonly runTimeline: SceneTimelineRunner;
+  /**
+   * Captions/script renderer adapter for `mode=prompter`
+   * (PUL-F019 / ADR-022). Receives a {@link import('./prompter').PrompterScript}
+   * derived from the addressed navigation target's metadata and the
+   * per-navigation `AbortSignal` so a long-running renderer can
+   * release resources when superseded by another navigation. The
+   * loader awaits the result before considering the prompter
+   * dispatch settled (parity with `runTimeline`).
+   *
+   * **Renderer contract** (see {@link PrompterRenderer}): a renderer
+   * that mounts persistent DOM MUST keep its returned promise
+   * pending until `signal.aborted` fires AND register its DOM
+   * teardown on the abort event. Returning early after mounting DOM
+   * would leave stale captions UI on screen with no cleanup path —
+   * the loader clears `inFlight` once a load settles, so the next
+   * navigation's `enqueue` would not abort anything to drive the
+   * cleanup. A trivial / no-DOM renderer (e.g. a test stub) is free
+   * to return synchronously because there is nothing to tear down.
+   *
+   * Optional: a workbench bootstrap that has not yet wired a captions
+   * UI omits the field. Under `mode=prompter` the loader still
+   * suppresses the resolver lifecycle (no preload, no `create`, no
+   * `timeline`, no `cleanup`) because that suppression is the
+   * structural defense PUL-F019 / ADR-022 record; the captions data
+   * path simply has no consumer until the UI lands. Production
+   * bootstrap supplies a concrete renderer when the captions/script
+   * UI surface lands.
+   */
+  readonly renderPrompter?: PrompterRenderer;
   /**
    * Sink for navigation errors (resolution failure, lifecycle phase
    * throw). Defaults to `console.error` in production but is
@@ -596,6 +626,59 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
+  /**
+   * PUL-F019 / ADR-022: build the in-flight record for a `mode=prompter`
+   * dispatch. Mirrors {@link buildLoad}'s contract — returns an
+   * {@link InFlightLoad} carrying a fresh `AbortController` and a
+   * settled-promise — but routes through the captions data path
+   * INSTEAD of the resolver lifecycle. No preload, no `create`, no
+   * `timeline`, no `cleanup`; the structural defense is "do not
+   * invoke the lifecycle that would render scenes visually."
+   *
+   * The renderer's return value drives the cleanup lifecycle (see
+   * {@link PrompterRenderer}):
+   *  - `void` / `undefined`: no persistent state mounted. Dispatch
+   *    is complete; the loader does not park.
+   *  - {@link PrompterDispose} callback: persistent state mounted.
+   *    The loader parks until `signal.aborted`, then invokes the
+   *    callback for cleanup before resolving the dispatch.
+   *  - `Promise<void | PrompterDispose>`: async variants of the
+   *    above, awaited identically.
+   *
+   * `renderPrompter` is optional. Without it the loader still pays
+   * the structural-suppression cost (lifecycle is bypassed) but
+   * resolves immediately — there is no captions consumer.
+   */
+  const buildPrompterLoad = (resolved: SceneNavigationTarget): InFlightLoad => {
+    const controller = new AbortController();
+    const renderer = options.renderPrompter;
+    if (renderer === undefined) {
+      return { controller, settled: Promise.resolve(), silent: false };
+    }
+    const script = buildPrompterScript(resolved);
+    const settled = (async () => {
+      const result = await renderer(script, controller.signal);
+      if (typeof result !== 'function') {
+        // `void` / `undefined` return: renderer indicated nothing
+        // persistent was mounted. Dispatch is fully complete; do
+        // not park.
+        return;
+      }
+      // PrompterDispose callback: renderer mounted persistent
+      // state and delegated cleanup ordering to the loader. Park
+      // until abort (next navigation, dispose(), etc.), then run
+      // the callback.
+      const dispose: PrompterDispose = result;
+      if (!controller.signal.aborted) {
+        await new Promise<void>((resolve) => {
+          controller.signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      await dispose();
+    })();
+    return { controller, settled, silent: false };
+  };
+
   const runTarget = async (target: NavigationTarget): Promise<void> => {
     const beatErr = validateBeatGrammar(target);
     if (beatErr !== null) {
@@ -626,9 +709,22 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    const runnable = applySingleSceneSlice(resolved, target);
-
-    const load = buildLoad(runnable, target);
+    // PUL-F019 / ADR-022: under `mode=prompter` bypass the resolver
+    // lifecycle entirely. Visual rendering is suppressed structurally
+    // by NOT running the path that would mount scenes. The captions
+    // data path takes its place. No `applySingleSceneSlice` (the
+    // captions view consumes the FULL slice — see ADR-022 for why
+    // the truncation defense from F015–F018 does not apply here),
+    // no `buildLoad` (no preloader, no buildCtx, no runner), just a
+    // captions-renderer dispatch wrapped in the same abort/queue
+    // pattern so cleanup-before-handoff and supersession still work.
+    let load: InFlightLoad | null;
+    if (effectiveMode(target) === 'prompter') {
+      load = buildPrompterLoad(resolved);
+    } else {
+      const runnable = applySingleSceneSlice(resolved, target);
+      load = buildLoad(runnable, target);
+    }
     if (load === null) return;
     inFlight = load;
 

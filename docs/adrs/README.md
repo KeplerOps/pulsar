@@ -47,3 +47,4 @@ Each ADR includes:
 | [019](019-workbench-mode-paused.md) | Workbench Mode `paused` — Runner Hold-at-First-Frame Hint at the Loader/Runner Seam | Accepted |
 | [020](020-workbench-mode-scrub.md) | Workbench Mode `scrub` — Runner Cue-Gate Hint at the Loader/Runner Seam | Accepted |
 | [021](021-workbench-mode-screenshot.md) | Workbench Mode `screenshot` — Runner Capture-Bundle Hint at the Loader/Runner Seam | Accepted |
+| [022](022-workbench-mode-prompter.md) | Workbench Mode `prompter` — Loader-Side Lifecycle Bypass with Captions Aggregation Seam | Accepted |
