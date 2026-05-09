@@ -2256,7 +2256,15 @@ describe('createSceneLoader (PUL-F008)', () => {
       ]);
     });
 
-    it('runs only the entry at the requested index of a `composition+index` target under `mode=standalone`', async () => {
+    it('runs only the entry at the requested index of a `composition+index` target under `mode=standalone` (skipping following entries — a last-index test would NOT catch a slice-truncation regression because the slice has no successors to skip)', async () => {
+      // index=1 against [a, b, c] resolves to a slice [b, c]. Under
+      // mode=standalone the loader must drop the trailing entry so
+      // only scene-b runs; without the slice transform scene-c would
+      // run too. Choosing a non-final index is what makes this test
+      // a regression detector for the slice transform itself —
+      // index=2 would slice to [c] and pass under any mode (no
+      // successors), so it would fail to discriminate standalone from
+      // present.
       const probe = buildLifecycleProbe();
       const stage = buildStage();
       const loader = createSceneLoader({
@@ -2270,13 +2278,13 @@ describe('createSceneLoader (PUL-F008)', () => {
         runTimeline: probe.runner,
       });
 
-      await loader.handle(standaloneCompositionIndexTarget(probe.compositionId, 2));
+      await loader.handle(standaloneCompositionIndexTarget(probe.compositionId, 1));
 
       expect(probe.log).toEqual([
-        'create:scene-c',
-        'timeline:scene-c',
-        'runTimeline:scene-c',
-        'cleanup:scene-c',
+        'create:scene-b',
+        'timeline:scene-b',
+        'runTimeline:scene-b',
+        'cleanup:scene-b',
       ]);
     });
 
