@@ -34,6 +34,7 @@ import {
   PULSAR_NAVIGATE_EVENT_TYPE,
   bootstrapNavigation,
 } from './runtime/navigation';
+import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
 import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loader';
 import { placeholderScene } from './scenes/placeholder';
@@ -172,6 +173,25 @@ const runTimeline: SceneTimelineRunner = (input) =>
 // by passing `stage` through ctx rather than reaching for `document`.
 const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage, mode });
 
+// Prompter renderer placeholder (PUL-F019 / ADR-022). Under
+// `mode=prompter` the loader bypasses the resolver lifecycle
+// structurally — no preload, no `create`, no `timeline`, no
+// `cleanup` — and hands a `PrompterScript` (captions aggregated
+// from the addressed scene or composition slice) to this adapter.
+// Until the captions/script UI surface lands, the placeholder
+// produces no visible output; the structural visual-rendering
+// suppression is delivered by the loader's lifecycle bypass, not by
+// this adapter.
+//
+// The placeholder mounts nothing persistent and returns
+// `undefined`. Per the `PrompterRenderer` contract, that signals
+// "no cleanup obligation" — the loader does not park waiting for
+// abort. A future captions UI that mounts persistent DOM will
+// return a `PrompterDispose` callback the loader invokes on the
+// next navigation. ADR-022 records the DRAFT → ACTIVE bar for
+// PUL-F019 (visible captions UI + end-to-end tests).
+const renderPrompter: PrompterRenderer = () => undefined;
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -179,6 +199,7 @@ const loader = createSceneLoader({
   buildCtx,
   createPreloader,
   runTimeline,
+  renderPrompter,
 });
 
 const onNavigate = (event: Event): void => {

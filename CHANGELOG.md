@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/022-workbench-mode-prompter.md` — records the PUL-F019
+  contract layer for `mode=prompter`. Structurally distinct from
+  the other six workbench modes: the loader BYPASSES the resolver
+  lifecycle entirely under `mode=prompter` (no preload, no
+  `create`, no `timeline`, no `cleanup`), so visual rendering is
+  suppressed by construction rather than by runner conformance.
+  The captions data path runs in its place — the loader aggregates
+  captions from the addressed scene OR the FULL composition slice
+  (NOT truncated to head; the truncation defense F015–F018 use
+  does not apply because there is no runner-side promise to
+  defend) and hands the resulting `PrompterScript` to a new
+  optional `renderPrompter` adapter. PUL-F019 stays DRAFT until a
+  captions/script UI surface lands and renders the script visibly
+  with end-to-end tests. See ADR-022 for the URL contract, the
+  lifecycle-bypass rationale, the captions-aggregation seam, and
+  the DRAFT → ACTIVE transition criteria. Indexed in
+  `docs/adrs/README.md`.
+- `src/runtime/prompter.ts` — new module exporting
+  `PrompterScriptEntry`, `PrompterScript`, `PrompterRenderer`, and
+  `buildPrompterScript`. Pure function over a
+  `SceneNavigationTarget`; reads `scene.captions` from the
+  registered scene module (object-form composition entries'
+  `range` / `behavior` overrides are runner-side concerns and do
+  NOT alter caption content). Returns a deep-frozen script so a
+  misbehaving renderer cannot corrupt the next navigation's view.
+- `src/runtime/scene-loader.ts` — `SceneLoaderOptions` gains
+  optional `renderPrompter?: PrompterRenderer`. When
+  `effectiveMode(target) === 'prompter'`, the loader runs a
+  separate dispatch path: validates via `resolveSceneNavigation`
+  (composition errors still surface — no silent fallback), sets
+  `data-pulsar-scene-target` and (composition variants)
+  `data-pulsar-composition-target`, builds the
+  `PrompterScript`, and hands it to the renderer with the per-
+  navigation abort signal. The lifecycle adapters (`createPreloader`,
+  `buildCtx`, `runTimeline`) and scene hooks (`create` / `timeline`
+  / `cleanup`) are NOT invoked. The slice-truncation helper
+  `applySingleSceneSlice` does NOT run under prompter (the captions
+  view consumes the full slice). Cleanup-before-handoff and
+  latest-event supersession still apply to prompter dispatch via
+  the existing serialized queue.
+- `src/main.ts` — placeholder `renderPrompter` adapter that parks
+  until the per-navigation abort signal fires (mirrors the
+  placeholder timeline runner). Until the captions/script UI
+  surface lands, the placeholder produces no visible output;
+  visual-rendering suppression is delivered structurally by the
+  loader's lifecycle bypass, not by this adapter.
+- `tests/runtime/prompter.test.ts` — pure-function tests for
+  `buildPrompterScript`: single-scene target, full composition
+  slice, composition+scene non-head, object-form entry with
+  overrides, empty captions, deep-frozen output, no source
+  mutation.
+- `tests/runtime/scene-loader.test.ts` — new
+  `'prompter-mode caption-view dispatch (PUL-F019)'` describe
+  block pinning lifecycle suppression (zero preloader / buildCtx /
+  runner / scene-hook invocations), full-slice captions
+  aggregation (NOT truncated), single-scene + composition variants,
+  `renderPrompter` not invoked for non-prompter modes,
+  stage-attrs preserved, no `data-pulsar-mode-*` preemptive
+  attribute, composition validation errors still surface,
+  graceful degradation when `renderPrompter` is omitted, renderer
+  abort under supersession, cleanup-before-handoff across the
+  present→prompter boundary, and `kind: 'none'` no-renderer
+  invariant. Existing PUL-F012 mode-dispatch tests gain a
+  complementary `does NOT invoke buildCtx when target.mode is
+  "prompter"` case to pin the lifecycle-bypass invariant on
+  PUL-F012's seam.
 - `docs/adrs/021-workbench-mode-screenshot.md` and
   `docs/design/pul-f018-screenshot-mode-preflight.md` — record the
   PUL-F018 contract layer for `mode=screenshot`. Single-scene
@@ -480,6 +546,16 @@ all land with end-to-end tests (see ADR-020).
 
 ### Changed
 
+- `tests/runtime/scene-loader.test.ts` — F015 / F016 / F017 / F018
+  negative-mode loops (`does not set <hint> for any non-<mode>
+  mode`) renamed `... lifecycle-running mode` and scoped to
+  exclude `prompter` alongside the target mode. PUL-F019's
+  loader-side lifecycle bypass means the runner is not invoked
+  under `mode=prompter`, so prompter cannot appear in a runner-
+  observation array. Behavior is unchanged for the six lifecycle-
+  running modes; the rename plus inline comment makes the scope
+  deliberate so a future maintainer does not reflexively add
+  `prompter` back.
 - `src/runtime/scene-loader.ts` — `runTarget` truncates the validated
   composition slice to a single entry — the addressed head — when
   `effectiveMode(target) === 'standalone'` AND

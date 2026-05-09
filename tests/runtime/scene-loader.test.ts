@@ -18,8 +18,9 @@ import {
   type NavigationMode,
   type NavigationTarget,
 } from '../../src/runtime/navigation';
+import type { PrompterRenderer, PrompterScript } from '../../src/runtime/prompter';
 import { createSceneRegistry } from '../../src/runtime/registry';
-import type { SceneModule } from '../../src/runtime/scene';
+import type { Caption, SceneModule } from '../../src/runtime/scene';
 import {
   type StageElement,
   type WorkbenchSceneCtx,
@@ -35,6 +36,8 @@ const stubCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage: null, mod
 
 interface BuildSceneOpts {
   readonly id: string;
+  readonly title?: string;
+  readonly captions?: readonly Caption[];
   readonly create?: SceneModule['create'];
   readonly timeline?: SceneModule['timeline'];
   readonly cleanup?: SceneModule['cleanup'];
@@ -42,11 +45,11 @@ interface BuildSceneOpts {
 
 const buildScene = (opts: BuildSceneOpts): SceneModule => ({
   id: opts.id,
-  title: opts.id,
+  title: opts.title ?? opts.id,
   duration: 1000,
   tags: [],
   assets: [],
-  captions: [],
+  captions: opts.captions ?? [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,
@@ -1346,7 +1349,16 @@ describe('createSceneLoader (PUL-F008)', () => {
       };
     };
 
-    it.each(NAVIGATION_MODES)(
+    // PUL-F019 / ADR-022: under `mode=prompter` the loader bypasses
+    // the resolver lifecycle structurally — `buildCtx` is NOT
+    // invoked because there is no scene to mount. The
+    // buildCtx-per-mode test therefore only applies to the six
+    // lifecycle-running modes; prompter's "no buildCtx invocation"
+    // invariant is pinned by the dedicated `prompter-mode caption-
+    // view dispatch (PUL-F019)` block.
+    const LIFECYCLE_MODES = NAVIGATION_MODES.filter((m) => m !== 'prompter');
+
+    it.each(LIFECYCLE_MODES)(
       'invokes buildCtx with %s when target.mode is %s (clause 1: explicit mode is selected)',
       async (mode) => {
         const intro = buildScene({ id: 'intro' });
@@ -1366,6 +1378,27 @@ describe('createSceneLoader (PUL-F008)', () => {
         expect(probe.modes).toEqual([mode]);
       },
     );
+
+    it('does NOT invoke buildCtx when target.mode is "prompter" (PUL-F019: lifecycle is structurally bypassed under prompter)', async () => {
+      // The structural inverse of the lifecycle-mode test above —
+      // pinned here so PUL-F012's mode-dispatch block is honest
+      // about which modes actually run the lifecycle.
+      const intro = buildScene({ id: 'intro' });
+      const stage = buildStage();
+      const probe = buildModeProbe();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: probe.buildCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'intro' }, mode: 'prompter' });
+
+      expect(probe.modes).toEqual([]);
+    });
 
     it('invokes buildCtx with "present" when target.mode is absent (clause 2: default is present)', async () => {
       const intro = buildScene({ id: 'intro' });
@@ -2822,19 +2855,29 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(captured).toEqual([{ hasRepeat: false, repeat: undefined }]);
     });
 
-    it('does not set `repeat` for any non-loop mode', async () => {
-      // Walk the seven-mode allowlist (minus `loop`) and confirm that
-      // none of them produce `repeat` on the runner input. Catching
-      // every non-loop mode discriminates against an over-broad fix
-      // that gated `repeat` on `mode !== undefined` rather than
-      // `mode === 'loop'`. Capturing the per-iteration mode alongside
-      // the `'repeat' in input` flag means the assertion failure
+    it('does not set `repeat` for any non-loop, lifecycle-running mode', async () => {
+      // Walk the seven-mode allowlist (minus `loop` and `prompter`)
+      // and confirm that none of them produce `repeat` on the
+      // runner input. Catching every non-loop mode discriminates
+      // against an over-broad fix that gated `repeat` on
+      // `mode !== undefined` rather than `mode === 'loop'`.
+      // Capturing the per-iteration mode alongside the
+      // `'repeat' in input` flag means the assertion failure
       // identifies WHICH mode regressed, not just "some mode did."
-      const nonLoopModes = NAVIGATION_MODES.filter((m) => m !== 'loop');
+      //
+      // PUL-F019 / ADR-022: `prompter` does not invoke `runTimeline`
+      // at all (lifecycle is structurally bypassed), so it cannot
+      // appear in this test's `captured` array. The dedicated
+      // `prompter-mode caption-view dispatch (PUL-F019)` block
+      // pins prompter's no-runner invariant directly. Filtering
+      // it out here keeps this test focused on lifecycle modes.
+      const nonLoopLifecycleModes = NAVIGATION_MODES.filter(
+        (m) => m !== 'loop' && m !== 'prompter',
+      );
       const captured: { mode: NavigationMode; hasRepeat: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      for (const mode of nonLoopModes) {
+      for (const mode of nonLoopLifecycleModes) {
         const runner: SceneTimelineRunner = (input) => {
           captured.push({ mode, hasRepeat: 'repeat' in input });
         };
@@ -2849,10 +2892,11 @@ describe('createSceneLoader (PUL-F008)', () => {
         await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
       }
 
-      // One entry per non-loop mode, each must have `hasRepeat: false`.
-      // Building the expected array from `nonLoopModes` keeps the
-      // assertion in sync if the mode allowlist ever changes.
-      expect(captured).toEqual(nonLoopModes.map((mode) => ({ mode, hasRepeat: false })));
+      // One entry per non-loop lifecycle mode, each must have
+      // `hasRepeat: false`. Building the expected array from
+      // `nonLoopLifecycleModes` keeps the assertion in sync if the
+      // mode allowlist ever changes.
+      expect(captured).toEqual(nonLoopLifecycleModes.map((mode) => ({ mode, hasRepeat: false })));
     });
 
     it('exposes `ctx.mode === "loop"` to every lifecycle hook of the head scene under all locator shapes', async () => {
@@ -3515,20 +3559,27 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(captured).toEqual([{ hasHold: false, hold: undefined }]);
     });
 
-    it('does not set `hold` for any non-paused mode', async () => {
-      // Walk the seven-mode allowlist (minus `paused`) and confirm
-      // that none of them produce `hold` on the runner input.
-      // Catching every non-paused mode discriminates against an
-      // over-broad fix that gated `hold` on `mode !== undefined`
-      // rather than `mode === 'paused'`. Capturing the per-iteration
-      // mode alongside the `'hold' in input` flag means the
-      // assertion failure identifies WHICH mode regressed, not just
-      // "some mode did."
-      const nonPausedModes = NAVIGATION_MODES.filter((m) => m !== 'paused');
+    it('does not set `hold` for any non-paused, lifecycle-running mode', async () => {
+      // Walk the seven-mode allowlist (minus `paused` and
+      // `prompter`) and confirm that none of them produce `hold` on
+      // the runner input. Catching every non-paused mode
+      // discriminates against an over-broad fix that gated `hold` on
+      // `mode !== undefined` rather than `mode === 'paused'`.
+      // Capturing the per-iteration mode alongside the
+      // `'hold' in input` flag means the assertion failure
+      // identifies WHICH mode regressed, not just "some mode did."
+      //
+      // PUL-F019 / ADR-022: `prompter` does not invoke `runTimeline`
+      // (lifecycle bypassed); the dedicated F019 block pins that
+      // invariant. Filter prompter out here so this test stays
+      // focused on lifecycle-running modes.
+      const nonPausedLifecycleModes = NAVIGATION_MODES.filter(
+        (m) => m !== 'paused' && m !== 'prompter',
+      );
       const captured: { mode: NavigationMode; hasHold: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      for (const mode of nonPausedModes) {
+      for (const mode of nonPausedLifecycleModes) {
         const runner: SceneTimelineRunner = (input) => {
           captured.push({ mode, hasHold: 'hold' in input });
         };
@@ -3543,11 +3594,11 @@ describe('createSceneLoader (PUL-F008)', () => {
         await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
       }
 
-      // One entry per non-paused mode, each must have `hasHold:
-      // false`. Building the expected array from `nonPausedModes`
-      // keeps the assertion in sync if the mode allowlist ever
-      // changes.
-      expect(captured).toEqual(nonPausedModes.map((mode) => ({ mode, hasHold: false })));
+      // One entry per non-paused lifecycle mode, each must have
+      // `hasHold: false`. Building the expected array from
+      // `nonPausedLifecycleModes` keeps the assertion in sync if the
+      // mode allowlist ever changes.
+      expect(captured).toEqual(nonPausedLifecycleModes.map((mode) => ({ mode, hasHold: false })));
     });
 
     it('exposes `ctx.mode === "paused"` to every lifecycle hook of the head scene under all locator shapes', async () => {
@@ -4062,20 +4113,26 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(captured).toEqual([{ hasCueGate: false, cueGate: undefined }]);
     });
 
-    it('does not set `cueGate` for any non-scrub mode', async () => {
-      // Walk the seven-mode allowlist (minus `scrub`) and confirm
-      // that none of them produce `cueGate` on the runner input.
-      // Catching every non-scrub mode discriminates against an
-      // over-broad fix that gated `cueGate` on `mode !== undefined`
-      // rather than `mode === 'scrub'`. Capturing the per-iteration
-      // mode alongside the `'cueGate' in input` flag means the
-      // assertion failure identifies WHICH mode regressed, not just
-      // "some mode did."
-      const nonScrubModes = NAVIGATION_MODES.filter((m) => m !== 'scrub');
+    it('does not set `cueGate` for any non-scrub, lifecycle-running mode', async () => {
+      // Walk the seven-mode allowlist (minus `scrub` and `prompter`)
+      // and confirm that none of them produce `cueGate` on the
+      // runner input. Catching every non-scrub mode discriminates
+      // against an over-broad fix that gated `cueGate` on
+      // `mode !== undefined` rather than `mode === 'scrub'`.
+      // Capturing the per-iteration mode alongside the
+      // `'cueGate' in input` flag means the assertion failure
+      // identifies WHICH mode regressed, not just "some mode did."
+      //
+      // PUL-F019 / ADR-022: `prompter` does not invoke `runTimeline`
+      // (lifecycle bypassed); the dedicated F019 block pins that
+      // invariant.
+      const nonScrubLifecycleModes = NAVIGATION_MODES.filter(
+        (m) => m !== 'scrub' && m !== 'prompter',
+      );
       const captured: { mode: NavigationMode; hasCueGate: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      for (const mode of nonScrubModes) {
+      for (const mode of nonScrubLifecycleModes) {
         const runner: SceneTimelineRunner = (input) => {
           captured.push({ mode, hasCueGate: 'cueGate' in input });
         };
@@ -4090,11 +4147,11 @@ describe('createSceneLoader (PUL-F008)', () => {
         await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
       }
 
-      // One entry per non-scrub mode, each must have `hasCueGate:
-      // false`. Building the expected array from `nonScrubModes`
-      // keeps the assertion in sync if the mode allowlist ever
-      // changes.
-      expect(captured).toEqual(nonScrubModes.map((mode) => ({ mode, hasCueGate: false })));
+      // One entry per non-scrub lifecycle mode, each must have
+      // `hasCueGate: false`. Building the expected array from
+      // `nonScrubLifecycleModes` keeps the assertion in sync if the
+      // mode allowlist ever changes.
+      expect(captured).toEqual(nonScrubLifecycleModes.map((mode) => ({ mode, hasCueGate: false })));
     });
 
     it('exposes `ctx.mode === "scrub"` to every lifecycle hook of the head scene under all locator shapes', async () => {
@@ -4647,21 +4704,27 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(captured).toEqual([{ hasScreenshot: false, screenshot: undefined }]);
     });
 
-    it('does not set `screenshot` for any non-screenshot mode', async () => {
-      // Walk the seven-mode allowlist (minus `screenshot`) and
-      // confirm that none of them produce `screenshot` on the
-      // runner input. Catching every non-screenshot mode
-      // discriminates against an over-broad fix that gated
-      // `screenshot` on `mode !== undefined` rather than
+    it('does not set `screenshot` for any non-screenshot, lifecycle-running mode', async () => {
+      // Walk the seven-mode allowlist (minus `screenshot` and
+      // `prompter`) and confirm that none of them produce
+      // `screenshot` on the runner input. Catching every
+      // non-screenshot mode discriminates against an over-broad fix
+      // that gated `screenshot` on `mode !== undefined` rather than
       // `mode === 'screenshot'`. Capturing the per-iteration mode
       // alongside the `'screenshot' in input` flag means the
       // assertion failure identifies WHICH mode regressed, not
       // just "some mode did."
-      const nonScreenshotModes = NAVIGATION_MODES.filter((m) => m !== 'screenshot');
+      //
+      // PUL-F019 / ADR-022: `prompter` does not invoke `runTimeline`
+      // (lifecycle bypassed); the dedicated F019 block pins that
+      // invariant.
+      const nonScreenshotLifecycleModes = NAVIGATION_MODES.filter(
+        (m) => m !== 'screenshot' && m !== 'prompter',
+      );
       const captured: { mode: NavigationMode; hasScreenshot: boolean }[] = [];
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
-      for (const mode of nonScreenshotModes) {
+      for (const mode of nonScreenshotLifecycleModes) {
         const runner: SceneTimelineRunner = (input) => {
           captured.push({ mode, hasScreenshot: 'screenshot' in input });
         };
@@ -4676,11 +4739,13 @@ describe('createSceneLoader (PUL-F008)', () => {
         await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
       }
 
-      // One entry per non-screenshot mode, each must have
+      // One entry per non-screenshot lifecycle mode, each must have
       // `hasScreenshot: false`. Building the expected array from
-      // `nonScreenshotModes` keeps the assertion in sync if the
-      // mode allowlist ever changes.
-      expect(captured).toEqual(nonScreenshotModes.map((mode) => ({ mode, hasScreenshot: false })));
+      // `nonScreenshotLifecycleModes` keeps the assertion in sync if
+      // the mode allowlist ever changes.
+      expect(captured).toEqual(
+        nonScreenshotLifecycleModes.map((mode) => ({ mode, hasScreenshot: false })),
+      );
     });
 
     it('exposes `ctx.mode === "screenshot"` to every lifecycle hook of the head scene under all locator shapes', async () => {
@@ -4967,6 +5032,869 @@ describe('createSceneLoader (PUL-F008)', () => {
           screenshot: 'capture',
         },
       ]);
+    });
+  });
+
+  describe('prompter-mode caption-view dispatch (PUL-F019)', () => {
+    // PUL-F019 statement: in `mode=prompter`, the runtime SHALL render
+    // a script/caption view derived from the captions metadata of the
+    // addressed scene or composition. Visual rendering of the scene
+    // SHALL be suppressed.
+    //
+    // Materially-implementable parts of the statement that this block
+    // pins (ADR-022 records the contract boundary):
+    //   - Visual rendering is suppressed STRUCTURALLY: under
+    //     `mode=prompter` the loader does NOT invoke `createPreloader`,
+    //     does NOT invoke `runTimeline`, and does NOT mount the scene
+    //     (no `create` / `timeline` / `cleanup`). The captions data
+    //     path runs INSTEAD of the resolver lifecycle. CSS-hiding an
+    //     already-rendered scene would not satisfy the requirement —
+    //     the codex preflight guardrails for PUL-F019 explicitly call
+    //     this out.
+    //   - The captions view is derived from the captions metadata of
+    //     the addressed scene OR composition. The slice is NOT
+    //     truncated under composition addressing — every entry's
+    //     captions are aggregated, in dispatch order. This is the
+    //     structural difference from `mode=loop` / `mode=paused` /
+    //     `mode=scrub` / `mode=screenshot`, which truncate to head
+    //     because their lifecycle promise is "no following entries
+    //     run." Under prompter the lifecycle doesn't run AT ALL, so
+    //     the truncation defense from the other modes does not apply.
+    //   - The loader hands the computed `PrompterScript` to an
+    //     optional `renderPrompter` adapter on `SceneLoaderOptions`.
+    //     A workbench bootstrap that has not yet wired a captions UI
+    //     omits the field; the loader still suppresses the lifecycle
+    //     (the structural defense) but invokes no renderer. Production
+    //     bootstrap supplies a concrete renderer when the UI surface
+    //     lands.
+    //   - Stage attrs (`data-pulsar-scene-target`,
+    //     `data-pulsar-composition-target`) are still set so external
+    //     observers see what was addressed. NO `data-pulsar-mode-*`
+    //     preemptive attribute (parity with ADR-016 / ADR-017 /
+    //     ADR-018 / ADR-019 / ADR-020 / ADR-021).
+    //   - Composition validation (unregistered composition, unknown
+    //     member scene, out-of-range index) STILL surfaces as a
+    //     navigation error under `mode=prompter` — no silent fallback
+    //     to direct scene lookup.
+    //   - Other modes (`present`, `standalone`, `loop`, `paused`,
+    //     `scrub`, `screenshot`) and a `mode`-less URL DO NOT invoke
+    //     `renderPrompter`. A regression that broadcast prompter
+    //     dispatch under any mode would suppress lifecycle for normal
+    //     playback URLs.
+    //
+    // PUL-F019 stays DRAFT after this PR (ADR-022 records the
+    // boundary; following the ADR-016 / ADR-017 / ADR-018 / ADR-019 /
+    // ADR-020 / ADR-021 / PUL-F013 / PUL-F014 / PUL-F015 / PUL-F016 /
+    // PUL-F017 / PUL-F018 precedent). The seam — the loader bypasses
+    // the lifecycle and hands a `PrompterScript` to the adapter — IS
+    // materially shipped. The visible captions/script UI is the
+    // future workbench surface, gated on the DRAFT → ACTIVE
+    // transition.
+
+    const prompterSceneTarget = (id: string): NavigationTarget => ({
+      locator: { kind: 'scene', scene: id },
+      mode: 'prompter',
+    });
+    const prompterCompositionTarget = (composition: string): NavigationTarget => ({
+      locator: { kind: 'composition', composition },
+      mode: 'prompter',
+    });
+    const prompterCompositionSceneTarget = (
+      composition: string,
+      scene: string,
+    ): NavigationTarget => ({
+      locator: { kind: 'composition-scene', composition, scene },
+      mode: 'prompter',
+    });
+    const prompterCompositionIndexTarget = (
+      composition: string,
+      index: number,
+    ): NavigationTarget => ({
+      locator: { kind: 'composition-index', composition, index },
+      mode: 'prompter',
+    });
+
+    interface LifecycleProbe {
+      readonly log: string[];
+      readonly preloaderInvocations: number;
+      readonly buildCtxInvocations: number;
+    }
+
+    // Probe that records every lifecycle observation across every
+    // boundary the lifecycle would touch under non-prompter modes:
+    //   - `createPreloader` (asset pipeline)
+    //   - `buildCtx` (per-navigation ctx — its very invocation means
+    //     the loader is on the lifecycle path)
+    //   - `runTimeline` (runner adapter)
+    //   - scene `create` / `timeline` / `cleanup` (lifecycle hooks)
+    // Under `mode=prompter` every counter / log entry MUST stay zero.
+    // The codex guardrails for PUL-F019 explicitly call out asset
+    // pipeline + scene renderer + canvas/stage + media playback +
+    // animation loop as side effects to avoid; an under-watched test
+    // (e.g. one that only checked `runTimeline`) would miss an
+    // ABI regression that started running the preloader under
+    // prompter — exactly the `asset pipeline` clause of the guardrails.
+
+    type ProbeOpts = {
+      readonly probe: LifecycleProbe;
+      readonly preloader: () => Promise<void>;
+      readonly runner: SceneTimelineRunner;
+      readonly buildCtxFn: (mode: NavigationMode) => WorkbenchSceneCtx;
+      readonly scenes: readonly SceneModule[];
+    };
+
+    const buildLifecycleProbe = (): ProbeOpts => {
+      const log: string[] = [];
+      const probe: { -readonly [K in keyof LifecycleProbe]: LifecycleProbe[K] } = {
+        log,
+        preloaderInvocations: 0,
+        buildCtxInvocations: 0,
+      };
+      const trace = (id: string, captions?: readonly Caption[]): SceneModule =>
+        buildScene({
+          id,
+          title: id,
+          captions: captions ?? [],
+          create: () => {
+            log.push(`create:${id}`);
+          },
+          timeline: () => {
+            log.push(`timeline:${id}`);
+            return null;
+          },
+          cleanup: () => {
+            log.push(`cleanup:${id}`);
+          },
+        });
+      const runner: SceneTimelineRunner = (input) => {
+        log.push(`runTimeline:${input.scene.id}`);
+      };
+      const preloader = (): Promise<void> => {
+        probe.preloaderInvocations += 1;
+        return Promise.resolve();
+      };
+      const buildCtxFn = (mode: NavigationMode): WorkbenchSceneCtx => {
+        probe.buildCtxInvocations += 1;
+        return { stage: null, mode };
+      };
+      const scenes = [
+        trace('scene-a', [{ at: 0, text: 'A1' }]),
+        trace('scene-b', [{ at: 0, text: 'B1' }]),
+        trace('scene-c', [{ at: 0, text: 'C1' }]),
+      ];
+      return { probe, preloader, runner, buildCtxFn, scenes };
+    };
+
+    it('suppresses every lifecycle side effect under `mode=prompter` (no preloader, no buildCtx, no runner, no scene hooks)', async () => {
+      // The structural-suppression guarantee. A regression that
+      // dispatched prompter through `loadSceneNavigationTarget`
+      // (the same path other modes use) would emit lifecycle entries
+      // for the head scene AND increment the preloader and buildCtx
+      // counters; this test would surface every one of those
+      // regressions.
+      const { probe, preloader, runner, buildCtxFn, scenes } = buildLifecycleProbe();
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([...scenes]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: scenes.map((s) => s.id) },
+        ]),
+        stage: stage.element,
+        buildCtx: buildCtxFn,
+        createPreloader: () => preloader,
+        runTimeline: runner,
+      });
+
+      await loader.handle(prompterCompositionTarget('full-talk'));
+
+      expect(probe.log).toEqual([]);
+      expect(probe.preloaderInvocations).toBe(0);
+      expect(probe.buildCtxInvocations).toBe(0);
+    });
+
+    it('invokes `renderPrompter` with a script aggregating captions across the FULL composition slice (NOT truncated to head)', async () => {
+      // Captions span every entry in the composition slice. The
+      // composition list has three scenes; under prompter every
+      // scene's captions must reach the renderer in manifest order.
+      // A regression that copy-pasted truncation from F015–F018
+      // would observe only the head scene's captions in the script.
+      // PUL-F019 explicitly says "addressed scene OR composition,"
+      // and ADR-022 records the no-truncation policy as the
+      // structural difference.
+      const sceneA = buildScene({
+        id: 'scene-a',
+        title: 'Alpha',
+        captions: [
+          { at: 0, text: 'A1' },
+          { at: 100, text: 'A2' },
+        ],
+      });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        title: 'Bravo',
+        captions: [{ at: 0, text: 'B1' }],
+      });
+      const sceneC = buildScene({
+        id: 'scene-c',
+        title: 'Charlie',
+        captions: [{ at: 0, text: 'C1' }],
+      });
+      const stage = buildStage();
+      const captured: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        captured.push(script);
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      await loader.handle(prompterCompositionTarget('full-talk'));
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toEqual({
+        composition: { id: 'full-talk' },
+        entries: [
+          {
+            sceneId: 'scene-a',
+            title: 'Alpha',
+            captions: [
+              { at: 0, text: 'A1' },
+              { at: 100, text: 'A2' },
+            ],
+          },
+          { sceneId: 'scene-b', title: 'Bravo', captions: [{ at: 0, text: 'B1' }] },
+          { sceneId: 'scene-c', title: 'Charlie', captions: [{ at: 0, text: 'C1' }] },
+        ],
+      });
+    });
+
+    it('invokes `renderPrompter` with a single-scene script for a `scene` target under `mode=prompter`', async () => {
+      // Direct-scene addressing — no composition context. The script
+      // has one entry and no `composition` field. A regression that
+      // assumed every prompter dispatch had a composition would
+      // either crash on `target.composition!.id` or produce a
+      // misleading script. Pin the single-scene shape explicitly.
+      const sceneA = buildScene({
+        id: 'scene-a',
+        captions: [{ at: 250, text: 'hello' }],
+      });
+      const stage = buildStage();
+      const captured: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        captured.push(script);
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      await loader.handle(prompterSceneTarget('scene-a'));
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.entries).toEqual([
+        { sceneId: 'scene-a', title: 'scene-a', captions: [{ at: 250, text: 'hello' }] },
+      ]);
+      expect(captured[0] && 'composition' in captured[0]).toBe(false);
+    });
+
+    it('starts the prompter slice at the addressed scene under `composition+scene` non-head', async () => {
+      // The dispatcher already snapshots the slice from the addressed
+      // scene onward (PUL-F008 / ADR-014). The prompter view honors
+      // that — entries match the slice, NOT the full composition.
+      // A regression that walked back to the composition's first
+      // entry would surface skipped-scene captions. Choose a non-head
+      // start so the test discriminates against "always full
+      // composition."
+      const sceneA = buildScene({ id: 'scene-a', captions: [{ at: 0, text: 'skipped' }] });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        title: 'Bravo',
+        captions: [{ at: 0, text: 'kept' }],
+      });
+      const sceneC = buildScene({
+        id: 'scene-c',
+        title: 'Charlie',
+        captions: [{ at: 0, text: 'also kept' }],
+      });
+      const stage = buildStage();
+      const captured: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        captured.push(script);
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      await loader.handle(prompterCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.entries.map((e) => e.sceneId)).toEqual(['scene-b', 'scene-c']);
+    });
+
+    it('starts the prompter slice at the requested index under `composition+index`', async () => {
+      // index=1 against [a, b, c] resolves to slice [b, c]. Non-final
+      // index discriminates against a regression that re-walked from
+      // 0 (would surface scene-a) AND a regression that always sliced
+      // to length 1 (would drop scene-c). Choosing index=1 catches
+      // both.
+      const sceneA = buildScene({ id: 'scene-a', captions: [{ at: 0, text: 'A' }] });
+      const sceneB = buildScene({ id: 'scene-b', captions: [{ at: 0, text: 'B' }] });
+      const sceneC = buildScene({ id: 'scene-c', captions: [{ at: 0, text: 'C' }] });
+      const stage = buildStage();
+      const captured: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        captured.push(script);
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      await loader.handle(prompterCompositionIndexTarget('full-talk', 1));
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.entries.map((e) => e.sceneId)).toEqual(['scene-b', 'scene-c']);
+    });
+
+    it('does not invoke `renderPrompter` for any non-prompter mode', async () => {
+      // Walk the seven-mode allowlist (minus `prompter`) and confirm
+      // that none of them invoke the prompter renderer. A regression
+      // that gated `renderPrompter` on `mode !== undefined` (instead
+      // of `mode === 'prompter'`) would call the renderer for
+      // standalone / loop / paused / scrub / screenshot under URL
+      // navigations that should run the lifecycle. The renderer's
+      // invocation count IS the assertion — not the count of any
+      // particular mode — because the regression is "renderer fires
+      // when it shouldn't."
+      const nonPrompterModes = NAVIGATION_MODES.filter((m) => m !== 'prompter');
+      const calls: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        calls.push(script);
+      };
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      for (const mode of nonPrompterModes) {
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([sceneA]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+          renderPrompter,
+        });
+        await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
+      }
+      // No mode at all (defaults to `present`).
+      const loaderNoMode = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+      await loaderNoMode.handle(sceneTarget('scene-a'));
+
+      expect(calls).toEqual([]);
+    });
+
+    it('still suppresses the lifecycle when `renderPrompter` is omitted (graceful degradation)', async () => {
+      // A workbench bootstrap that has not yet wired a captions UI
+      // omits the field. The loader's structural-suppression
+      // guarantee is independent of the renderer's presence — under
+      // `mode=prompter` the lifecycle is bypassed regardless. The
+      // captions data path simply has no consumer until the UI lands.
+      // A regression that skipped suppression when `renderPrompter`
+      // was absent would surface lifecycle entries here.
+      const { probe, preloader, runner, buildCtxFn, scenes } = buildLifecycleProbe();
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([...scenes]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: buildCtxFn,
+        createPreloader: () => preloader,
+        runTimeline: runner,
+        // renderPrompter omitted on purpose.
+      });
+
+      await loader.handle(prompterSceneTarget('scene-a'));
+
+      expect(probe.log).toEqual([]);
+      expect(probe.preloaderInvocations).toBe(0);
+      expect(probe.buildCtxInvocations).toBe(0);
+    });
+
+    it('writes `data-pulsar-scene-target` and `data-pulsar-composition-target` for a composition-prompter target (preserves observability of what was addressed)', async () => {
+      // Stage attrs communicate "what was addressed," not "what runs."
+      // Suppressed lifecycle does NOT mean suppressed observability —
+      // an external observer (agent, future tooling) reading the
+      // stage must still see what URL the runtime navigated to.
+      // Mirrors the standalone / loop / paused / scrub / screenshot
+      // invariant.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter: () => undefined,
+      });
+
+      await loader.handle(prompterCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-b');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+    });
+
+    it('writes no `data-pulsar-mode-*` suppression attribute on the stage under `mode=prompter`', async () => {
+      // Mirrors ADR-016 / ADR-017 / ADR-018 / ADR-019 / ADR-020 /
+      // ADR-021. ADR-022 keeps the same invariant: the prompter UI
+      // surface (when it lands) is free to write its own stage
+      // attributes, but the loader does NOT preemptively claim a
+      // `data-pulsar-mode-*` namespace.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter: () => undefined,
+      });
+
+      await loader.handle(prompterSceneTarget('scene-a'));
+
+      const modeAttrs = Array.from(stage.attrs.keys()).filter((name) =>
+        name.startsWith('data-pulsar-mode-'),
+      );
+      expect(modeAttrs).toEqual([]);
+    });
+
+    it('surfaces composition-not-registered as a navigation error under `mode=prompter` (no silent fallback)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const calls: PrompterScript[] = [];
+      const renderPrompter: PrompterRenderer = (script) => {
+        calls.push(script);
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+        renderPrompter,
+      });
+
+      await loader.handle(prompterCompositionTarget('not-registered'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'composition "not-registered" is not registered',
+      );
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBeDefined();
+      expect(calls).toEqual([]);
+    });
+
+    it('surfaces composition-member error under `mode=prompter` for an unknown scene in `composition+scene` (renderPrompter is NOT called on error paths)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneZ = buildScene({ id: 'scene-z' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const calls: PrompterScript[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneZ]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+        renderPrompter: (script) => {
+          calls.push(script);
+        },
+      });
+
+      await loader.handle(prompterCompositionSceneTarget('full-talk', 'scene-z'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'scene "scene-z" is not a member of composition "full-talk"',
+      );
+      expect(calls).toEqual([]);
+    });
+
+    it('surfaces index-out-of-range under `mode=prompter` (renderPrompter is NOT called on error paths)', async () => {
+      // Parity with the composition-not-registered and
+      // composition-member error tests: error paths MUST surface
+      // via `onError` AND MUST NOT invoke the renderer. Capturing
+      // the renderer's invocations here keeps the index-out-of-
+      // range coverage symmetric with its siblings; without that
+      // assertion, a regression that dispatched the renderer
+      // before validation would slip past this test.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const calls: PrompterScript[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+        renderPrompter: (script) => {
+          calls.push(script);
+        },
+      });
+
+      await loader.handle(prompterCompositionIndexTarget('full-talk', 5));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain('index 5 is out of range');
+      expect(calls).toEqual([]);
+    });
+
+    it('does not invoke `renderPrompter` for `kind: "none"` under `mode=prompter` (nothing addressed, nothing to render)', async () => {
+      // `?mode=prompter` with no scene or composition target resolves
+      // to `kind: 'none'`. There is no addressed metadata to derive
+      // captions from, so the loader should run no renderer. A
+      // regression that synthesized an empty script for `none`
+      // targets would cause the captions UI to flash an empty view
+      // on every popstate without an addressed scene.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const calls: PrompterScript[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter: (script) => {
+          calls.push(script);
+        },
+      });
+
+      await loader.handle({ locator: { kind: 'none' }, mode: 'prompter' });
+
+      expect(calls).toEqual([]);
+    });
+
+    it("invokes a renderer's PrompterDispose callback after abort when the navigation is superseded", async () => {
+      // ADR-022's renderer contract (enforceable, not docs-only): a
+      // renderer that mounts persistent DOM returns a
+      // `PrompterDispose` callback (`() => void | Promise<void>`).
+      // The loader OWNS the cleanup sequencing: it parks until
+      // `signal.aborted` fires (next navigation, dispose(), etc.),
+      // then invokes the callback. This test pins the loader's
+      // call to dispose specifically — without the loader-driven
+      // sequencing, a renderer that mounted DOM and returned a
+      // dispose function would never see it called.
+      const teardown: string[] = [];
+      const sceneA = buildScene({ id: 'scene-a', captions: [{ at: 0, text: 'a' }] });
+      const sceneB = buildScene({ id: 'scene-b', captions: [{ at: 0, text: 'b' }] });
+      const stage = buildStage();
+      const renderPrompter: PrompterRenderer = (script) => {
+        if (script.entries[0]?.sceneId === 'scene-b') {
+          // Second navigation: trivial renderer (no DOM mounted),
+          // returns void. Lets `loader.idle()` settle without a
+          // third navigation supersession.
+          return undefined;
+        }
+        // First navigation: simulate "mount captions DOM" and
+        // return the dispose callback the loader will invoke
+        // after abort.
+        return () => {
+          teardown.push('dispose:scene-a');
+        };
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      void loader.handle(prompterSceneTarget('scene-a'));
+      // Yield so the first dispatch's renderer returns its dispose
+      // callback to the loader before the second navigation
+      // supersedes it.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      void loader.handle(prompterSceneTarget('scene-b'));
+      await loader.idle();
+
+      expect(teardown).toEqual(['dispose:scene-a']);
+    });
+
+    it('awaits an async PrompterDispose callback before settling the dispatch', async () => {
+      // The dispose callback may be async (e.g. waiting for a CSS
+      // transition before unmounting captions DOM). The loader
+      // MUST await it before resolving the dispatch — otherwise
+      // the next navigation's dispatch could overlap with the
+      // previous renderer's lingering teardown. Pin async dispose
+      // explicitly: after the supersession, the
+      // present-mode-runner's create only fires AFTER the prompter
+      // dispatch's async dispose completes.
+      const order: string[] = [];
+      const sceneA = buildScene({ id: 'scene-a', captions: [{ at: 0, text: 'a' }] });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        create: () => {
+          order.push('create:scene-b');
+        },
+      });
+      const stage = buildStage();
+      const renderPrompter: PrompterRenderer = () => async () => {
+        // Async teardown — yields to the microtask queue twice
+        // before completing, so a regression that didn't await
+        // dispose would let scene-b's create run first.
+        await Promise.resolve();
+        await Promise.resolve();
+        order.push('dispose:scene-a');
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      void loader.handle(prompterSceneTarget('scene-a'));
+      await new Promise<void>((r) => setTimeout(r, 0));
+      // Second navigation is `mode=present` (default) — its
+      // lifecycle running BEFORE prompter dispose would fail this
+      // assertion.
+      void loader.handle(sceneTarget('scene-b'));
+      await loader.idle();
+
+      expect(order).toEqual(['dispose:scene-a', 'create:scene-b']);
+    });
+
+    it('does not park when the renderer returns void (no persistent state mounted)', async () => {
+      // The void-return path of the contract: renderer mounted
+      // nothing, dispatch is fully complete after the renderer's
+      // promise resolves. `loader.idle()` should settle WITHOUT a
+      // second navigation aborting the dispatch. A regression that
+      // always parked would hang `idle()` here (vitest's per-test
+      // timeout would surface the hang as a failure).
+      //
+      // Beyond the no-hang behavior, also verify that the renderer
+      // was invoked exactly once and that `loader.idle()` is
+      // settled by the time we observe it (proving the dispatch
+      // completed, not that idle() simply returned the still-
+      // pending queue promise).
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      let renderCount = 0;
+      const renderPrompter: PrompterRenderer = () => {
+        renderCount += 1;
+        return undefined;
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      // Single navigation — no supersession, no abort. With void
+      // return, idle() must still settle.
+      await loader.handle(prompterSceneTarget('scene-a'));
+      const idleSettled = await Promise.race([
+        loader.idle().then(() => 'settled' as const),
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 0)),
+      ]);
+
+      expect(renderCount).toBe(1);
+      expect(idleSettled).toBe('settled');
+    });
+
+    it('aborts a long-running `renderPrompter` when superseded by another navigation (the renderer signal honors abort)', async () => {
+      // `renderPrompter` is awaited by the loader's serialized queue
+      // — same shape as `runTimeline`. A renderer that doesn't honor
+      // `signal` would hold up the next navigation forever. The
+      // loader aborts the in-flight signal eagerly on enqueue (parity
+      // with `runTimeline`'s abort path). The renderer's signal-tied
+      // promise resolves on abort, allowing the next navigation to
+      // proceed. A regression that forgot to abort prompter would
+      // surface here as a hung second navigation (vitest's per-test
+      // timeout makes the hang an explicit failure).
+      //
+      // The test must yield between the two `handle()` calls so the
+      // first navigation actually starts running its renderer before
+      // the second navigation aborts it. Without the yield, latest-
+      // event supersession (in `runOnce`) would drop event 1 before
+      // it ran — that is correct behavior for back-to-back enqueues
+      // but would not exercise the abort path this test pins.
+      const sceneA = buildScene({ id: 'scene-a', captions: [{ at: 0, text: 'first' }] });
+      const sceneB = buildScene({ id: 'scene-b', captions: [{ at: 0, text: 'second' }] });
+      const stage = buildStage();
+      const seenScripts: PrompterScript[] = [];
+      // The first navigation's renderer parks until abort (so the
+      // second navigation has something to abort). The second
+      // navigation's renderer returns immediately, so loader.idle()
+      // settles instead of hanging on a non-existent third
+      // navigation.
+      const renderPrompter: PrompterRenderer = (script, signal) => {
+        seenScripts.push(script);
+        if (script.entries[0]?.sceneId === 'scene-a') {
+          return new Promise<undefined>((resolve) => {
+            if (signal.aborted) {
+              resolve(undefined);
+              return;
+            }
+            signal.addEventListener('abort', () => resolve(undefined), { once: true });
+          });
+        }
+        return undefined;
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        renderPrompter,
+      });
+
+      void loader.handle(prompterSceneTarget('scene-a'));
+      // Yield to the microtask queue so the first navigation enters
+      // its renderer (and registers the abort listener) before the
+      // second navigation enqueues and aborts it.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      void loader.handle(prompterSceneTarget('scene-b'));
+      await loader.idle();
+
+      // Both renders were entered (the second only after the first
+      // aborted). A regression that didn't abort the first would
+      // hang the second indefinitely.
+      expect(seenScripts.map((s) => s.entries[0]?.sceneId)).toEqual(['scene-a', 'scene-b']);
+    });
+
+    it('cleans up an in-flight non-prompter scene before dispatching prompter (cleanup-before-handoff across mode boundary)', async () => {
+      // Navigating from `mode=present` (running scene) to
+      // `mode=prompter` MUST run the previous scene's `cleanup`
+      // before the prompter renderer fires. The loader's
+      // abort-and-await pattern already delivers this for any two
+      // navigations; this test pins it specifically across the
+      // present→prompter boundary, which is the most common
+      // workbench trigger (a reviewer pivots from playback to
+      // captions review without reloading).
+      //
+      // Yield between the two `handle()` calls so the first
+      // navigation actually mounts before the second supersedes it
+      // — without the yield, latest-event supersession would drop
+      // the present-mode lifecycle entirely and there would be no
+      // cleanup to observe.
+      const order: string[] = [];
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: () => {
+          order.push('create:scene-a');
+        },
+        cleanup: () => {
+          order.push('cleanup:scene-a');
+        },
+      });
+      const sceneB = buildScene({ id: 'scene-b', captions: [{ at: 0, text: 'b' }] });
+      const stage = buildStage();
+      // First navigation: a runner that parks until abort so the
+      // loader observes an in-flight scene at the moment the prompter
+      // navigation enqueues. Second navigation: prompter; its
+      // renderer logs its turn order to confirm cleanup ran first.
+      const runTimeline: SceneTimelineRunner = (input) =>
+        new Promise<void>((resolve) => {
+          if (input.signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const renderPrompter: PrompterRenderer = () => {
+        order.push('renderPrompter:scene-b');
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline,
+        renderPrompter,
+      });
+
+      void loader.handle(sceneTarget('scene-a')); // mode=present (default)
+      // Yield so scene-a's lifecycle starts (create runs, runner
+      // parks waiting for abort).
+      await new Promise<void>((r) => setTimeout(r, 0));
+      void loader.handle(prompterSceneTarget('scene-b'));
+      await loader.idle();
+
+      // create:scene-a → (abort fires) → cleanup:scene-a → then
+      // renderPrompter:scene-b. The relative order pins
+      // cleanup-before-handoff across the present→prompter boundary.
+      expect(order).toEqual(['create:scene-a', 'cleanup:scene-a', 'renderPrompter:scene-b']);
     });
   });
 });

@@ -39,6 +39,12 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
+import {
+  type PrompterDispose,
+  type PrompterRenderer,
+  type PrompterScript,
+  buildPrompterScript,
+} from './prompter';
 import type { SceneRegistry } from './registry';
 import {
   type SceneNavigationTarget,
@@ -135,6 +141,35 @@ export interface SceneLoaderOptions {
   /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
   readonly runTimeline: SceneTimelineRunner;
   /**
+   * Captions/script renderer adapter for `mode=prompter`
+   * (PUL-F019 / ADR-022). Receives a {@link import('./prompter').PrompterScript}
+   * derived from the addressed navigation target's metadata and the
+   * per-navigation `AbortSignal` so a long-running renderer can
+   * release resources when superseded by another navigation. The
+   * loader awaits the result before considering the prompter
+   * dispatch settled (parity with `runTimeline`).
+   *
+   * **Renderer contract** (see {@link PrompterRenderer}): a renderer
+   * that mounts persistent DOM MUST keep its returned promise
+   * pending until `signal.aborted` fires AND register its DOM
+   * teardown on the abort event. Returning early after mounting DOM
+   * would leave stale captions UI on screen with no cleanup path —
+   * the loader clears `inFlight` once a load settles, so the next
+   * navigation's `enqueue` would not abort anything to drive the
+   * cleanup. A trivial / no-DOM renderer (e.g. a test stub) is free
+   * to return synchronously because there is nothing to tear down.
+   *
+   * Optional: a workbench bootstrap that has not yet wired a captions
+   * UI omits the field. Under `mode=prompter` the loader still
+   * suppresses the resolver lifecycle (no preload, no `create`, no
+   * `timeline`, no `cleanup`) because that suppression is the
+   * structural defense PUL-F019 / ADR-022 record; the captions data
+   * path simply has no consumer until the UI lands. Production
+   * bootstrap supplies a concrete renderer when the captions/script
+   * UI surface lands.
+   */
+  readonly renderPrompter?: PrompterRenderer;
+  /**
    * Sink for navigation errors (resolution failure, lifecycle phase
    * throw). Defaults to `console.error` in production but is
    * injectable so tests can observe error logging without
@@ -166,6 +201,22 @@ export interface SceneLoader {
 const ATTR_SCENE = 'data-pulsar-scene-target';
 const ATTR_COMPOSITION = 'data-pulsar-composition-target';
 const ATTR_ERROR = 'data-pulsar-navigation-error';
+
+/**
+ * Resolve when `signal` is aborted (or immediately if already
+ * aborted). Pure helper hoisted to module scope so the prompter
+ * dispatch path can keep its callback nesting under Sonar's
+ * S2004 4-level limit (the inline `addEventListener` arrow inside
+ * an IIFE inside `buildPrompterLoad` would put the listener at
+ * level 5; routing through this helper keeps every callback at
+ * level ≤ 2).
+ */
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
 
 /**
  * Returns true when `err` is the resolver's own "aborted" wrapper
@@ -596,6 +647,67 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
+  /**
+   * Run a `mode=prompter` dispatch end-to-end: invoke the renderer
+   * and, when the renderer returned a {@link PrompterDispose}
+   * callback, park until abort and then run the callback.
+   *
+   * Hoisted out of `buildPrompterLoad` so the IIFE chain stays under
+   * Sonar's nested-function limit (S2004): the inline addEventListener
+   * arrow inside an IIFE inside an arrow function inside an arrow
+   * function would put the listener at level 5; pulling the work
+   * into a top-level helper keeps every callback at level ≤ 2.
+   */
+  const dispatchPrompter = async (
+    renderer: PrompterRenderer,
+    script: PrompterScript,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const result = await renderer(script, signal);
+    if (typeof result !== 'function') {
+      // `void` / `undefined` return: renderer indicated nothing
+      // persistent was mounted. Dispatch is fully complete; do not
+      // park.
+      return;
+    }
+    // PrompterDispose callback: renderer mounted persistent state
+    // and delegated cleanup ordering to the loader. Park until
+    // abort (next navigation, dispose(), etc.), then run the
+    // callback.
+    const dispose: PrompterDispose = result;
+    await waitForAbort(signal);
+    await dispose();
+  };
+
+  /**
+   * PUL-F019 / ADR-022: build the in-flight record for a `mode=prompter`
+   * dispatch. Mirrors {@link buildLoad}'s contract — returns an
+   * {@link InFlightLoad} carrying a fresh `AbortController` and a
+   * settled-promise — but routes through the captions data path
+   * INSTEAD of the resolver lifecycle. No preload, no `create`, no
+   * `timeline`, no `cleanup`; the structural defense is "do not
+   * invoke the lifecycle that would render scenes visually."
+   *
+   * The renderer's return value drives the cleanup lifecycle (see
+   * {@link PrompterRenderer} and {@link dispatchPrompter}). When
+   * `renderPrompter` is undefined the loader still pays the
+   * structural-suppression cost (lifecycle is bypassed) but resolves
+   * immediately — there is no captions consumer.
+   */
+  const buildPrompterLoad = (resolved: SceneNavigationTarget): InFlightLoad => {
+    const controller = new AbortController();
+    const renderer = options.renderPrompter;
+    if (renderer === undefined) {
+      return { controller, settled: Promise.resolve(), silent: false };
+    }
+    const script = buildPrompterScript(resolved);
+    return {
+      controller,
+      settled: dispatchPrompter(renderer, script, controller.signal),
+      silent: false,
+    };
+  };
+
   const runTarget = async (target: NavigationTarget): Promise<void> => {
     const beatErr = validateBeatGrammar(target);
     if (beatErr !== null) {
@@ -626,9 +738,22 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    const runnable = applySingleSceneSlice(resolved, target);
-
-    const load = buildLoad(runnable, target);
+    // PUL-F019 / ADR-022: under `mode=prompter` bypass the resolver
+    // lifecycle entirely. Visual rendering is suppressed structurally
+    // by NOT running the path that would mount scenes. The captions
+    // data path takes its place. No `applySingleSceneSlice` (the
+    // captions view consumes the FULL slice — see ADR-022 for why
+    // the truncation defense from F015–F018 does not apply here),
+    // no `buildLoad` (no preloader, no buildCtx, no runner), just a
+    // captions-renderer dispatch wrapped in the same abort/queue
+    // pattern so cleanup-before-handoff and supersession still work.
+    let load: InFlightLoad | null;
+    if (effectiveMode(target) === 'prompter') {
+      load = buildPrompterLoad(resolved);
+    } else {
+      const runnable = applySingleSceneSlice(resolved, target);
+      load = buildLoad(runnable, target);
+    }
     if (load === null) return;
     inFlight = load;
 
