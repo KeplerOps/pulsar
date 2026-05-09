@@ -141,12 +141,21 @@ jobs:
       - name: Run OSV-Scanner (advisory)
         id: scan
         run: |
+          # GitHub Actions wraps `run:` with `bash -eo pipefail` by
+          # default. `set -e` would terminate the shell at the scanner
+          # invocation when osv-scanner exits 1 (vulnerabilities
+          # found), bypassing the advisory tolerance below. We don't
+          # use `set +e` blanket-disable because we want the JSON-
+          # validation steps below to error out on the first failure.
+          # Instead, capture the scanner's exit code via `|| rc=$?`,
+          # which is the canonical errexit-safe pattern (commands on
+          # the LHS of `||` do not trigger errexit).
           set -uo pipefail
           # Exit codes (per osv-scanner): 0 = no vulnerabilities, 1 =
           # vulnerabilities found, anything else = scanner / tooling
           # error. Advisory mode tolerates 1 only.
-          ./osv-scanner --lockfile=pnpm-lock.yaml --format=json --output=osv-results.json
-          rc=$?
+          rc=0
+          ./osv-scanner --lockfile=pnpm-lock.yaml --format=json --output=osv-results.json || rc=$?
           echo "scan_exit=${rc}" >> "${GITHUB_OUTPUT}"
           if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 1 ]; then
             echo "osv-scanner exited with ${rc} — scanner/tooling error, not an advisory finding." >&2
