@@ -42,3 +42,4 @@ Each ADR includes:
 | [014](014-url-scene-target-selection.md) | Loading the Addressed Scene as the Runtime Navigation Target | Accepted |
 | [015](015-url-beat-positioning.md) | URL Beat Positioning as Timeline-Runner State | Accepted |
 | [016](016-workbench-mode-present.md) | Workbench Mode `present` — Contract Boundary and Adapter Seams | Accepted |
+| [017](017-workbench-mode-standalone.md) | Workbench Mode `standalone` — Single-Scene Execution at the Loader | Accepted |

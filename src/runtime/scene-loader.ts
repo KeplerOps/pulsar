@@ -467,7 +467,38 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    const load = buildLoad(resolved, target);
+    // PUL-F014 / ADR-017: under `mode=standalone` the runtime renders a
+    // single scene "as if no surrounding composition existed." The
+    // composition slice — already validated by `resolveSceneNavigation`
+    // above so unregistered compositions / unknown member scenes /
+    // out-of-range indexes still surface as navigation errors — is
+    // truncated to a one-entry slice so the lifecycle runs only the
+    // addressed head scene. The slice is TRUNCATED rather than dropped
+    // so the head entry's per-entry `range` / `behavior` overrides
+    // (object-form entries per ADR-002 / ADR-011) reach the runner
+    // unchanged: a flat `{ scene }` would lose them and turn standalone
+    // into direct-scene flattening, contradicting ADR-017's contract.
+    // Stage attrs reflect what the URL ADDRESSED, not what runs:
+    // `data-pulsar-composition-target` stays set so external observers
+    // (agents, screenshot tooling) see the URL-addressed composition
+    // even when only the head scene executes.
+    let runnable: SceneNavigationTarget = resolved;
+    if (effectiveMode(target) === 'standalone' && resolved.composition !== undefined) {
+      const headEntry = resolved.composition.manifestSlice[0];
+      const headScene = resolved.composition.sceneSlice[0];
+      if (headEntry !== undefined && headScene !== undefined) {
+        runnable = {
+          scene: resolved.scene,
+          composition: {
+            id: resolved.composition.id,
+            manifestSlice: Object.freeze([headEntry]),
+            sceneSlice: Object.freeze([headScene]),
+          },
+        };
+      }
+    }
+
+    const load = buildLoad(runnable, target);
     if (load === null) return;
     inFlight = load;
 
