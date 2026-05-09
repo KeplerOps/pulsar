@@ -9,23 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `.github/workflows/ci.yml` — `osv-scan` advisory job. Installs
+- `.github/workflows/ci.yml` — `osv-scan` blocking job. Installs
   the OSV-Scanner CLI binary directly (release `v2.3.8`, pinned by
   SHA256 against `osv-scanner_SHA256SUMS`), scans the root
   `pnpm-lock.yaml`, emits JSON, and uploads it as the `osv-results`
   workflow artifact (7-day retention). Vulnerability findings are
-  advisory: exit code 1 (vulns found) is tolerated and emits a
-  GitHub `::warning::` annotation; any other non-zero exit
-  (scanner/tooling error) fails the job. The upload step uses
-  `if-no-files-found: error`, and the scan step asserts the JSON
-  output exists and parses, so a silent scanner failure cannot
-  leave the job green with no advisory output. Permissions are
-  scoped to `contents: read` only — JSON output avoids the
-  `security-events: write` expansion SARIF would require.
-  Coexists with `dependency-audit` (`pnpm audit --prod`),
-  `gitleaks`, and SonarCloud; none are weakened. Boundary and
-  guardrails captured in
-  `docs/design/issue-078-osv-scanner-preflight.md`.
+  a hard gate: exit code 1 (vulns found) emits a GitHub `::error::`
+  annotation and fails the job. Scanner/tooling errors (any other
+  non-zero exit) also fail. The artifact is uploaded on every
+  outcome so triage can proceed from the failed run. Permissions
+  are scoped to `contents: read` only — JSON output avoids the
+  `security-events: write` expansion SARIF would require. Coexists
+  with `dependency-audit` (`pnpm audit --prod`), `gitleaks`, and
+  SonarCloud; none are weakened. Boundary and guardrails captured
+  in `docs/design/issue-078-osv-scanner-preflight.md`. To enforce
+  the gate at merge time, mark the `OSV-Scanner` check as required
+  on `main` and `dev` branch protection rules.
 
 ### Changed
 

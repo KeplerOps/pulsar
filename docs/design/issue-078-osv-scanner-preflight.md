@@ -2,8 +2,14 @@
 
 Date: 2026-05-09
 
-Issue 78 adds OSV-scanner as an advisory CI job for the root
+Issue 78 adds OSV-scanner as a blocking CI job for the root
 `pnpm-lock.yaml`. This is workflow hardening, not a runtime feature.
+
+Note: the original issue body scoped the job as "advisory (no merge
+gate initially)." During implementation review the maintainer
+elected to ship the gate as blocking from day one. The issue body
+is left unchanged for historical fidelity; this document records the
+shipped behavior.
 
 ## Existing Contracts
 
@@ -26,11 +32,16 @@ Issue 78 adds OSV-scanner as an advisory CI job for the root
 - Scope scanner input to the repo-root `pnpm-lock.yaml`. Do not scan
   source directories, generated output, coverage, or future workspace
   directories until the dependency surface changes.
-- Keep the job advisory initially. It should upload JSON or SARIF as an
-  artifact and should not block merges on findings.
+- Block merges on findings. Vulnerability exit (1) and any
+  scanner/tooling exit (non-zero, non-1) fail the job. The artifact
+  uploads on every outcome so triage starts from the failed run, not
+  from a fresh local re-scan.
+- Mark the `OSV-Scanner` check as a required status check on `main`
+  and `dev` branch protection rules so the gate is enforced at merge
+  time, not just at job-status level.
 - Preserve least privilege. The workflow only needs repository read
-  access plus any permission strictly required by the chosen artifact or
-  SARIF upload path.
+  access. JSON output avoids the `security-events: write` expansion
+  SARIF upload would require.
 - Prefer a pinned, maintained OSV-scanner GitHub Action or pinned binary
   install path. Avoid unpinned install scripts.
 - Use deterministic artifact naming and short retention, consistent with
@@ -43,9 +54,16 @@ Issue 78 adds OSV-scanner as an advisory CI job for the root
 - SARIF upload may require `security-events: write`; JSON artifact upload
   does not. Do not expand workflow permissions if JSON satisfies the
   acceptance criteria.
-- Some OSV invocations exit non-zero when vulnerabilities are found.
-  Advisory mode must handle that deliberately while still failing on
-  scanner execution errors where the action supports that distinction.
+- OSV-scanner exits 1 when vulnerabilities are found and uses other
+  non-zero exits for scanner/tooling errors. Both are failure modes
+  for a blocking job, but the wrapper must distinguish them so the
+  GitHub annotation tells reviewers which case fired (`vulnerabilities`
+  vs. `scanner error`).
+- GitHub Actions wraps `run:` with `bash -eo pipefail` by default. A
+  bare `./osv-scanner ...` call exits the shell on the vuln-exit code
+  before any wrapper logic runs. Capture the exit code with
+  `cmd || rc=$?` (errexit-safe) so JSON validation runs regardless of
+  scan outcome.
 - `pnpm audit --prod` and OSV are overlapping but not interchangeable.
   Do not remove or weaken the existing dependency-audit job as part of
   this issue.
@@ -59,6 +77,10 @@ Issue 78 adds OSV-scanner as an advisory CI job for the root
   changes.
 - No new package script or Ground Control workflow command unless
   maintainers decide OSV should become a local gate.
-- No merge-gating policy for vulnerabilities in this issue.
+- No suppression / waiver / triage policy in this issue. When a
+  legitimately accepted CVE needs to pass the gate, that is the
+  trigger to add an explicit suppression mechanism (e.g., an
+  ignored-vulns config consumed by the scanner) — not to relax the
+  gate.
 - No container, IaC, filesystem, secret, license, or vendored-code
   scanning expansion.
