@@ -7,6 +7,7 @@ import {
   type SceneTimelineRunner,
   resolveComposition,
 } from '../../src/runtime/composition-resolver';
+import { createPresenterController } from '../../src/runtime/presenter';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
 
@@ -1783,5 +1784,191 @@ describe('URL screenshot-mode runner capture-hint forwarding (PUL-F018)', () => 
     expect(runCalls[0]?.hold).toBe('first-frame');
     expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
     expect(runCalls[0]?.screenshot).toBe('capture');
+  });
+});
+
+describe('URL present-mode runner presenter forwarding (PUL-F020)', () => {
+  // PUL-F020: in `mode=present`, the runtime SHALL accept presenter
+  // input (advance, hold, skip-forward, skip-backward); beat
+  // progression SHALL be interruptible without breaking timeline
+  // state. ADR-023 places mode dispatch at the loader and the
+  // command-translation semantics (a kind → GSAP transport call) at
+  // the timeline-runner adapter. Unlike the head-only forwardings
+  // (`headBeat` / `headRepeat` / `headHold` / `headCueGate` /
+  // `headScreenshot`), `presenter` is forwarded to EVERY scene's
+  // run input because mode=present runs the FULL composition slice
+  // (no truncation) and presenter commands act on whichever scene
+  // is currently active. The shape is analogous to `signal`, not to
+  // the head-only hints. The resolver does NOT interpret the
+  // controller itself; subscribing and translating commands is the
+  // runner's contract.
+
+  it('forwards a `presenter` controller to EVERY scene in a multi-scene plan (NOT head-only) — commands delegate from the navigation controller', async () => {
+    // The resolver wraps the navigation-level controller in a
+    // PER-SCENE child controller (see ADR-023). The runner sees a
+    // distinct wrapper per scene, not the navigation controller
+    // directly — this is the per-scene-end safety net that detaches
+    // a forgotten subscription before the next scene starts. The
+    // wrapper still delegates to the source: a command emitted via
+    // the source reaches the wrapper subscriber.
+    const sourceHandlers = new Set<
+      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
+    >();
+    const source = {
+      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
+        sourceHandlers.add(handler);
+        return () => {
+          sourceHandlers.delete(handler);
+        };
+      },
+    };
+    const ac = new AbortController();
+    const presenter = createPresenterController(source, ac.signal);
+
+    const runReceivedKinds: { sceneId: string; kinds: string[] }[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
+      manifest: ['scene-a', 'scene-b', 'scene-c'],
+      runTimeline: (input) => {
+        const kinds: string[] = [];
+        // Subscribe; must observe a command emitted DURING this
+        // scene. Scene-id-keyed so the test assertion stays
+        // distinct per scene.
+        input.presenter?.subscribe((cmd) => kinds.push(cmd.kind));
+        // Emit while the wrapper subscription is live.
+        for (const h of sourceHandlers) h({ kind: 'advance' });
+        runReceivedKinds.push({ sceneId: input.scene.id, kinds });
+      },
+    });
+    await resolveComposition({ ...options, presenter });
+    expect(runReceivedKinds).toEqual([
+      { sceneId: 'scene-a', kinds: ['advance'] },
+      { sceneId: 'scene-b', kinds: ['advance'] },
+      { sceneId: 'scene-c', kinds: ['advance'] },
+    ]);
+  });
+
+  it('detaches scene-A subscriptions before scene-B runs (per-scene auto-cleanup; runner that forgets to unsubscribe cannot leak across scenes)', async () => {
+    // Codex review: the navigation-level controller's auto-detach
+    // only fires on navigation abort. Without per-scene wrapping,
+    // scene-A's runner that forgets to unsubscribe would keep
+    // receiving commands during scene-B, violating "presenter
+    // commands act on the active scene."
+    const sourceHandlers = new Set<
+      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
+    >();
+    const source = {
+      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
+        sourceHandlers.add(handler);
+        return () => {
+          sourceHandlers.delete(handler);
+        };
+      },
+    };
+    const ac = new AbortController();
+    const presenter = createPresenterController(source, ac.signal);
+
+    // Each scene's "runner" subscribes and never unsubscribes
+    // explicitly. The per-scene wrapper must release the
+    // subscription on its own when the scene exits.
+    const sceneACommands: string[] = [];
+    const sceneBCommands: string[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        if (input.scene.id === 'scene-a') {
+          input.presenter?.subscribe((cmd) => sceneACommands.push(cmd.kind));
+        } else {
+          input.presenter?.subscribe((cmd) => sceneBCommands.push(cmd.kind));
+          // Emit AFTER subscribing during scene-b. If scene-a's
+          // subscription leaked, sceneACommands would now grow.
+          for (const h of sourceHandlers) h({ kind: 'advance' });
+        }
+      },
+    });
+    await resolveComposition({ ...options, presenter });
+    expect(sceneACommands).toEqual([]);
+    expect(sceneBCommands).toEqual(['advance']);
+  });
+
+  it('omits `presenter` from every run input when not supplied (no `presenter in input` key)', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(2);
+    for (const call of runCalls) {
+      expect('presenter' in (call as object)).toBe(false);
+    }
+  });
+
+  it('does not interpret the controller — a runner that ignores `presenter` and returns normally does not error', async () => {
+    // Resolver delegates command translation to the runner per
+    // ADR-023. A runner that receives `input.presenter` and never
+    // subscribes (e.g. the placeholder runner that has no real
+    // timeline to drive) must NOT cause the resolver to throw or
+    // skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    const ac = new AbortController();
+    const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+    await expect(resolveComposition({ ...options, presenter })).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+
+  it('forwards `presenter` alongside `signal` and the head-only hints independently — every channel reaches the runner without coupling', async () => {
+    // `presenter`, `signal`, and the head-only forwardings are
+    // independent channels. A regression that paired them — e.g.
+    // dropping `presenter` when `headRepeat` is also supplied —
+    // would silently disable presenter input under combinations a
+    // direct bridge caller can request. Pinning the independence
+    // forces the resolver to forward each channel on its own
+    // gating condition.
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    const ac = new AbortController();
+    const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+    const lifecycleSignal = new AbortController().signal;
+    await resolveComposition({
+      ...options,
+      signal: lifecycleSignal,
+      headBeat: 'midpoint',
+      onBeatMissing: () => undefined,
+      headRepeat: 'until-aborted',
+      presenter,
+    });
+    expect(runCalls).toHaveLength(1);
+    // Per ADR-023 the runner sees a per-scene wrapper, not the
+    // navigation controller directly. Assert the wrapper was
+    // present alongside the other independent channels — they
+    // must all coexist on the same run input.
+    expect(runCalls[0]?.presenter).toBeDefined();
+    expect(runCalls[0]?.presenter).not.toBe(presenter);
+    expect(runCalls[0]?.signal).toBe(lifecycleSignal);
+    expect(runCalls[0]?.beat).toBe('midpoint');
+    expect(runCalls[0]?.repeat).toBe('until-aborted');
   });
 });

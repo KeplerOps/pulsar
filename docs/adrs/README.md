@@ -48,3 +48,4 @@ Each ADR includes:
 | [020](020-workbench-mode-scrub.md) | Workbench Mode `scrub` — Runner Cue-Gate Hint at the Loader/Runner Seam | Accepted |
 | [021](021-workbench-mode-screenshot.md) | Workbench Mode `screenshot` — Runner Capture-Bundle Hint at the Loader/Runner Seam | Accepted |
 | [022](022-workbench-mode-prompter.md) | Workbench Mode `prompter` — Loader-Side Lifecycle Bypass with Captions Aggregation Seam | Accepted |
+| [023](023-presenter-controls.md) | Presenter Controls — Per-Navigation Command Source at the Loader/Runner Seam | Accepted |

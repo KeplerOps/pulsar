@@ -39,6 +39,7 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
+import { type PresenterCommandSource, createPresenterController } from './presenter';
 import {
   type PrompterDispose,
   type PrompterRenderer,
@@ -169,6 +170,26 @@ export interface SceneLoaderOptions {
    * UI surface lands.
    */
   readonly renderPrompter?: PrompterRenderer;
+  /**
+   * Workbench-supplied presenter command source (PUL-F020 / ADR-023).
+   * Lives across navigations; the loader does not own or construct
+   * it. When supplied AND the per-navigation `effectiveMode(target)`
+   * is `'present'`, the loader wraps it in a per-navigation
+   * {@link import('./presenter').PresenterController} bound to the
+   * navigation's `AbortController.signal` and forwards the controller
+   * to the timeline runner via `input.presenter`. Other modes never
+   * see the controller — presenter input is scoped to `mode=present`
+   * by ADR-007. Per-navigation auto-cleanup means a runner that
+   * subscribes via `input.presenter.subscribe(...)` and forgets to
+   * unsubscribe cannot leak across navigations.
+   *
+   * Optional: a workbench bootstrap that has not yet wired a
+   * presenter UI omits the field. Under that configuration the
+   * loader does not build a controller, runners see
+   * `input.presenter === undefined`, and the seam is structurally
+   * inert until the workbench wires a real source.
+   */
+  readonly presenterCommands?: PresenterCommandSource;
   /**
    * Sink for navigation errors (resolution failure, lifecycle phase
    * throw). Defaults to `console.error` in production but is
@@ -525,6 +546,34 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // exclusive at the URL boundary, so at most one of `repeat` /
     // `hold` / `cueGate` / `screenshot` is non-undefined here.
     const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
+    // PUL-F020 / ADR-023: under `mode=present` the loader builds a
+    // per-navigation `PresenterController` bound to this load's
+    // `controller.signal` and forwards it to every scene's run input
+    // via the bridge → resolver. Two scoping conditions: the mode
+    // must resolve to `'present'` (URL `mode=present` OR absent
+    // `mode=`, both of which `effectiveMode` collapses), AND the
+    // workbench must have supplied a `presenterCommands` source.
+    // When either condition is unmet, `presenter` is `undefined` and
+    // the spread below omits it from the bridge call so a runner
+    // that branches on `'presenter' in input` sees an absent key
+    // (parity with the `repeat` / `hold` / `cueGate` / `screenshot`
+    // / `beat` plumbing).
+    //
+    // Auto-cleanup: the controller registers `controller.signal`'s
+    // abort listener internally. When the navigation aborts (next
+    // handle, dispose, popstate, presenter-driven scene exit), every
+    // outstanding runner subscription is detached from the source.
+    // A runner that subscribes via `input.presenter.subscribe(...)`
+    // and forgets to unsubscribe cannot leak across navigations.
+    //
+    // Per ADR-007, mode dispatch lives in the runtime core, not at
+    // adapters; this is the central enforcement point for "presenter
+    // input only under mode=present" — no other code path builds the
+    // controller.
+    const presenter =
+      mode === 'present' && options.presenterCommands !== undefined
+        ? createPresenterController(options.presenterCommands, controller.signal, onError)
+        : undefined;
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -538,6 +587,12 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(hold === undefined ? {} : { hold }),
         ...(cueGate === undefined ? {} : { cueGate }),
         ...(screenshot === undefined ? {} : { screenshot }),
+        // Forward `presenter` AND the `onError` sink so the
+        // resolver's per-scene wrapper around `presenter` can
+        // route runner-handler exceptions / unknown-kind drops
+        // through the same diagnostic channel as every other
+        // navigation-level error (codex review, cycle 2).
+        ...(presenter === undefined ? {} : { presenter, onPresenterError: onError }),
       }),
       silent: false,
     };

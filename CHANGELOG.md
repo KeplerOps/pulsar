@@ -9,6 +9,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/023-presenter-controls.md` — records the PUL-F020
+  contract layer for presenter input under `mode=present`. Defines
+  the workbench-supplied long-lived `PresenterCommandSource`, the
+  per-navigation `PresenterController` the loader builds when
+  `effectiveMode === 'present'` AND a source is supplied, and the
+  forwarding through the bridge → resolver chain to every scene's
+  run input (NOT head-only — mode=present runs the full slice and
+  presenter commands act on whichever scene is active). Per-handler
+  exception isolation, boundary validation against
+  `PRESENTER_COMMAND_KINDS`, and abort-tied auto-cleanup are the
+  three safety properties pinned in tests today. PUL-F020 stays
+  DRAFT until a real presenter UI surface (keyboard listener /
+  on-screen controls) and a runner that translates commands into
+  GSAP transport calls (ADR-003) land with end-to-end tests. See
+  ADR-023 for the loader-side dispatch rationale, the
+  not-head-only forwarding decision, the safety-property derivation,
+  and the DRAFT → ACTIVE transition criteria. Indexed in
+  `docs/adrs/README.md`.
+- `src/runtime/presenter.ts` — new module exporting
+  `PRESENTER_COMMAND_KINDS`, `PresenterCommand`,
+  `PresenterCommandKind`, `PresenterCommandSource`,
+  `PresenterController`, `isPresenterCommand`, and
+  `createPresenterController`. The factory wraps a long-lived
+  source in a per-navigation controller bound to an `AbortSignal`:
+  every subscription is tracked so the abort listener detaches
+  them all on navigation end, preventing subscription leaks across
+  navigations even when a runner forgets to unsubscribe. Validates
+  incoming command payloads at the boundary; unknown kinds are
+  dropped with an `onError` diagnostic rather than reaching the
+  runner. Per-handler exceptions are isolated through the same
+  `onError` so a buggy subscriber cannot poison emissions for
+  siblings.
+- `src/runtime/composition-resolver.ts` — `SceneTimelineRunInput`
+  gains optional `presenter?: PresenterController`;
+  `ResolveCompositionOptions` gains optional
+  `presenter?: PresenterController`. Forwarded to EVERY scene's
+  run input (NOT head-only) — `mode=present` is the only mode that
+  runs the full composition slice, and presenter commands act on
+  whichever scene is currently active. `runScene` wraps the
+  navigation-level controller in a per-scene child controller bound
+  to a per-scene `AbortController` that fires after the scene's
+  `cleanup(ctx)` completes; a runner that subscribes during scene-A
+  and forgets to unsubscribe cannot leak its handler into scene-B
+  because the per-scene wrapper is torn down before scene-B's
+  `runTimeline` is invoked. The wrapper is built only when a
+  navigation controller is supplied (no per-scene cost for non-
+  present-mode navigations).
+- `src/runtime/scene-navigation.ts` —
+  `LoadSceneNavigationTargetOptions` gains optional
+  `presenter?: PresenterController`. Forwarded to
+  `resolveComposition` via the existing spread-when-defined
+  pattern. The bridge does NOT truncate the slice when `presenter`
+  is supplied — `presenter` is independent of the four head-only
+  runner-input hints (`repeat` / `hold` / `cueGate` /
+  `screenshot`), and mode=present has no head-only structural
+  promise to defend.
+- `src/runtime/scene-loader.ts` — `SceneLoaderOptions` gains
+  optional `presenterCommands?: PresenterCommandSource`. When
+  `effectiveMode(target) === 'present'` AND the source is supplied,
+  `buildLoad` constructs a `PresenterController` via
+  `createPresenterController(source, controller.signal, onError)`
+  and passes it to `loadSceneNavigationTarget` as `presenter`.
+  Other modes never see the controller; the source is not
+  subscribed under any non-present mode (the loader does not even
+  build the controller). Mode-scoping is centralized at this
+  single call site so the rule "presenter input only under
+  mode=present" has one enforcement point.
+- `src/main.ts` — placeholder behavior: `presenterCommands` is
+  intentionally OMITTED. Production reaches the loader's
+  graceful-degradation path; runners see `input.presenter ===
+  undefined`. ADR-023 records the DRAFT → ACTIVE bar (presenter UI
+  module + GSAP runner that translates commands to transport
+  calls + end-to-end tests).
+- `docs/design/pul-f020-presenter-controls-preflight.md` — codex
+  preflight design context naming the boundary, required reuse,
+  guardrails, non-goals, and anti-patterns for PUL-F020. Authored
+  manually (the local-write path of the preflight call failed) but
+  carries the architectural guardrails from the codex summary
+  verbatim (mode=present scoping, GSAP transport calls, no
+  per-scene keyboard listeners, no scrub coupling, no broadening
+  hold into pause/resume).
+- `tests/runtime/presenter.test.ts` — pure-module tests for the
+  new `presenter.ts` module: `PRESENTER_COMMAND_KINDS` shape,
+  `isPresenterCommand` validation surface (every kind, every
+  rejection case), `createPresenterController` source-forwarding,
+  unsubscribe, abort-tied teardown (including pre-aborted signal),
+  post-abort no-op subscribe, unknown-kind drop with onError
+  diagnostic, no-handler emission, sibling isolation under handler
+  exception.
+- `tests/runtime/composition-resolver.test.ts` — new
+  `'URL present-mode runner presenter forwarding (PUL-F020)'`
+  describe block: every-scene forwarding (NOT head-only) for
+  multi-scene plans, omission when absent (no `'presenter' in
+  input` key), runner-ignores graceful degradation, independence
+  from `signal` and the head-only hints (every channel reaches the
+  runner without coupling).
+- `tests/runtime/scene-navigation.test.ts` — new
+  `'URL present-mode presenter forwarding (PUL-F020)'` describe
+  block: single-scene + composition forwarding, NOT-head-only
+  forwarding across composition entries, no slice truncation when
+  `presenter` is supplied, omission when absent.
+- `tests/runtime/scene-loader.test.ts` — new
+  `'presenter-controls dispatch (PUL-F020 / ADR-023)'` describe
+  block: `mode=present` forwarding (single-scene + composition,
+  every-scene), absent-mode forwarding (defaults to present per
+  PUL-F012 / ADR-007), per-mode negative coverage (every
+  non-present mode does not subscribe the source even when one is
+  supplied; `prompter` vacuously satisfies via lifecycle bypass),
+  no-source graceful degradation, every-kind delivery (advance /
+  hold / skip-forward / skip-backward), abort-detaches-subscription
+  across a presenter-driven supersede, cleanup-before-handoff
+  invariant under presenter-driven supersede (the "interruptible
+  without breaking timeline state" clause), unknown-kind drop with
+  onError diagnostic, no preemptive `data-pulsar-mode-*`
+  attribute under `mode=present` even when a presenter source is
+  supplied.
 - `docs/adrs/022-workbench-mode-prompter.md` — records the PUL-F019
   contract layer for `mode=prompter`. Structurally distinct from
   the other six workbench modes: the loader BYPASSES the resolver

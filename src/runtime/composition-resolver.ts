@@ -48,6 +48,7 @@ import {
   findUnregisteredEntries,
 } from './composition';
 import { describeError } from './error';
+import { type PresenterController, createPresenterController } from './presenter';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
@@ -287,6 +288,36 @@ export interface SceneTimelineRunInput {
    * "first frame wins."
    */
   readonly screenshot?: 'capture';
+  /**
+   * Presenter command controller (PUL-F020 / ADR-023). Forwarded to
+   * EVERY scene's run input under `mode=present` (NOT a head-only
+   * field): mode=present runs the FULL composition slice, and
+   * presenter commands act on whichever scene is currently active.
+   * Analogous to {@link signal} in shape, not to the head-only
+   * runner-input hints (`repeat` / `hold` / `cueGate` / `screenshot`
+   * — those modes are single-scene by construction).
+   *
+   * The runner subscribes via `presenter.subscribe(handler)` to
+   * receive {@link import('./presenter').PresenterCommand}s. The
+   * controller auto-detaches every subscription when the
+   * per-navigation `AbortSignal` fires, so a runner that forgets to
+   * unsubscribe cannot leak across navigations. The controller also
+   * validates incoming commands at its boundary (unknown kinds are
+   * dropped before reaching the runner).
+   *
+   * Translation of each command into a timeline operation
+   * (advance → play to next beat, hold → pause at current beat,
+   * skip-forward / skip-backward → seek to next/prev beat) is the
+   * runner's contract per ADR-003 (GSAP transport API). A runner
+   * that ignores `input.presenter` gracefully degrades — the
+   * placeholder runner does this today because it has no real
+   * timeline to drive.
+   *
+   * Absent for every mode other than `present` (the loader scopes
+   * delivery; the resolver does not enforce mode coherence because
+   * mode dispatch is a loader concern per ADR-007).
+   */
+  readonly presenter?: PresenterController;
 }
 
 /**
@@ -435,6 +466,46 @@ export interface ResolveCompositionOptions {
    * mode dispatch lives.
    */
   readonly headScreenshot?: 'capture';
+  /**
+   * URL present-mode presenter controller (PUL-F020 / ADR-023) to
+   * forward to EVERY scene's run input as
+   * {@link SceneTimelineRunInput.presenter}. Unlike the head-only
+   * forwardings above, `presenter` is NOT scoped to plan[0]:
+   * `mode=present` is the only mode that runs the FULL composition
+   * slice (no truncation), and presenter commands act on whichever
+   * scene is currently active. Analogous to {@link signal} in the
+   * resolver's forwarding semantics.
+   *
+   * The resolver does not interpret the controller — translating
+   * {@link import('./presenter').PresenterCommand}s into timeline
+   * operations is the runner's contract per ADR-003 / ADR-023. A
+   * runner that ignores `input.presenter` (e.g. the placeholder
+   * runner with no real timeline) gracefully degrades to no-op
+   * command handling.
+   *
+   * Absent for every mode other than `present` because the loader
+   * scopes delivery (the resolver does not enforce mode coherence;
+   * mode dispatch is a loader concern per ADR-007). A direct bridge
+   * caller that supplies `presenter` for a non-present-mode
+   * navigation will see the controller forwarded to the runner, but
+   * production navigation through the loader cannot reach that
+   * state.
+   */
+  readonly presenter?: PresenterController;
+  /**
+   * Optional diagnostic sink for the per-scene presenter wrapper
+   * (PUL-F020 / ADR-023). When the resolver wraps `presenter` in a
+   * per-scene child controller, it threads this sink so the
+   * wrapper's boundary diagnostics (unknown command kind, runner-
+   * handler exception) surface through the same channel as every
+   * other navigation-level error. Absent: per-scene wrapper drops
+   * diagnostics silently (matches the navigation controller's
+   * behavior when the loader didn't supply its own `onError`).
+   *
+   * Threaded only when a `presenter` is supplied — non-present-mode
+   * navigations have no wrapper and ignore this field.
+   */
+  readonly onPresenterError?: (err: unknown) => void;
 }
 
 /**
@@ -504,6 +575,11 @@ function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
  * `beat` and `onBeatMissing` are caller-supplied per-call (resolver
  * passes them only for the head plan step); the rest are per-entry
  * (resolver derives from the manifest snapshot).
+ *
+ * `presenter` is forwarded to every plan step (NOT head-only) per
+ * PUL-F020 / ADR-023 — `mode=present` is the only mode that runs
+ * the full composition slice, and presenter commands act on
+ * whichever scene is currently active.
  */
 function buildRunInput(
   step: PlanStep,
@@ -515,6 +591,7 @@ function buildRunInput(
   hold: 'first-frame' | undefined,
   cueGate: 'monotonic-forward' | undefined,
   screenshot: 'capture' | undefined,
+  presenter: PresenterController | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -529,6 +606,7 @@ function buildRunInput(
   if (hold !== undefined) input.hold = hold;
   if (cueGate !== undefined) input.cueGate = cueGate;
   if (screenshot !== undefined) input.screenshot = screenshot;
+  if (presenter !== undefined) input.presenter = presenter;
   return input;
 }
 
@@ -598,6 +676,8 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     headHold,
     headCueGate,
     headScreenshot,
+    presenter,
+    onPresenterError,
   } = options;
 
   // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
@@ -674,7 +754,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
       `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
     );
     const stepHeadOnly = index === 0 ? headOnly : noHeadOnly;
-    await runScene(step, ctx, runTimeline, signal, stepHeadOnly);
+    await runScene(step, ctx, runTimeline, signal, stepHeadOnly, presenter, onPresenterError);
     lastCompletedSceneId = step.scene.id;
   }
 }
@@ -786,7 +866,34 @@ async function runScene(
   runTimeline: SceneTimelineRunner,
   signal: AbortSignal | undefined,
   headOnly: HeadOnlyFields,
+  presenter: PresenterController | undefined,
+  onPresenterError: ((err: unknown) => void) | undefined,
 ): Promise<void> {
+  // PUL-F020 / ADR-023: when the loader supplied a navigation-level
+  // `presenter` controller, wrap it in a PER-SCENE child controller
+  // bound to a per-scene `AbortController` that we fire after the
+  // scene's cleanup. Without this wrapping, a runner that subscribes
+  // via `input.presenter.subscribe(...)` and forgets to unsubscribe
+  // when the scene exits would keep receiving commands during the
+  // NEXT scene's runner — violating "presenter commands act on the
+  // active scene." The navigation-level controller's auto-detach on
+  // navigation abort is the navigation-end safety net; the per-scene
+  // wrapping is the per-scene-end safety net. Both layers compose:
+  // a navigation-level abort cascades through the per-scene wrapper
+  // automatically (the wrapper's source is the navigation controller,
+  // so when the navigation tears down its source-side subscriptions
+  // the wrapper's emissions stop).
+  //
+  // Allocated only when the resolver actually has a presenter to
+  // wrap; the per-scene controller is undefined for the common
+  // no-presenter path so the per-scene plumbing has zero cost in
+  // non-present-mode navigations.
+  const perSceneAbort = presenter === undefined ? undefined : new AbortController();
+  const perScenePresenter =
+    presenter === undefined || perSceneAbort === undefined
+      ? undefined
+      : createPresenterController(presenter, perSceneAbort.signal, onPresenterError);
+
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
   // `phaseError !== undefined` as the sentinel would silently swallow
@@ -814,6 +921,7 @@ async function runScene(
         headOnly.hold,
         headOnly.cueGate,
         headOnly.screenshot,
+        perScenePresenter,
       ),
     );
   } catch (err) {
@@ -829,6 +937,15 @@ async function runScene(
     cleanupFailed = true;
     cleanupError = err;
   }
+
+  // Tear the per-scene presenter controller down AFTER cleanup so a
+  // runner that subscribed in `runTimeline` and forgot to unsubscribe
+  // still sees its subscription release before the next scene's
+  // runner is invoked. Cleanup runs first so any cleanup hook that
+  // legitimately calls into the runner (no current pattern, but
+  // defensive) still observes presenter commands. Idempotent:
+  // aborting an already-aborted signal is a no-op.
+  perSceneAbort?.abort();
 
   finalizeSceneFailure(scene, phase, phaseFailed, phaseError, cleanupFailed, cleanupError);
 }

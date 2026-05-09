@@ -192,6 +192,19 @@ const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage, mode });
 // PUL-F019 (visible captions UI + end-to-end tests).
 const renderPrompter: PrompterRenderer = () => undefined;
 
+// Presenter command source (PUL-F020 / ADR-023): intentionally
+// OMITTED here. PUL-F020 ships only the runtime-side contract
+// layer in this PR — the loader builds a per-navigation
+// `PresenterController` when `mode=present` AND
+// `presenterCommands` is supplied. By omitting the field, the
+// loader gracefully degrades (runners see `input.presenter ===
+// undefined`) and the seam stays structurally inert until a real
+// presenter UI surface lands. The future workbench surface owns
+// the keyboard listener / on-screen controls and emits
+// `PresenterCommand`s through a `PresenterCommandSource`; ADR-023
+// records the DRAFT → ACTIVE bar (presenter UI module + GSAP
+// runner that translates commands to transport calls + end-to-end
+// tests).
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
