@@ -5570,10 +5570,18 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(calls).toEqual([]);
     });
 
-    it('surfaces index-out-of-range under `mode=prompter`', async () => {
+    it('surfaces index-out-of-range under `mode=prompter` (renderPrompter is NOT called on error paths)', async () => {
+      // Parity with the composition-not-registered and
+      // composition-member error tests: error paths MUST surface
+      // via `onError` AND MUST NOT invoke the renderer. Capturing
+      // the renderer's invocations here keeps the index-out-of-
+      // range coverage symmetric with its siblings; without that
+      // assertion, a regression that dispatched the renderer
+      // before validation would slip past this test.
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
       const errors: unknown[] = [];
+      const calls: PrompterScript[] = [];
       const loader = createSceneLoader({
         scenes: createSceneRegistry([sceneA]),
         compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
@@ -5584,13 +5592,16 @@ describe('createSceneLoader (PUL-F008)', () => {
         onError: (err) => {
           errors.push(err);
         },
-        renderPrompter: () => undefined,
+        renderPrompter: (script) => {
+          calls.push(script);
+        },
       });
 
       await loader.handle(prompterCompositionIndexTarget('full-talk', 5));
 
       expect(errors).toHaveLength(1);
       expect((errors[0] as Error).message).toContain('index 5 is out of range');
+      expect(calls).toEqual([]);
     });
 
     it('does not invoke `renderPrompter` for `kind: "none"` under `mode=prompter` (nothing addressed, nothing to render)', async () => {
