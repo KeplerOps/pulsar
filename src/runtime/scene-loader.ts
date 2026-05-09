@@ -423,6 +423,18 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
     const beat = target.beat;
     const onBeatMissing = buildOnBeatMissing(beat, resolved.scene.id, controller.signal);
+    // PUL-F015 / ADR-018: under `mode=loop` the runner restarts the
+    // addressed scene's timeline on completion. The loader is the
+    // dispatch point for mode → runner-input plumbing (parallel to
+    // PUL-F012's `ctx.mode` derivation): when `effectiveMode === 'loop'`,
+    // pass `repeat: 'until-aborted'` through the bridge. The bridge
+    // and resolver scope delivery to the head scene only — following
+    // composition entries do not see `repeat`, because a looping
+    // head's timeline never naturally completes. Use a literal
+    // `undefined` sentinel so the spread below cleanly omits the key
+    // for non-loop modes (parity with the `beat` plumbing).
+    const repeat: 'until-aborted' | undefined =
+      effectiveMode(target) === 'loop' ? 'until-aborted' : undefined;
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -432,36 +444,56 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         signal: controller.signal,
         ...(beat === undefined ? {} : { beat }),
         ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
+        ...(repeat === undefined ? {} : { repeat }),
       }),
       silent: false,
     };
   };
 
   /**
-   * PUL-F014 / ADR-017: under `mode=standalone` the runtime renders a
-   * single scene "as if no surrounding composition existed." The
-   * composition slice — already validated by `resolveSceneNavigation`
-   * so unregistered compositions / unknown member scenes /
-   * out-of-range indexes still surface as navigation errors — is
-   * truncated to a one-entry slice so the lifecycle runs only the
-   * addressed head scene. The slice is TRUNCATED rather than dropped
-   * so the head entry's per-entry `range` / `behavior` overrides
-   * (object-form entries per ADR-002 / ADR-011) reach the runner
-   * unchanged: a flat `{ scene }` would lose them and turn standalone
-   * into direct-scene flattening, contradicting ADR-017's contract.
+   * Truncate the validated composition slice to its addressed head
+   * entry under modes that mean "run only the addressed scene."
+   *
+   * PUL-F014 / ADR-017 (`standalone`): the runtime renders a single
+   * scene "as if no surrounding composition existed."
+   *
+   * PUL-F015 / ADR-018 (`loop`): the runtime runs the addressed
+   * scene's timeline and restarts on completion. Truncating the
+   * slice makes "no following entries run" a structural guarantee
+   * even if the runner ignores the `repeat: 'until-aborted'` hint
+   * (codex review): a runner bug or no-op runner under `mode=loop`
+   * MUST NOT silently degrade into normal composition playback.
+   *
+   * Both modes share the same slice-shape transform — they differ
+   * only in whether the head's timeline repeats (a runner-side
+   * concern via `input.repeat`).
+   *
+   * The composition slice — already validated by
+   * `resolveSceneNavigation` so unregistered compositions /
+   * unknown member scenes / out-of-range indexes still surface as
+   * navigation errors — is truncated to a one-entry slice so the
+   * lifecycle runs only the addressed head scene. The slice is
+   * TRUNCATED rather than dropped so the head entry's per-entry
+   * `range` / `behavior` overrides (object-form entries per ADR-002
+   * / ADR-011) reach the runner unchanged: a flat `{ scene }` would
+   * lose them and turn the mode into direct-scene flattening,
+   * contradicting ADR-017 / ADR-018's "preserve head-entry
+   * overrides" contract.
+   *
    * Stage attrs (set by the caller before this transform) reflect
    * what the URL ADDRESSED, not what runs:
-   * `data-pulsar-composition-target` stays set so external observers
-   * (agents, screenshot tooling) see the URL-addressed composition
-   * even when only the head scene executes. Pure function — no
-   * closure captures — hoisted out of `runTarget` so the latter stays
-   * within Sonar's cognitive-complexity budget.
+   * `data-pulsar-composition-target` stays set so external
+   * observers (agents, screenshot tooling) see the URL-addressed
+   * composition even when only the head scene executes. Pure
+   * function — no closure captures — hoisted out of `runTarget` so
+   * the latter stays within Sonar's cognitive-complexity budget.
    */
-  const applyStandaloneSlice = (
+  const applySingleSceneSlice = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
   ): SceneNavigationTarget => {
-    if (effectiveMode(target) !== 'standalone' || resolved.composition === undefined) {
+    const mode = effectiveMode(target);
+    if ((mode !== 'standalone' && mode !== 'loop') || resolved.composition === undefined) {
       return resolved;
     }
     const headEntry = resolved.composition.manifestSlice[0];
@@ -509,7 +541,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
     }
 
-    const runnable = applyStandaloneSlice(resolved, target);
+    const runnable = applySingleSceneSlice(resolved, target);
 
     const load = buildLoad(runnable, target);
     if (load === null) return;

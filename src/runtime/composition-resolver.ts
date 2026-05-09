@@ -132,6 +132,25 @@ export interface SceneTimelineRunInput {
    * {@link ResolveCompositionOptions}.
    */
   readonly onBeatMissing?: () => void;
+  /**
+   * Repeat hint for the head scene's timeline (PUL-F015 / ADR-018).
+   * When `'until-aborted'`, the runner SHOULD restart the timeline on
+   * completion and continue restarting until the navigation aborts or
+   * disposes (e.g. a future GSAP runner uses `timeline.repeat(-1)`).
+   *
+   * Only present on the run input for the FIRST scene of the resolved
+   * composition slice — subsequent scenes never receive `repeat`
+   * because a head whose timeline never naturally completes cannot
+   * advance to following entries. Absent when the navigation target
+   * had no `mode=loop` parameter.
+   *
+   * Discriminated by literal type so future repeat semantics (e.g. a
+   * fixed-iteration variant) can extend the union without breaking
+   * existing runners — a runner that ignores the field, or that only
+   * recognizes `'until-aborted'`, gracefully degrades to no-repeat
+   * behavior. The resolver does not interpret the value.
+   */
+  readonly repeat?: 'until-aborted';
 }
 
 /**
@@ -202,6 +221,21 @@ export interface ResolveCompositionOptions {
    * {@link headBeat} is also absent.
    */
   readonly onBeatMissing?: () => void;
+  /**
+   * URL loop-mode repeat hint (PUL-F015 / ADR-018) to forward to the
+   * FIRST scene's run input as {@link SceneTimelineRunInput.repeat}.
+   * Subsequent scenes never receive a repeat hint — under
+   * `mode=loop` the head's timeline never naturally completes, so
+   * following composition entries cannot run. Absent when the
+   * navigation target had no `mode=loop` parameter.
+   *
+   * The resolver does not interpret the value — honoring "restart on
+   * completion" is the runner's contract per ADR-018. A runner that
+   * ignores the field gracefully degrades to no-repeat (a regression
+   * the seam tests in `scene-loader.test.ts` pin against the loader
+   * boundary, where mode dispatch lives).
+   */
+  readonly headRepeat?: 'until-aborted';
 }
 
 /**
@@ -278,6 +312,7 @@ function buildRunInput(
   signal: AbortSignal | undefined,
   beat: string | undefined,
   onBeatMissing: (() => void) | undefined,
+  repeat: 'until-aborted' | undefined,
 ): SceneTimelineRunInput {
   const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
     scene: step.scene,
@@ -288,6 +323,7 @@ function buildRunInput(
   if (signal !== undefined) input.signal = signal;
   if (beat !== undefined) input.beat = beat;
   if (onBeatMissing !== undefined) input.onBeatMissing = onBeatMissing;
+  if (repeat !== undefined) input.repeat = repeat;
   return input;
 }
 
@@ -344,8 +380,17 @@ function buildRunInput(
  * runner's job per ADR-011).
  */
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
-  const { registry, manifest, ctx, preloadAssets, runTimeline, signal, headBeat, onBeatMissing } =
-    options;
+  const {
+    registry,
+    manifest,
+    ctx,
+    preloadAssets,
+    runTimeline,
+    signal,
+    headBeat,
+    onBeatMissing,
+    headRepeat,
+  } = options;
 
   // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
   // silently lose the missing-label diagnostic the runner is contracted
@@ -403,7 +448,13 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
     // against, an impossible state per the documented contract.
     const stepBeat = isHead ? headBeat : undefined;
     const stepOnBeatMissing = stepBeat === undefined ? undefined : onBeatMissing;
-    await runScene(step, ctx, runTimeline, signal, stepBeat, stepOnBeatMissing);
+    // `headRepeat` is head-only per ADR-018: under `mode=loop` the
+    // head's timeline never naturally completes, so subsequent scenes
+    // cannot run. Forwarding repeat to non-head scenes would imply a
+    // following entry could itself loop, which contradicts the
+    // requirement's "the addressed scene's timeline" scoping.
+    const stepRepeat = isHead ? headRepeat : undefined;
+    await runScene(step, ctx, runTimeline, signal, stepBeat, stepOnBeatMissing, stepRepeat);
     lastCompletedSceneId = step.scene.id;
   }
 }
@@ -460,6 +511,7 @@ async function runScene(
   signal: AbortSignal | undefined,
   beat: string | undefined,
   onBeatMissing: (() => void) | undefined,
+  repeat: 'until-aborted' | undefined,
 ): Promise<void> {
   // Track failure with explicit booleans so `throw undefined` /
   // `Promise.reject(undefined)` are still treated as failures. Using
@@ -477,7 +529,7 @@ async function runScene(
     // non-Promise value is identity, so synchronous timeline factories
     // are unaffected.
     const timeline = await scene.timeline(ctx);
-    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing));
+    await runTimeline(buildRunInput(step, timeline, signal, beat, onBeatMissing, repeat));
   } catch (err) {
     phaseFailed = true;
     phaseError = err;

@@ -1333,3 +1333,104 @@ describe('URL beat positioning forwarding (PUL-F011)', () => {
     expect(cleanupCalls).toEqual(['scene-a']);
   });
 });
+
+describe('URL loop-mode runner repeat-hint forwarding (PUL-F015)', () => {
+  // PUL-F015: in `mode=loop`, the runtime SHALL run the addressed
+  // scene's timeline and restart it on completion. ADR-018 places
+  // mode dispatch at the loader and the repeat semantics at the
+  // timeline-runner adapter. The resolver's job is forwarding the
+  // URL-derived `headRepeat` hint to the head scene's run input only;
+  // subsequent scenes in a composition slice do not receive `repeat`
+  // because the head's looping timeline never naturally completes —
+  // following entries cannot run. The resolver does NOT interpret
+  // `headRepeat` itself; honoring "restart on completion" is the
+  // runner's contract.
+
+  it("forwards `headRepeat` to plan[0]'s run input only — subsequent scenes get no repeat", async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, headRepeat: 'until-aborted' });
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[0]?.scene.id).toBe('scene-a');
+    expect(runCalls[0]?.repeat).toBe('until-aborted');
+    expect(runCalls[1]?.scene.id).toBe('scene-b');
+    expect(runCalls[1]?.repeat).toBeUndefined();
+    // Parallel to `beat` / `range` / `behavior`: the key is OMITTED
+    // from the input object when absent, not set to `undefined`. The
+    // runner can branch on `'repeat' in input` rather than checking
+    // for `undefined`.
+    expect('repeat' in (runCalls[1] as object)).toBe(false);
+  });
+
+  it('does not attach `repeat` when `headRepeat` is absent', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(1);
+    expect('repeat' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('does not interpret `headRepeat` itself — a runner that ignores the hint and returns normally does not error', async () => {
+    // Resolver delegates restart-on-completion to the runner per
+    // ADR-018. A runner that receives `repeat: 'until-aborted'` and
+    // returns void normally (e.g. the placeholder runner that has no
+    // real timeline to repeat) must NOT cause the resolver to throw
+    // or skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    await expect(
+      resolveComposition({
+        ...options,
+        headRepeat: 'until-aborted',
+      }),
+    ).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+
+  it('forwards `headRepeat` alongside `headBeat` independently — both reach plan[0] without coupling', async () => {
+    // `headRepeat` and `headBeat` are two independent head-only
+    // forwardings (PUL-F011 and PUL-F015). A regression that paired
+    // them — e.g. requiring `headBeat` whenever `headRepeat` is set,
+    // or vice versa — would break URLs like `?scene=x&beat=hook&mode=loop`.
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({
+      ...options,
+      headBeat: 'hook',
+      onBeatMissing: () => undefined,
+      headRepeat: 'until-aborted',
+    });
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]?.beat).toBe('hook');
+    expect(runCalls[0]?.repeat).toBe('until-aborted');
+  });
+});

@@ -9,6 +9,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/018-workbench-mode-loop.md` — records the PUL-F015
+  contract: under `mode=loop` the loader truncates the validated
+  composition slice to the addressed head entry (parallel to
+  `standalone` per ADR-017) and passes `repeat: 'until-aborted'`
+  through the bridge / resolver to that head's timeline-runner input,
+  where the runner is responsible for restarting the timeline on
+  completion (e.g. ADR-003's future GSAP runner uses
+  `timeline.repeat(-1)`). Slice truncation makes "no following
+  entries run" a structural guarantee — a runner that ignores the
+  `repeat` hint cannot silently degrade loop into normal composition
+  playback. The single-scene-execution helper ADR-017 introduced is
+  generalized (`applySingleSceneSlice`); the SHAPE transform is
+  shared between `standalone` and `loop`, the runner-side semantic
+  difference (`input.repeat`) is what differentiates them.
+  Composition validation runs first, so unregistered compositions /
+  unknown member scenes / out-of-range indexes still surface as
+  navigation errors. The hint is head-only — following composition
+  entries do not receive `repeat`, parallel to PUL-F011 / ADR-015's
+  `headBeat` plumbing (and structurally vacuous under truncation,
+  but pinned in the resolver / bridge tests for layered correctness).
+  The loader → runner contract IS materially shipped; the seam
+  (`ctx.mode === 'loop'` reaches every lifecycle hook of the head
+  scene) is pinned. The actual restart-on-completion behavior depends
+  on ADR-003's GSAP runner, which is not yet implemented; the
+  placeholder runner has no real timeline and parks until abort,
+  vacuously satisfying the requirement. Following the ADR-016 /
+  ADR-017 precedent, PUL-F015 stays DRAFT and the issue ↔ requirement
+  link is `DOCUMENTS`; ACTIVE transitions when the GSAP runner lands
+  and actively reads `input.repeat === 'until-aborted'`, with an
+  end-to-end test alongside the seam tests in this PR. Indexed in
+  `docs/adrs/README.md`.
+- `docs/design/pul-f015-loop-mode-preflight.md` — codex
+  architecture preflight design context for PUL-F015. Names the
+  cross-cutting concerns to reuse (`NAVIGATION_MODES`,
+  `effectiveMode()`, `parseNavigationSearch()`,
+  `resolveSceneNavigation()`, `loadSceneNavigationTarget()`,
+  `resolveComposition()`, `createAssetPreloader()`,
+  `describeError()`, the per-navigation `AbortController`) and the
+  anti-patterns to avoid (composition-wide looping, scene-lifecycle
+  re-run on iteration, recursive `handle()` from the runner,
+  `setInterval` / polling / sleeps, manifest-mutation looping,
+  persisting loop state outside the URL).
+- `src/runtime/composition-resolver.ts` —
+  `SceneTimelineRunInput` gains optional `repeat?: 'until-aborted'`
+  and `ResolveCompositionOptions` gains optional
+  `headRepeat?: 'until-aborted'`. The resolver forwards `headRepeat`
+  to plan[0]'s run input only (head-only, parallel to `headBeat`);
+  subsequent scenes never receive `repeat`. The literal-typed union
+  lets future repeat semantics extend without breaking existing
+  runners.
+- `src/runtime/scene-navigation.ts` —
+  `LoadSceneNavigationTargetOptions` gains optional `repeat?:
+  'until-aborted'`; `loadSceneNavigationTarget()` forwards the
+  option to `resolveComposition` as `headRepeat` (parallel to how
+  `beat` becomes `headBeat`). `repeat` and `beat` are independent —
+  a URL like `?scene=x&mode=loop` (no beat) and
+  `?scene=x&beat=hook&mode=loop` (beat + loop) are both valid. The
+  bridge ALSO truncates a composition slice to its addressed head
+  when `repeat` is supplied (`truncateForRepeat`) — a structural
+  defense layered with the loader's `applySingleSceneSlice` so
+  direct bridge callers (test harnesses, future export pipelines)
+  get the same loop-mode single-scene-execution guarantee. The two
+  truncations are idempotent.
+- `src/runtime/scene-loader.ts` — when
+  `effectiveMode(target) === 'loop'`, the loader passes
+  `repeat: 'until-aborted'` through `loadSceneNavigationTarget()`.
+  Other modes (and a `mode`-less URL) leave the key absent on the
+  runner input — key-presence semantics, parallel to `beat` /
+  `range` / `behavior`. Mode dispatch lives at the loader, the same
+  place PUL-F012 derives `ctx.mode`. The single-scene-execution
+  helper that landed for `standalone` (ADR-017) is generalized to
+  `applySingleSceneSlice` and now runs for both `standalone` and
+  `loop`, truncating the validated composition slice to the
+  addressed head entry under either mode (per ADR-018: structural
+  defense against a runner that ignores the `repeat` hint).
+- `src/main.ts` — placeholder timeline runner docstring
+  acknowledges `input.repeat`. The placeholder ignores the hint;
+  parking until abort vacuously satisfies "restart on completion"
+  because no completion ever fires. ADR-003's GSAP runner will read
+  the hint and apply native repeat semantics.
+- `tests/runtime/composition-resolver.test.ts` — new
+  `'URL loop-mode runner repeat-hint forwarding (PUL-F015)'`
+  describe block (4 tests) pinning `headRepeat` head-only delivery,
+  key-presence semantics, resolver no-op on the value, and
+  independent forwarding alongside `headBeat`.
+- `tests/runtime/scene-navigation.test.ts` — new `'URL loop-mode
+  repeat forwarding (PUL-F015)'` describe block under
+  `loadSceneNavigationTarget` pinning the bridge's `repeat` →
+  `headRepeat` plumbing for single-scene targets, key absence when
+  option omitted, independence from `beat`, bridge-level slice
+  truncation under `repeat` (the structural defense added in
+  response to codex pre-push review), and that non-loop composition
+  navigation still runs the full slice.
+- `tests/runtime/scene-loader.test.ts` — new `'loop-mode runner
+  repeat-hint forwarding (PUL-F015)'` describe block pinning every
+  clause of PUL-F015 under `mode=loop`:
+  - `repeat: 'until-aborted'` on the head scene's runner input for
+    a `scene` target.
+  - Slice truncation under `composition` and `composition+scene`
+    targets — only the head runs, with `repeat: 'until-aborted'`
+    on its runner input. Non-final-index navigations are used so
+    a regression that dropped truncation would observe successor
+    entries running.
+  - cleanup runs exactly once for the head scene under `mode=loop`,
+    never for dropped slice entries (parallel to ADR-017).
+  - Key absence on the runner input when `mode` is unset.
+  - No `repeat` for any non-loop mode (six modes walked).
+  - `ctx.mode === 'loop'` exposed to every lifecycle hook of the
+    head scene under all four locator shapes.
+  - `beat=` forwarding alongside `repeat` under `mode=loop` with
+    the non-fatal missing-label diagnostic preserved.
+  - No `data-pulsar-mode-*` suppression attribute is preemptively
+    written (parity with ADR-016 / ADR-017).
+  - Composition-not-registered, composition-member-not-found, and
+    index-out-of-range errors STILL surface under `mode=loop` (no
+    silent fallback to direct scene lookup).
+  - Object-form head entry's `range` and `behavior` overrides reach
+    the runner unchanged through the truncated slice alongside
+    `repeat` — loop is single-scene-timeline repeat at the head,
+    NOT direct-scene flattening.
 - `docs/adrs/017-workbench-mode-standalone.md` — records the
   PUL-F014 contract: under `mode=standalone` the loader truncates
   the validated composition slice from `resolveSceneNavigation()`

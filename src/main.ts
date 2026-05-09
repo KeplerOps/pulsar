@@ -78,6 +78,14 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // engine lands; until then the placeholder honestly reports "no
 // labels" rather than silently ignoring the URL.
 //
+// PUL-F015 / ADR-018: when the URL carries `mode=loop` the loader
+// sets `input.repeat = 'until-aborted'`. The placeholder ignores the
+// hint — it has no real timeline to restart, and parking until abort
+// vacuously satisfies "restart on completion" because no completion
+// ever fires. The future GSAP runner (ADR-003) reads the hint and
+// uses GSAP's native repeat (e.g. `timeline.repeat(-1)`); the
+// placeholder's no-op is the correct stand-in until then.
+//
 // Abort ordering: the abort check runs BEFORE the missing-beat
 // diagnostic so a navigation that was superseded between
 // `scene.timeline(ctx)` resolution and the runner's first turn does

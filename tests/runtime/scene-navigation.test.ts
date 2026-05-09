@@ -891,4 +891,155 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       expect(beatPresence).toEqual([false]);
     });
   });
+
+  describe('URL loop-mode repeat forwarding (PUL-F015)', () => {
+    // ADR-018: under `mode=loop` the runner restarts the addressed
+    // scene's timeline on completion. The bridge's only job is to
+    // forward the `repeat` option from the loader to the resolver as
+    // `headRepeat`. The resolver scopes delivery to the head scene's
+    // run input only — restart-on-completion is the runner's contract.
+
+    it('forwards `repeat` to the runner for a single-scene target', async () => {
+      const seen: { repeat?: 'until-aborted' }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { repeat?: 'until-aborted' } = {};
+          if ('repeat' in input) captured.repeat = input.repeat;
+          seen.push(captured);
+        },
+        repeat: 'until-aborted',
+      });
+
+      expect(seen).toEqual([{ repeat: 'until-aborted' }]);
+    });
+
+    it('truncates a composition slice to the addressed head when `repeat` is supplied — structural defense against runner non-conformance', async () => {
+      // PUL-F015 / ADR-018: under `repeat: 'until-aborted'` the head's
+      // timeline restarts forever — following composition entries
+      // cannot run by the requirement's definition. The bridge
+      // truncates the slice to a single entry as a structural defense
+      // so a runner that ignores `input.repeat` (or returns
+      // synchronously by mistake) cannot silently degrade loop-mode
+      // navigation into normal composition playback. This is layered
+      // with the loader's `applySingleSceneSlice` so direct bridge
+      // callers — outside the loader path — get the same guarantee.
+      const seen: { id: string; repeat: 'until-aborted' | undefined }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push({ id: input.scene.id, repeat: input.repeat });
+        },
+        repeat: 'until-aborted',
+      });
+
+      // Only the head ran; the tail (`middle`) was structurally
+      // dropped. A regression that omitted bridge-level truncation
+      // would observe `middle` as a second runner entry here.
+      expect(seen).toEqual([{ id: 'intro', repeat: 'until-aborted' }]);
+    });
+
+    it('does not truncate a composition slice when `repeat` is absent — non-loop navigations run the full slice', async () => {
+      // The structural defense fires only under `repeat`. Composition
+      // navigation under any non-loop mode must still run every entry
+      // — a regression that always truncated would silently break
+      // normal composition playback (and standalone slice handling
+      // belongs to the loader, not the bridge).
+      const seen: string[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene.id);
+        },
+      });
+
+      expect(seen).toEqual(['intro', 'middle']);
+    });
+
+    it('does not forward `repeat` when the option is omitted', async () => {
+      const repeatPresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          repeatPresence.push('repeat' in input);
+        },
+      });
+
+      expect(repeatPresence).toEqual([false]);
+    });
+
+    it('forwards `repeat` and `beat` independently — both reach the head without coupling', async () => {
+      // The bridge plumbs two independent head-only forwardings. A
+      // regression that paired them — e.g. dropping `repeat` when
+      // `beat` is absent, or vice versa — would break valid URLs
+      // like `?scene=x&mode=loop` (no beat) and `?scene=x&beat=hook`
+      // (no loop).
+      const seen: { beat?: string; repeat?: 'until-aborted' }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { beat?: string; repeat?: 'until-aborted' } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          if ('repeat' in input) captured.repeat = input.repeat;
+          seen.push(captured);
+        },
+        beat: 'hook',
+        onBeatMissing: () => undefined,
+        repeat: 'until-aborted',
+      });
+
+      expect(seen).toEqual([{ beat: 'hook', repeat: 'until-aborted' }]);
+    });
+  });
 });
