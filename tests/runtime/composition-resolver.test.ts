@@ -1538,3 +1538,123 @@ describe('URL paused-mode runner hold-hint forwarding (PUL-F016)', () => {
     expect(runCalls[0]?.repeat).toBeUndefined();
   });
 });
+
+describe('URL scrub-mode runner cue-gate-hint forwarding (PUL-F017)', () => {
+  // PUL-F017: in `mode=scrub`, the runtime SHALL display timeline
+  // controls allowing the user to scrub forward, backward, and to
+  // named beats; audio cues SHALL fire only on monotonic forward
+  // playback. ADR-020 places mode dispatch at the loader and the
+  // cue-gate semantics at the timeline-runner adapter. The resolver's
+  // job is forwarding the URL-derived `headCueGate` hint to the head
+  // scene's run input only; subsequent scenes in a composition slice
+  // do not receive `cueGate` because under scrub the slice is
+  // truncated upstream and the head's interactive timeline never
+  // hands off to following entries. The resolver does NOT interpret
+  // `headCueGate` itself; honoring "audio cues fire only on monotonic
+  // forward playback" is the runner's contract.
+
+  it("forwards `headCueGate` to plan[0]'s run input only — subsequent scenes get no cueGate", async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({ ...options, headCueGate: 'monotonic-forward' });
+    expect(runCalls).toHaveLength(2);
+    expect(runCalls[0]?.scene.id).toBe('scene-a');
+    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
+    expect(runCalls[1]?.scene.id).toBe('scene-b');
+    expect(runCalls[1]?.cueGate).toBeUndefined();
+    // Parallel to `beat` / `repeat` / `hold` / `range` / `behavior`:
+    // the key is OMITTED from the input object when absent, not set
+    // to `undefined`. The runner can branch on `'cueGate' in input`
+    // rather than checking for `undefined`.
+    expect('cueGate' in (runCalls[1] as object)).toBe(false);
+  });
+
+  it('does not attach `cueGate` when `headCueGate` is absent', async () => {
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition(options);
+    expect(runCalls).toHaveLength(1);
+    expect('cueGate' in (runCalls[0] as object)).toBe(false);
+  });
+
+  it('does not interpret `headCueGate` itself — a runner that ignores the hint and returns normally does not error', async () => {
+    // Resolver delegates monotonic-forward cue gating to the runner
+    // per ADR-020. A runner that receives `cueGate: 'monotonic-forward'`
+    // and returns void normally (e.g. the placeholder runner that has
+    // no real timeline and no real audio engine to gate cues against)
+    // must NOT cause the resolver to throw or skip cleanup.
+    const cleanupCalls: string[] = [];
+    const { options } = buildHarness({
+      scenes: [
+        {
+          id: 'scene-a',
+          cleanup: () => {
+            cleanupCalls.push('scene-a');
+          },
+        },
+      ],
+      manifest: ['scene-a'],
+      runTimeline: () => undefined,
+    });
+    await expect(
+      resolveComposition({
+        ...options,
+        headCueGate: 'monotonic-forward',
+      }),
+    ).resolves.toBeUndefined();
+    expect(cleanupCalls).toEqual(['scene-a']);
+  });
+
+  it('forwards `headCueGate` alongside `headBeat`, `headRepeat`, and `headHold` independently — all four reach plan[0] without coupling', async () => {
+    // `headCueGate`, `headBeat`, `headRepeat`, and `headHold` are
+    // four independent head-only forwardings. A regression that
+    // paired them — e.g. requiring `headBeat` whenever `headCueGate`
+    // is set, or dropping `headCueGate` when `headHold` is also
+    // supplied — would break valid combinations a programmatic
+    // bridge caller (test harness, future export pipeline) can
+    // legitimately request. The URL grammar makes the parent modes
+    // (`mode=loop`, `mode=paused`, `mode=scrub`) mutually exclusive
+    // (mode is a single field), so production callers won't supply
+    // more than one of `headRepeat` / `headHold` / `headCueGate`
+    // at once; the test exercises a programmatic caller scenario to
+    // pin that the resolver does not invent coupling between the
+    // four head-only fields. All four must reach plan[0] when all
+    // four are supplied — this is also the regression test for
+    // URLs like `?scene=x&beat=hook&mode=scrub` (scrub + named
+    // beat — exactly what PUL-F017's "to named beats" clause
+    // anticipates) which only sets `headBeat` + `headCueGate`.
+    const runCalls: SceneTimelineRunInput[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }],
+      manifest: ['scene-a'],
+      runTimeline: (input) => {
+        runCalls.push(input);
+      },
+    });
+    await resolveComposition({
+      ...options,
+      headBeat: 'hook',
+      onBeatMissing: () => undefined,
+      headRepeat: 'until-aborted',
+      headHold: 'first-frame',
+      headCueGate: 'monotonic-forward',
+    });
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0]?.beat).toBe('hook');
+    expect(runCalls[0]?.repeat).toBe('until-aborted');
+    expect(runCalls[0]?.hold).toBe('first-frame');
+    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
+  });
+});

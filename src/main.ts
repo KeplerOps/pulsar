@@ -105,6 +105,19 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // when multiple are set on the same input — paused is a
 // layout/styling-inspection mode, not a transport state.
 //
+// PUL-F017 / ADR-020: when the URL carries `mode=scrub` the loader
+// sets `input.cueGate = 'monotonic-forward'`. The placeholder
+// ignores the hint — it has no real timeline and no audio engine
+// (ADR-004's Howler integration) to gate cues against, and parking
+// until abort vacuously satisfies "audio cues fire only on
+// monotonic forward playback" because no cue ever fires. The
+// future GSAP runner (ADR-003) reads the hint and gates audio-cue
+// firing by direction (forward crossings fire; backwards scrub /
+// jump-to-beat / direct seek do not). The "display timeline
+// controls" clause of PUL-F017 is a workbench chrome surface that
+// reads `ctx.mode === 'scrub'` (the seam), not `input.cueGate`;
+// the controls UI is a separate future surface beyond the runner.
+//
 // Abort ordering: the abort check runs BEFORE the missing-beat
 // diagnostic so a navigation that was superseded between
 // `scene.timeline(ctx)` resolution and the runner's first turn does

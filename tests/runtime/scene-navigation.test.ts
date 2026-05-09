@@ -1208,4 +1208,185 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
       expect(seen).toEqual([{ beat: 'hook', hold: 'first-frame', repeat: 'until-aborted' }]);
     });
   });
+
+  describe('URL scrub-mode cue-gate forwarding (PUL-F017)', () => {
+    // ADR-020: under `mode=scrub` the runner gates audio cues to
+    // monotonic forward playback. The bridge's only job is to
+    // forward the `cueGate` option from the loader to the resolver
+    // as `headCueGate`. The resolver scopes delivery to the head
+    // scene's run input only — gating the cue stream is the
+    // runner's contract.
+
+    it('forwards `cueGate` to the runner for a single-scene target', async () => {
+      const seen: { cueGate?: 'monotonic-forward' }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: { cueGate?: 'monotonic-forward' } = {};
+          if ('cueGate' in input) captured.cueGate = input.cueGate;
+          seen.push(captured);
+        },
+        cueGate: 'monotonic-forward',
+      });
+
+      expect(seen).toEqual([{ cueGate: 'monotonic-forward' }]);
+    });
+
+    it('truncates a composition slice to the addressed head when `cueGate` is supplied — structural defense against runner non-conformance', async () => {
+      // PUL-F017 / ADR-020: under `cueGate: 'monotonic-forward'`
+      // scrub is single-scene-execution at the addressed head — by
+      // definition following composition entries do not run because
+      // the user is interactively scrubbing one timeline. The bridge
+      // truncates the slice to a single entry as a structural
+      // defense so a runner that ignores `input.cueGate` cannot
+      // silently degrade scrub-mode navigation into normal
+      // composition playback. This is layered with the loader's
+      // `applySingleSceneSlice` so direct bridge callers — outside
+      // the loader path — get the same guarantee. Mirrors the
+      // layered defense ADR-018 records for `repeat` and ADR-019
+      // records for `hold`.
+      const seen: { id: string; cueGate: 'monotonic-forward' | undefined }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push({ id: input.scene.id, cueGate: input.cueGate });
+        },
+        cueGate: 'monotonic-forward',
+      });
+
+      // Only the head ran; the tail (`middle`) was structurally
+      // dropped. A regression that omitted bridge-level truncation
+      // under `cueGate` would observe `middle` as a second runner
+      // entry here.
+      expect(seen).toEqual([{ id: 'intro', cueGate: 'monotonic-forward' }]);
+    });
+
+    it('does not truncate a composition slice when `cueGate` is absent — non-scrub navigations run the full slice', async () => {
+      // The structural defense fires only under `cueGate` (or
+      // `repeat` / `hold`). Composition navigation under any
+      // non-scrub, non-loop, non-paused mode must still run every
+      // entry — a regression that always truncated would silently
+      // break normal composition playback.
+      const seen: string[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const middle = buildScene({ id: 'middle' });
+      const scenes = createSceneRegistry([intro, middle]);
+      const compositions = createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle'] },
+      ]);
+      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          seen.push(input.scene.id);
+        },
+      });
+
+      expect(seen).toEqual(['intro', 'middle']);
+    });
+
+    it('does not forward `cueGate` when the option is omitted', async () => {
+      const cueGatePresence: boolean[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          cueGatePresence.push('cueGate' in input);
+        },
+      });
+
+      expect(cueGatePresence).toEqual([false]);
+    });
+
+    it('forwards `cueGate`, `beat`, `repeat`, and `hold` independently — all four reach the head without coupling', async () => {
+      // The bridge plumbs four independent head-only forwardings. A
+      // regression that paired them — e.g. dropping `cueGate` when
+      // `repeat` is also supplied, or vice versa — would break valid
+      // combinations a programmatic caller can legitimately request.
+      // Note that `mode=scrub`, `mode=loop`, and `mode=paused` are
+      // mutually exclusive at the URL boundary (mode is a single
+      // field), but a programmatic caller can supply any combination
+      // of these options to the bridge and all must reach the runner
+      // so the runner-side policy decides.
+      const seen: {
+        beat?: string;
+        cueGate?: 'monotonic-forward';
+        hold?: 'first-frame';
+        repeat?: 'until-aborted';
+      }[] = [];
+      const intro = buildScene({ id: 'intro' });
+      const scenes = createSceneRegistry([intro]);
+      const compositions = createCompositionRegistry([]);
+      const target = resolveSceneNavigation(sceneTarget('intro'), {
+        scenes,
+        compositions,
+      }) as SceneNavigationTarget;
+
+      await loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        runTimeline: (input) => {
+          const captured: {
+            beat?: string;
+            cueGate?: 'monotonic-forward';
+            hold?: 'first-frame';
+            repeat?: 'until-aborted';
+          } = {};
+          if ('beat' in input) captured.beat = input.beat;
+          if ('cueGate' in input) captured.cueGate = input.cueGate;
+          if ('hold' in input) captured.hold = input.hold;
+          if ('repeat' in input) captured.repeat = input.repeat;
+          seen.push(captured);
+        },
+        beat: 'hook',
+        onBeatMissing: () => undefined,
+        cueGate: 'monotonic-forward',
+        hold: 'first-frame',
+        repeat: 'until-aborted',
+      });
+
+      expect(seen).toEqual([
+        {
+          beat: 'hook',
+          cueGate: 'monotonic-forward',
+          hold: 'first-frame',
+          repeat: 'until-aborted',
+        },
+      ]);
+    });
+  });
 });

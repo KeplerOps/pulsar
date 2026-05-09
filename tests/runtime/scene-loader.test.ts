@@ -3838,4 +3838,545 @@ describe('createSceneLoader (PUL-F008)', () => {
       ]);
     });
   });
+
+  describe('scrub-mode runner cue-gate-hint forwarding (PUL-F017)', () => {
+    // PUL-F017 statement: in `mode=scrub`, the runtime SHALL display
+    // timeline controls allowing the user to scrub forward, backward,
+    // and to named beats. Audio cues SHALL fire only on monotonic
+    // forward playback.
+    //
+    // Materially-implementable parts of the statement that this
+    // block pins (ADR-020 records the contract boundary):
+    //   - The loader passes `cueGate: 'monotonic-forward'` to the
+    //     timeline runner adapter when
+    //     `effectiveMode(target) === 'scrub'`. The runner is
+    //     responsible for honoring the hint (e.g. ADR-003's future
+    //     GSAP runner gates audio-cue firing by direction; ADR-004's
+    //     future Howler integration is the consumer).
+    //   - The hint is HEAD-ONLY: under composition targets the head
+    //     scene's runner input carries `cueGate`; following entries
+    //     do not. Following entries do not run at all because the
+    //     slice is truncated to the addressed head — same structural
+    //     defense ADR-018 / ADR-019 record for `mode=loop` /
+    //     `mode=paused`.
+    //   - `ctx.mode === 'scrub'` reaches every lifecycle hook of the
+    //     head scene — the seam the future scrub-controls UI surface
+    //     will read.
+    //   - Other modes (`present`, `standalone`, `loop`, `paused`,
+    //     `screenshot`, `prompter`) and a `mode`-less URL DO NOT set
+    //     `cueGate`. A regression that broadcast `cueGate` under any
+    //     mode would break URLs that depend on no-cue-gating
+    //     semantics (e.g. normal playback under `present`).
+    //   - No `data-pulsar-mode-*` suppression attribute is preempt-
+    //     ively written under `scrub` (parity with ADR-016 / ADR-017
+    //     / ADR-018 / ADR-019).
+    //   - Composition validation (unregistered composition, unknown
+    //     member scene, out-of-range index) STILL surfaces as a
+    //     navigation error under `mode=scrub` — no silent fallback to
+    //     direct scene lookup.
+    //   - Beat semantics under `mode=scrub` are unchanged from
+    //     PUL-F011 at the loader: the head scene's runner sees
+    //     `input.beat`; missing-label diagnostics surface via
+    //     `data-pulsar-navigation-error` / `onError` without
+    //     unmounting. PUL-F017 explicitly names "to named beats" as
+    //     part of scrub's UX, so beat forwarding under `scrub` is
+    //     the natural scrub-to-beat path the future controls UI will
+    //     drive.
+    //   - Object-form head entry's `range` / `behavior` overrides
+    //     reach the runner unchanged. Scrub is single-scene-mount
+    //     with cue-gated playback at the head, NOT direct-scene
+    //     flattening.
+    //
+    // PUL-F017 stays DRAFT after this PR (ADR-020 records the
+    // boundary; following the ADR-016 / ADR-017 / ADR-018 / ADR-019 /
+    // PUL-F013 / PUL-F014 / PUL-F015 / PUL-F016 precedent). The seam
+    // — the loader passes `cueGate: 'monotonic-forward'` and
+    // `ctx.mode === 'scrub'` — IS materially shipped. The actual
+    // monotonic-forward cue-gating behavior is the runner's contract
+    // (ADR-003's GSAP runner + ADR-004's audio engine when they
+    // land) and the timeline-controls UI is a future workbench
+    // chrome surface; both are required for ACTIVE.
+
+    const scrubSceneTarget = (id: string): NavigationTarget => ({
+      locator: { kind: 'scene', scene: id },
+      mode: 'scrub',
+    });
+    const scrubCompositionTarget = (composition: string): NavigationTarget => ({
+      locator: { kind: 'composition', composition },
+      mode: 'scrub',
+    });
+    const scrubCompositionSceneTarget = (composition: string, scene: string): NavigationTarget => ({
+      locator: { kind: 'composition-scene', composition, scene },
+      mode: 'scrub',
+    });
+    const scrubCompositionIndexTarget = (composition: string, index: number): NavigationTarget => ({
+      locator: { kind: 'composition-index', composition, index },
+      mode: 'scrub',
+    });
+
+    it('passes `cueGate: "monotonic-forward"` to the runner for a `scene` target under `mode=scrub`', async () => {
+      // Direct-scene navigation is the simplest scrub path: the
+      // addressed scene IS the head, no slice resolution. A
+      // regression that gated `cueGate` on `target.composition`
+      // being defined would silently drop the hint here.
+      const captured: { sceneId: string; cueGate: 'monotonic-forward' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, cueGate: input.cueGate });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(scrubSceneTarget('scene-a'));
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', cueGate: 'monotonic-forward' }]);
+    });
+
+    it('runs only the head scene of a `composition` target under `mode=scrub` (slice truncation; runner sees `cueGate: "monotonic-forward"` for the head)', async () => {
+      // PUL-F017 / ADR-020: scrub truncates the validated
+      // composition slice to the addressed head, parallel to
+      // standalone (ADR-017), loop (ADR-018), and paused (ADR-019).
+      // Truncation makes "no following entries run" a structural
+      // guarantee — a runner bug or no-op runner under `mode=scrub`
+      // MUST NOT silently degrade into normal composition playback.
+      // Use a non-final-index navigation so the slice has successors
+      // that would be observable if truncation were missing.
+      const captured: { sceneId: string; cueGate: 'monotonic-forward' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, cueGate: input.cueGate });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(scrubCompositionIndexTarget('full-talk', 0));
+
+      expect(captured).toEqual([{ sceneId: 'scene-a', cueGate: 'monotonic-forward' }]);
+    });
+
+    it('runs only the addressed scene of a `composition+scene` target under `mode=scrub`', async () => {
+      // composition+scene targeting a non-final entry exercises the
+      // slice transform from a different locator shape; pins parity
+      // with the composition-target case above.
+      const captured: { sceneId: string; cueGate: 'monotonic-forward' | undefined }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ sceneId: input.scene.id, cueGate: input.cueGate });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(scrubCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(captured).toEqual([{ sceneId: 'scene-b', cueGate: 'monotonic-forward' }]);
+    });
+
+    it('runs cleanup exactly once for the head scene under `mode=scrub`, never for dropped slice entries', async () => {
+      // Same invariant as PUL-F014 (ADR-017) under standalone,
+      // PUL-F015 (ADR-018) under loop, PUL-F016 (ADR-019) under
+      // paused: a regression that dropped the slice for execution
+      // but left following scenes wired through the synthesized
+      // registry could double-clean or skip-clean. Pin
+      // exactly-once cleanup on the head and zero cleanup for the
+      // dropped entries.
+      const cleaned: string[] = [];
+      const trace = (id: string): SceneModule =>
+        buildScene({
+          id,
+          cleanup: () => {
+            cleaned.push(id);
+          },
+        });
+      const scenes = [trace('scene-a'), trace('scene-b'), trace('scene-c')];
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry(scenes),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: scenes.map((s) => s.id) },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(scrubCompositionTarget('full-talk'));
+
+      expect(cleaned).toEqual(['scene-a']);
+    });
+
+    it('omits the `cueGate` key on the runner input when `mode=scrub` is absent (key-presence semantics)', async () => {
+      // The runner input uses key-presence semantics for optional
+      // fields (parallel to `beat` / `repeat` / `hold` / `range` /
+      // `behavior`): a runner can branch on `'cueGate' in input`
+      // rather than `=== undefined`. A regression that always set
+      // `input.cueGate = undefined` (or any non-`'monotonic-forward'`
+      // value) under non-scrub modes would break that contract.
+      const captured: { hasCueGate: boolean; cueGate: unknown }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({ hasCueGate: 'cueGate' in input, cueGate: input.cueGate });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      // No mode at all (defaults to `present`).
+      await loader.handle(sceneTarget('scene-a'));
+
+      expect(captured).toEqual([{ hasCueGate: false, cueGate: undefined }]);
+    });
+
+    it('does not set `cueGate` for any non-scrub mode', async () => {
+      // Walk the seven-mode allowlist (minus `scrub`) and confirm
+      // that none of them produce `cueGate` on the runner input.
+      // Catching every non-scrub mode discriminates against an
+      // over-broad fix that gated `cueGate` on `mode !== undefined`
+      // rather than `mode === 'scrub'`. Capturing the per-iteration
+      // mode alongside the `'cueGate' in input` flag means the
+      // assertion failure identifies WHICH mode regressed, not just
+      // "some mode did."
+      const nonScrubModes = NAVIGATION_MODES.filter((m) => m !== 'scrub');
+      const captured: { mode: NavigationMode; hasCueGate: boolean }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      for (const mode of nonScrubModes) {
+        const runner: SceneTimelineRunner = (input) => {
+          captured.push({ mode, hasCueGate: 'cueGate' in input });
+        };
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([sceneA]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          runTimeline: runner,
+        });
+        await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
+      }
+
+      // One entry per non-scrub mode, each must have `hasCueGate:
+      // false`. Building the expected array from `nonScrubModes`
+      // keeps the assertion in sync if the mode allowlist ever
+      // changes.
+      expect(captured).toEqual(nonScrubModes.map((mode) => ({ mode, hasCueGate: false })));
+    });
+
+    it('exposes `ctx.mode === "scrub"` to every lifecycle hook of the head scene under all locator shapes', async () => {
+      // Parallel to the PUL-F014 standalone, PUL-F015 loop, and
+      // PUL-F016 paused seam tests. Future runner / chrome / audio
+      // surfaces (specifically the timeline-controls UI named in the
+      // PUL-F017 statement) read `ctx.mode` to decide their own
+      // behavior; this test pins the seam end to end across all four
+      // locator shapes that can appear under `mode=scrub`.
+      const seen: { phase: string; locatorKind: string; mode: unknown }[] = [];
+      const recordMode =
+        (phase: string, locatorKind: string) =>
+        (ctx: unknown): unknown => {
+          seen.push({ phase, locatorKind, mode: (ctx as { mode?: NavigationMode }).mode });
+          return null;
+        };
+      const makeScene = (locatorKind: string): SceneModule =>
+        buildScene({
+          id: 'scene-a',
+          create: recordMode('create', locatorKind),
+          timeline: recordMode('timeline', locatorKind) as SceneModule['timeline'],
+          cleanup: recordMode('cleanup', locatorKind),
+        });
+      const stage = buildStage();
+      const buildLoader = (sceneId: string, locatorKind: string) =>
+        createSceneLoader({
+          scenes: createSceneRegistry([makeScene(locatorKind)]),
+          compositions: createCompositionRegistry([{ id: 'full-talk', manifest: [sceneId] }]),
+          stage: stage.element,
+          buildCtx: (mode) => ({ stage: stage.element, mode }),
+          createPreloader: () => () => undefined,
+          runTimeline: noopRunner,
+        });
+
+      await buildLoader('scene-a', 'scene').handle(scrubSceneTarget('scene-a'));
+      await buildLoader('scene-a', 'composition').handle(scrubCompositionTarget('full-talk'));
+      await buildLoader('scene-a', 'composition-scene').handle(
+        scrubCompositionSceneTarget('full-talk', 'scene-a'),
+      );
+      await buildLoader('scene-a', 'composition-index').handle(
+        scrubCompositionIndexTarget('full-talk', 0),
+      );
+
+      // 3 hooks per navigation × 4 locator shapes = 12 entries;
+      // every single one must carry `scrub`.
+      expect(seen).toHaveLength(12);
+      for (const entry of seen) {
+        expect(entry.mode).toBe('scrub');
+      }
+    });
+
+    it('forwards `beat` to the head scene runner alongside `cueGate` under `mode=scrub`, and surfaces missing-beat as a non-fatal diagnostic', async () => {
+      // PUL-F011 / PUL-F017 are independent at the loader: a URL
+      // like `?scene=x&beat=hook&mode=scrub` must deliver both
+      // `beat` and `cueGate` to the runner. PUL-F017 explicitly
+      // mentions "named beats" as part of scrub's UX, so a
+      // regression that dropped `beat` when `mode=scrub` is set
+      // would silently break the natural scrub-to-beat path.
+      const captured: {
+        sceneId: string;
+        beat: string | undefined;
+        cueGate: 'monotonic-forward' | undefined;
+      }[] = [];
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({
+          sceneId: input.scene.id,
+          beat: input.beat,
+          cueGate: input.cueGate,
+        });
+        if (input.beat !== undefined && input.onBeatMissing !== undefined) {
+          input.onBeatMissing();
+        }
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'scrub',
+        beat: 'midpoint',
+      });
+
+      expect(captured).toEqual([
+        { sceneId: 'scene-a', beat: 'midpoint', cueGate: 'monotonic-forward' },
+      ]);
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain('beat positioning failed');
+      expect((errors[0] as Error).message).toContain('"midpoint"');
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBeDefined();
+    });
+
+    it('writes no `data-pulsar-mode-*` suppression attribute on the stage under `mode=scrub`', async () => {
+      // Mirrors ADR-016 / ADR-017 / ADR-018 / ADR-019 invariant.
+      // PUL-F017 forbids the loader from preemptively writing a
+      // stage attribute for scrub mode; runner-side or future-
+      // surface-side signaling (the controls UI) lives at those
+      // surfaces, not at the loader.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(scrubSceneTarget('scene-a'));
+
+      const modeAttrs = Array.from(stage.attrs.keys()).filter((name) =>
+        name.startsWith('data-pulsar-mode-'),
+      );
+      expect(modeAttrs).toEqual([]);
+    });
+
+    it('writes both `data-pulsar-scene-target` and `data-pulsar-composition-target` for a composition target under `mode=scrub` (preserves observability of what the URL addressed)', async () => {
+      // The stage attrs communicate "what was addressed," not "what
+      // ran." Truncation drops following entries from execution but
+      // does not drop the composition id from the stage attrs —
+      // mirrors the standalone / loop / paused invariant.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+      });
+
+      await loader.handle(scrubCompositionSceneTarget('full-talk', 'scene-b'));
+
+      expect(stage.attrs.get('data-pulsar-scene-target')).toBe('scene-b');
+      expect(stage.attrs.get('data-pulsar-composition-target')).toBe('full-talk');
+    });
+
+    it('surfaces composition-not-registered as a navigation error under `mode=scrub` (no silent fallback)', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(scrubCompositionTarget('not-registered'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'composition "not-registered" is not registered',
+      );
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toBeDefined();
+    });
+
+    it('surfaces composition-member error under `mode=scrub` for an unknown scene in `composition+scene`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneZ = buildScene({ id: 'scene-z' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneZ]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(scrubCompositionSceneTarget('full-talk', 'scene-z'));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain(
+        'scene "scene-z" is not a member of composition "full-talk"',
+      );
+    });
+
+    it('surfaces index-out-of-range under `mode=scrub`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['scene-a'] }]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: noopRunner,
+        onError: (err) => {
+          errors.push(err);
+        },
+      });
+
+      await loader.handle(scrubCompositionIndexTarget('full-talk', 5));
+
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as Error).message).toContain('index 5 is out of range');
+    });
+
+    it("preserves the addressed head entry's `range` and `behavior` overrides on the runner input under `mode=scrub` (composition+index with object-form entry)", async () => {
+      // PUL-F017 / ADR-020: scrub truncates the validated
+      // composition slice to the addressed head and forwards
+      // `cueGate` to that head's runner input. The slice is
+      // TRUNCATED rather than flattened — a flat `{ scene }` would
+      // lose object-form `range` / `behavior` overrides on the head
+      // entry, turning scrub into direct-scene flattening (parity
+      // with ADR-017's standalone, ADR-018's loop, and ADR-019's
+      // paused invariant). This pins all three slots — `range`,
+      // `behavior`, and `cueGate` — through to the head runner,
+      // plus the truncation itself (the runner runs exactly once).
+      const sceneA = buildScene({ id: 'scene-a' });
+      const sceneB = buildScene({ id: 'scene-b' });
+      const sceneC = buildScene({ id: 'scene-c' });
+      const stage = buildStage();
+      const captured: {
+        sceneId: string;
+        range: unknown;
+        behavior: unknown;
+        cueGate: unknown;
+      }[] = [];
+      const runner: SceneTimelineRunner = (input) => {
+        captured.push({
+          sceneId: input.scene.id,
+          range: input.range,
+          behavior: input.behavior,
+          cueGate: input.cueGate,
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB, sceneC]),
+        compositions: createCompositionRegistry([
+          {
+            id: 'full-talk',
+            manifest: [
+              'scene-a',
+              { id: 'scene-b', range: 'hook', behavior: { hold: true } },
+              'scene-c',
+            ],
+          },
+        ]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        runTimeline: runner,
+      });
+
+      await loader.handle(scrubCompositionIndexTarget('full-talk', 1));
+
+      expect(captured).toEqual([
+        {
+          sceneId: 'scene-b',
+          range: 'hook',
+          behavior: { hold: true },
+          cueGate: 'monotonic-forward',
+        },
+      ]);
+    });
+  });
 });
