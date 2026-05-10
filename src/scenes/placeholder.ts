@@ -30,14 +30,20 @@ import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 
 const LIFECYCLE_ATTR = 'data-pulsar-scene-lifecycle';
 
-// PUL-F012: WorkbenchSceneCtx now requires `mode` alongside `stage`.
-// The predicate validates the full shape — `stage` must be `null` or
-// an object exposing `setAttribute` / `removeAttribute`, and `mode`
-// must be in `NAVIGATION_MODES`. Narrowing on a partial check would
-// pass a malformed `{ stage: {}, mode: 'present' }` that later
-// crashes inside `writeLifecycle` when it tries to call
-// `stage.setAttribute`, contradicting the no-op-on-malformed-ctx
-// contract these scene hooks document.
+// PUL-F012 added `mode`; PUL-F022 added `gsap` (ADR-003). The
+// placeholder scene only reads `ctx.stage` (and validates `mode`
+// defensively), so the predicate narrows to that subset — `stage`
+// must be `null` or an object exposing `setAttribute` /
+// `removeAttribute`, and `mode` must be in `NAVIGATION_MODES`.
+// Narrowing on a partial stage check would pass a malformed
+// `{ stage: {}, mode: 'present' }` that later crashes inside
+// `writeLifecycle` when it tries to call `stage.setAttribute`,
+// contradicting the no-op-on-malformed-ctx contract these scene hooks
+// document. `ctx.gsap` is not validated here because this scene does
+// not touch it — a future scene that builds a timeline validates
+// `gsap` in its own ctx predicate.
+type PlaceholderCtx = Pick<WorkbenchSceneCtx, 'stage' | 'mode'>;
+
 const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
   if (stage === null) return true;
   if (typeof stage !== 'object') return false;
@@ -47,7 +53,7 @@ const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
   );
 };
 
-const isWorkbenchCtx = (value: unknown): value is WorkbenchSceneCtx => {
+const isWorkbenchCtx = (value: unknown): value is PlaceholderCtx => {
   if (typeof value !== 'object' || value === null) return false;
   if (!('stage' in value) || !('mode' in value)) return false;
   const { stage, mode } = value as { stage: unknown; mode: unknown };

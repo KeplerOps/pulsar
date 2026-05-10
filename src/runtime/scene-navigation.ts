@@ -34,7 +34,7 @@ import {
 import type { CompositionRegistry } from './composition-registry';
 import {
   type AssetPreloader,
-  type SceneTimelineRunner,
+  type CompositionTimelineAdapter,
   resolveComposition,
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
@@ -110,8 +110,8 @@ export interface LoadSceneNavigationTargetOptions {
   readonly ctx: unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
   readonly preloadAssets: AssetPreloader;
-  /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
-  readonly runTimeline: SceneTimelineRunner;
+  /** Timeline composition/playback adapter — see {@link CompositionTimelineAdapter}. */
+  readonly timeline: CompositionTimelineAdapter;
   /**
    * Optional cancellation signal forwarded through to
    * {@link resolveComposition}. Honors the same semantics PUL-F006
@@ -581,7 +581,7 @@ export async function loadSceneNavigationTarget(
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
-    runTimeline: options.runTimeline,
+    timeline: options.timeline,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     // `onBeatMissing` is paired with `beat` per ADR-015 — a callback
     // without a label has no trigger condition, so dropping it when

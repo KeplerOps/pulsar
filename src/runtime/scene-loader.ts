@@ -30,7 +30,7 @@
 //  - ADR-013 — URL navigation grammar boundary; F007 owns parsing.
 
 import type { CompositionRegistry } from './composition-registry';
-import type { AssetPreloader, SceneTimelineRunner } from './composition-resolver';
+import type { AssetPreloader, CompositionTimelineAdapter } from './composition-resolver';
 import { describeError } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
@@ -52,6 +52,7 @@ import {
   loadSceneNavigationTarget,
   resolveSceneNavigation,
 } from './scene-navigation';
+import type { TimelineEngine } from './timeline';
 
 /** The minimal subset of an HTMLElement the loader writes to. */
 export interface StageElement {
@@ -76,10 +77,10 @@ export interface StageElement {
  * mode detection. Per ADR-007 the runtime core is the dispatch
  * point; the field is set per navigation by {@link createSceneLoader}.
  *
- * Future requirements (timeline engine, audio engine) extend this
- * shape with `gsap`, `audio`, etc. per ADR-003 / ADR-004. The runtime
- * resolver itself never inspects ctx — it is purely a scene-to-
- * environment carrier.
+ * Per ADR-003 the timeline engine (`gsap`) arrives here; the audio
+ * engine (`audio`) will follow per ADR-004. The runtime resolver
+ * itself never inspects ctx — it is purely a scene-to-environment
+ * carrier.
  */
 export interface WorkbenchSceneCtx {
   /** The workbench stage element, or `null` when the runtime has no stage. */
@@ -91,6 +92,15 @@ export interface WorkbenchSceneCtx {
    * `'present'`.
    */
   readonly mode: NavigationMode;
+  /**
+   * The GSAP instance scenes build their timeline with (PUL-F022 /
+   * ADR-003). Scenes call `ctx.gsap.timeline()` in `timeline(ctx)`
+   * rather than importing GSAP directly, so the timeline engine stays
+   * a single swappable dependency of the runtime. The runtime composes
+   * the scene timelines into a master timeline (see
+   * {@link import('./timeline').composeMasterTimeline}).
+   */
+  readonly gsap: TimelineEngine['gsap'];
 }
 
 /**
@@ -139,8 +149,8 @@ export interface SceneLoaderOptions {
    * `createAssetPreloader({ init: { signal } })`.
    */
   readonly createPreloader: (signal: AbortSignal) => AssetPreloader;
-  /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
-  readonly runTimeline: SceneTimelineRunner;
+  /** Timeline composition/playback adapter — see {@link CompositionTimelineAdapter}. */
+  readonly timeline: CompositionTimelineAdapter;
   /**
    * Captions/script renderer adapter for `mode=prompter`
    * (PUL-F019 / ADR-022). Receives a {@link import('./prompter').PrompterScript}
@@ -148,7 +158,7 @@ export interface SceneLoaderOptions {
    * per-navigation `AbortSignal` so a long-running renderer can
    * release resources when superseded by another navigation. The
    * loader awaits the result before considering the prompter
-   * dispatch settled (parity with `runTimeline`).
+   * dispatch settled (parity with the timeline adapter).
    *
    * **Renderer contract** (see {@link PrompterRenderer}): a renderer
    * that mounts persistent DOM MUST keep its returned promise
@@ -419,12 +429,12 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       if (fired || signal.aborted || disposed) return;
       fired = true;
       // PUL-F011 / ADR-015: this path is non-fatal by contract — the
-      // runner is forbidden from throwing or rejecting on missing
-      // labels (the resolver would treat that as a lifecycle failure
-      // and unmount the scene). The injected `onError` sink is
-      // user-supplied, so an exception from it would propagate back
-      // through the runner's `onBeatMissing()` invocation, into the
-      // resolver's `await runTimeline(...)`, and trigger the
+      // timeline adapter is forbidden from throwing or rejecting on
+      // missing labels (the resolver would treat that as a lifecycle
+      // failure and tear every scene down). The injected `onError` sink
+      // is user-supplied, so an exception from it would propagate back
+      // through the adapter's `onBeatMissing()` invocation, into the
+      // resolver's `await timeline.run(...)`, and trigger the
       // cleanup-then-throw path. Swallow here so the diagnostic
       // surface stays non-fatal even when the operator's logger
       // throws.
@@ -581,7 +591,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       settled: loadSceneNavigationTarget(resolved, {
         ctx,
         preloadAssets,
-        runTimeline: options.runTimeline,
+        timeline: options.timeline,
         signal: controller.signal,
         ...(beat === undefined ? {} : { beat }),
         ...(onBeatMissing === undefined ? {} : { onBeatMissing }),

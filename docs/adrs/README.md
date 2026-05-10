@@ -27,7 +27,7 @@ Each ADR includes:
 |-----|-------|--------|
 | [000](000-template.md) | ADR Template | — |
 | [001](001-custom-experience-runtime.md) | Custom Experience Runtime, Not a Slide Framework | Accepted |
-| [002](002-scene-registry-and-compositions.md) | Scene Registry and Composition Manifests as the Core Abstraction | Accepted |
+| [002](002-scene-registry-and-compositions.md) | Scene Registry and Composition Manifests as the Core Abstraction | Accepted (§Resolution ordering superseded by ADR-025) |
 | [003](003-gsap-timeline-engine.md) | GSAP as the Timeline Engine | Accepted |
 | [004](004-howler-audio-engine.md) | Howler.js as the Audio Engine | Accepted |
 | [005](005-dom-css-default-rendering-surface.md) | DOM/CSS as the Default Rendering Surface | Accepted |
@@ -36,7 +36,7 @@ Each ADR includes:
 | [008](008-agent-native-authoring.md) | Agent-Native Authoring as a First-Class Architectural Constraint | Accepted |
 | [009](009-repo-layout-and-build-tooling.md) | Repo Layout and Build Tooling | Accepted |
 | [010](010-issue-tag-taxonomy.md) | GitHub Issue Tag Taxonomy | Accepted |
-| [011](011-composition-resolver-orchestration.md) | Composition Resolver as a Pure Orchestrator with Injected Adapters | Accepted |
+| [011](011-composition-resolver-orchestration.md) | Composition Resolver as a Pure Orchestrator with Injected Adapters | Accepted (per-scene `runTimeline` ordering superseded by ADR-025) |
 | [012](012-asset-preloader-fetch-and-drain.md) | Asset Preloader — Warm Bytes via Fetch + Drain; Decode-Complete is Future Work | Accepted |
 | [013](013-url-navigation-grammar-boundary.md) | URL Navigation Grammar Boundary | Accepted |
 | [014](014-url-scene-target-selection.md) | Loading the Addressed Scene as the Runtime Navigation Target | Accepted |
@@ -50,3 +50,4 @@ Each ADR includes:
 | [022](022-workbench-mode-prompter.md) | Workbench Mode `prompter` — Loader-Side Lifecycle Bypass with Captions Aggregation Seam | Accepted |
 | [023](023-presenter-controls.md) | Presenter Controls — Per-Navigation Command Source at the Loader/Runner Seam | Accepted |
 | [024](024-presenter-pause-resume.md) | Presenter Pause/Resume — Runner-Owned Transport State on the Existing Presenter Command Seam | Accepted |
+| [025](025-timeline-adapter-boundary.md) | Timeline Adapter and Composition Master — Revising the Resolution Lifecycle | Accepted (supersedes ADR-002 §Resolution + ADR-011 ordering) |
