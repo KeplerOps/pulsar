@@ -323,10 +323,16 @@ describe('createGsapCompositionTimeline', () => {
   it('plays a finite master to its natural end and resolves even with no abort signal wired', async () => {
     // ADR-025 codex review: a caller without a cancellation signal (a
     // test harness, an export pipeline before it owns abort) still gets
-    // playback and a resolution-on-completion — not an immediate
-    // resolve. A very short master keeps the test fast.
+    // playback — not an immediate resolve-without-running. A scene
+    // timeline that animates an external target lets us verify the
+    // master actually played to completion (`target.v` reaches 1); a
+    // very short master keeps the test fast.
+    const target = { v: 0 };
+    const child = engine.gsap.timeline({ paused: true });
+    child.to(target, { v: 1, duration: 0.02 });
     const adapter = createGsapCompositionTimeline({ engine });
-    await expect(adapter.run([segment('a', sceneTl(0.01))], {})).resolves.toBeUndefined();
+    await adapter.run([segment('a', child)], {});
+    expect(target.v).toBeCloseTo(1);
   });
 
   it('resolves immediately with no signal when the master is held (paused) at a frame', async () => {
