@@ -297,8 +297,9 @@ function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): read
   }
   for (const [id, indices] of occurrences) {
     if (indices.length > 1) {
+      const entryList = indices.map((i) => `[${i}]`).join(', ');
       throw fail(
-        `composition references scene id ${quoteId(id)} more than once (entries ${indices.map((i) => `[${i}]`).join(', ')}) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)`,
+        `composition references scene id ${quoteId(id)} more than once (entries ${entryList}) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)`,
         undefined,
       );
     }
