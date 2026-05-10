@@ -452,8 +452,47 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
   });
 });
 
-describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
-  it('runs preload → create → timeline → cleanup against the addressed scene', async () => {
+describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', () => {
+  // Records every `timeline.run(segments, opts)` call (one per
+  // navigation) and resolves immediately, or parks until the navigation
+  // aborts when `park` is set. The GSAP adapter has its own tests in
+  // `timeline.test.ts`; here we only pin what the bridge hands it.
+  const recordingTimeline = (
+    park = false,
+  ): {
+    adapter: import('../../src/runtime/composition-resolver').CompositionTimelineAdapter;
+    calls: {
+      segments: readonly import('../../src/runtime/composition-resolver').SceneTimelineSegment[];
+      opts: import('../../src/runtime/composition-resolver').CompositionTimelineRunOptions;
+    }[];
+  } => {
+    const calls: {
+      segments: readonly import('../../src/runtime/composition-resolver').SceneTimelineSegment[];
+      opts: import('../../src/runtime/composition-resolver').CompositionTimelineRunOptions;
+    }[] = [];
+    return {
+      calls,
+      adapter: {
+        run(segments, opts) {
+          calls.push({ segments, opts });
+          if (!park) return Promise.resolve();
+          return new Promise<void>((resolve) => {
+            const sig = opts.signal;
+            if (sig === undefined || sig.aborted) {
+              resolve();
+              return;
+            }
+            sig.addEventListener('abort', () => resolve(), { once: true });
+          });
+        },
+      },
+    };
+  };
+  const segmentIds = (
+    segments: readonly import('../../src/runtime/composition-resolver').SceneTimelineSegment[],
+  ): string[] => segments.map((s) => s.id);
+
+  it('mounts the addressed scene then composes its timeline then tears it down', async () => {
     const log: string[] = [];
     const intro = buildScene({
       id: 'intro',
@@ -468,30 +507,93 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
         log.push('cleanup');
       },
     });
-    const scenes = createSceneRegistry([intro]);
-    const compositions = createCompositionRegistry([]);
     const target = resolveSceneNavigation(sceneTarget('intro'), {
-      scenes,
-      compositions,
+      scenes: createSceneRegistry([intro]),
+      compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
+    const tl = recordingTimeline();
 
     await loadSceneNavigationTarget(target, {
       ctx: {},
       preloadAssets: (scene) => {
         log.push(`preload:${scene.id}`);
       },
-      runTimeline: ({ scene, timeline }) => {
-        log.push(`runTimeline:${scene.id}:${String(timeline)}`);
-      },
+      timeline: tl.adapter,
     });
 
+    expect(log).toEqual(['preload:intro', 'create', 'timeline', 'cleanup']);
+    expect(tl.calls).toHaveLength(1);
+    expect(tl.calls[0]?.segments).toEqual([{ id: 'intro', timeline: 'intro-timeline' }]);
+  });
+
+  it('runs a composition slice in mount-all → compose → run → cleanup-all order', async () => {
+    const log: string[] = [];
+    const make = (id: string): SceneModule =>
+      buildScene({
+        id,
+        create: () => {
+          log.push(`${id}:create`);
+        },
+        timeline: () => {
+          log.push(`${id}:timeline`);
+          return `${id}-tl`;
+        },
+        cleanup: () => {
+          log.push(`${id}:cleanup`);
+        },
+      });
+    const target = resolveSceneNavigation(compositionSceneTarget('full-talk', 'middle'), {
+      scenes: createSceneRegistry([make('intro'), make('middle'), make('outro')]),
+      compositions: createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
+      ]),
+    }) as SceneNavigationTarget;
+    const tl = recordingTimeline();
+
+    await loadSceneNavigationTarget(target, {
+      ctx: {},
+      preloadAssets: () => undefined,
+      timeline: tl.adapter,
+    });
+
+    // `intro` is upstream of the addressed scene and is not part of the slice.
     expect(log).toEqual([
-      'preload:intro',
-      'create',
-      'timeline',
-      'runTimeline:intro:intro-timeline',
-      'cleanup',
+      'middle:create',
+      'outro:create',
+      'middle:timeline',
+      'outro:timeline',
+      'outro:cleanup',
+      'middle:cleanup',
     ]);
+    expect(segmentIds(tl.calls[0]?.segments ?? [])).toEqual(['middle', 'outro']);
+  });
+
+  it('rejects a composition slice that repeats a scene id (ADR-025: each occurrence would share one activation context)', async () => {
+    const log: string[] = [];
+    const intro = buildScene({
+      id: 'intro',
+      create: () => log.push('create'),
+      cleanup: () => log.push('cleanup'),
+    });
+    // The dispatcher resolves `?composition=loop-once` fine; the
+    // lifecycle bridge rejects because mount-all cannot give two `intro`
+    // occurrences distinct DOM / cleanup ownership yet (single-scene
+    // modes truncate the slice to the head, so they stay navigable).
+    const target = resolveSceneNavigation(compositionTarget('loop-once'), {
+      scenes: createSceneRegistry([intro]),
+      compositions: createCompositionRegistry([{ id: 'loop-once', manifest: ['intro', 'intro'] }]),
+    }) as SceneNavigationTarget;
+
+    await expect(
+      loadSceneNavigationTarget(target, {
+        ctx: {},
+        preloadAssets: () => undefined,
+        timeline: recordingTimeline().adapter,
+      }),
+    ).rejects.toThrow(
+      /composition resolution failed: composition references scene id "intro" more than once/,
+    );
+    expect(log).toEqual([]);
   });
 
   it('still calls cleanup when create throws (mandatory-cleanup invariant)', async () => {
@@ -506,40 +608,31 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
         log.push('cleanup');
       },
     });
-    const scenes = createSceneRegistry([intro]);
-    const compositions = createCompositionRegistry([]);
     const target = resolveSceneNavigation(sceneTarget('intro'), {
-      scenes,
-      compositions,
+      scenes: createSceneRegistry([intro]),
+      compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
 
     await expect(
       loadSceneNavigationTarget(target, {
         ctx: {},
         preloadAssets: () => undefined,
-        runTimeline: () => undefined,
+        timeline: recordingTimeline().adapter,
       }),
     ).rejects.toThrow(/composition resolution failed: scene "intro" create threw/);
-
     expect(log).toEqual(['create', 'cleanup']);
   });
 
-  it('aborts before create/timeline/cleanup when preload throws', async () => {
+  it('aborts before activation when preload throws', async () => {
     const log: string[] = [];
     const intro = buildScene({
       id: 'intro',
-      create: () => {
-        log.push('create');
-      },
-      cleanup: () => {
-        log.push('cleanup');
-      },
+      create: () => log.push('create'),
+      cleanup: () => log.push('cleanup'),
     });
-    const scenes = createSceneRegistry([intro]);
-    const compositions = createCompositionRegistry([]);
     const target = resolveSceneNavigation(sceneTarget('intro'), {
-      scenes,
-      compositions,
+      scenes: createSceneRegistry([intro]),
+      compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
 
     await expect(
@@ -549,1196 +642,275 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge)', () => {
           log.push('preload');
           throw new Error('preload failed');
         },
-        runTimeline: () => undefined,
+        timeline: recordingTimeline().adapter,
       }),
     ).rejects.toThrow(/composition resolution failed: scene "intro" preloadAssets threw/);
-
     expect(log).toEqual(['preload']);
   });
 
   it('runs the resolved scene module even when a sibling registry maps the same id elsewhere', async () => {
-    // Identity guarantee: passing a different scene registry that maps
-    // the same id to a different module must NOT divert the bridge to
-    // the wrong module. The bridge synthesizes its own registry from
-    // `target.scene`, so the lifecycle always runs the module the
-    // dispatcher returned.
     const log: string[] = [];
-    const realIntro = buildScene({
-      id: 'intro',
-      create: () => {
-        log.push('real-intro:create');
-      },
-    });
-    const decoyIntro = buildScene({
-      id: 'intro',
-      create: () => {
-        log.push('decoy-intro:create');
-      },
-    });
-    const realScenes = createSceneRegistry([realIntro]);
-    const compositions = createCompositionRegistry([]);
+    const realIntro = buildScene({ id: 'intro', create: () => log.push('real-intro:create') });
+    const decoyIntro = buildScene({ id: 'intro', create: () => log.push('decoy-intro:create') });
     const target = resolveSceneNavigation(sceneTarget('intro'), {
-      scenes: realScenes,
-      compositions,
+      scenes: createSceneRegistry([realIntro]),
+      compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
     void createSceneRegistry([decoyIntro]);
 
     await loadSceneNavigationTarget(target, {
       ctx: {},
       preloadAssets: () => undefined,
-      runTimeline: () => undefined,
+      timeline: recordingTimeline().adapter,
     });
-
     expect(log).toEqual(['real-intro:create']);
   });
 
-  it('runs a composition slice end-to-end in order', async () => {
-    const log: string[] = [];
-    const make = (id: string): SceneModule =>
-      buildScene({
-        id,
-        create: () => {
-          log.push(`${id}:create`);
-        },
-        cleanup: () => {
-          log.push(`${id}:cleanup`);
-        },
-      });
-    const intro = make('intro');
-    const middle = make('middle');
-    const outro = make('outro');
-    const scenes = createSceneRegistry([intro, middle, outro]);
-    const compositions = createCompositionRegistry([
-      { id: 'full-talk', manifest: ['intro', 'middle', 'outro'] },
-    ]);
-    const target = resolveSceneNavigation(compositionSceneTarget('full-talk', 'middle'), {
-      scenes,
-      compositions,
-    }) as SceneNavigationTarget;
-
-    await loadSceneNavigationTarget(target, {
-      ctx: {},
-      preloadAssets: () => undefined,
-      runTimeline: () => undefined,
-    });
-
-    // intro is upstream of the addressed scene and is NOT played.
-    expect(log).toEqual(['middle:create', 'middle:cleanup', 'outro:create', 'outro:cleanup']);
-  });
-
-  it('runs a composition slice with repeated scene ids end-to-end (no duplicate-id registry error)', async () => {
-    const log: string[] = [];
-    const intro = buildScene({
-      id: 'intro',
-      create: () => {
-        log.push('create');
-      },
-      cleanup: () => {
-        log.push('cleanup');
-      },
-    });
-    const scenes = createSceneRegistry([intro]);
-    const compositions = createCompositionRegistry([
-      { id: 'loop-once', manifest: ['intro', 'intro'] },
-    ]);
-    const target = resolveSceneNavigation(compositionTarget('loop-once'), {
-      scenes,
-      compositions,
-    }) as SceneNavigationTarget;
-
-    await loadSceneNavigationTarget(target, {
-      ctx: {},
-      preloadAssets: () => undefined,
-      runTimeline: () => undefined,
-    });
-
-    expect(log).toEqual(['create', 'cleanup', 'create', 'cleanup']);
-  });
-
-  it('forwards per-entry overrides (range, behavior) to the runner adapter', async () => {
-    const seen: { id: string; range?: unknown; behavior?: unknown }[] = [];
+  it('carries per-entry overrides (range, behavior) into the segments handed to the adapter', async () => {
     const intro = buildScene({ id: 'intro', timeline: () => 'intro-tl' });
     const outro = buildScene({ id: 'outro', timeline: () => 'outro-tl' });
-    const scenes = createSceneRegistry([intro, outro]);
-    const compositions = createCompositionRegistry([
-      {
-        id: 'mixed',
-        manifest: [
-          { id: 'intro', range: 'hook' },
-          { id: 'outro', behavior: { fade: true } },
-        ],
-      },
-    ]);
     const target = resolveSceneNavigation(compositionTarget('mixed'), {
-      scenes,
-      compositions,
+      scenes: createSceneRegistry([intro, outro]),
+      compositions: createCompositionRegistry([
+        {
+          id: 'mixed',
+          manifest: [
+            { id: 'intro', range: 'hook' },
+            { id: 'outro', behavior: { fade: true } },
+          ],
+        },
+      ]),
     }) as SceneNavigationTarget;
+    const tl = recordingTimeline();
 
     await loadSceneNavigationTarget(target, {
       ctx: {},
       preloadAssets: () => undefined,
-      runTimeline: (input) => {
-        const captured: { id: string; range?: unknown; behavior?: unknown } = {
-          id: input.scene.id,
-        };
-        if ('range' in input) captured.range = input.range;
-        if ('behavior' in input) captured.behavior = input.behavior;
-        seen.push(captured);
-      },
+      timeline: tl.adapter,
     });
-
-    expect(seen).toEqual([
-      { id: 'intro', range: 'hook' },
-      { id: 'outro', behavior: { fade: true } },
+    expect(tl.calls[0]?.segments).toEqual([
+      { id: 'intro', timeline: 'intro-tl', range: 'hook' },
+      { id: 'outro', timeline: 'outro-tl', behavior: { fade: true } },
     ]);
   });
 
-  it('forwards ctx unchanged to every lifecycle hook', async () => {
+  it('forwards ctx unchanged to every lifecycle hook (the adapter receives no ctx)', async () => {
     const ctx = { tag: 'workbench-ctx' };
     const seen: unknown[] = [];
     const intro = buildScene({
       id: 'intro',
-      create: (received) => {
-        seen.push(received);
-      },
+      create: (received) => seen.push(received),
       timeline: (received) => {
         seen.push(received);
         return 'tl';
       },
-      cleanup: (received) => {
-        seen.push(received);
-      },
+      cleanup: (received) => seen.push(received),
     });
-    const scenes = createSceneRegistry([intro]);
-    const compositions = createCompositionRegistry([]);
     const target = resolveSceneNavigation(sceneTarget('intro'), {
-      scenes,
-      compositions,
+      scenes: createSceneRegistry([intro]),
+      compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
 
     await loadSceneNavigationTarget(target, {
       ctx,
       preloadAssets: () => undefined,
-      runTimeline: () => undefined,
+      timeline: recordingTimeline().adapter,
     });
-
     expect(seen).toEqual([ctx, ctx, ctx]);
   });
 
+  // ----- head-hint forwarding -------------------------------------------
+
+  /** Build a target + load it with the given bridge options; return the adapter's recorded call. */
+  const loadWith = async (
+    target: NavigationTarget,
+    scenes: SceneModule[],
+    compositions: { id: string; manifest: CompositionManifest }[],
+    options: Partial<{
+      beat: string;
+      onBeatMissing: () => void;
+      repeat: 'until-aborted';
+      hold: 'first-frame';
+      cueGate: 'monotonic-forward';
+      screenshot: 'capture';
+      presenter: ReturnType<typeof createPresenterController>;
+      onPresenterError: (err: unknown) => void;
+    }>,
+  ): Promise<{
+    calls: {
+      segments: readonly import('../../src/runtime/composition-resolver').SceneTimelineSegment[];
+      opts: import('../../src/runtime/composition-resolver').CompositionTimelineRunOptions;
+    }[];
+  }> => {
+    const resolved = resolveSceneNavigation(target, {
+      scenes: createSceneRegistry(scenes),
+      compositions: createCompositionRegistry(compositions),
+    }) as SceneNavigationTarget;
+    const tl = recordingTimeline();
+    await loadSceneNavigationTarget(resolved, {
+      ctx: {},
+      preloadAssets: () => undefined,
+      timeline: tl.adapter,
+      ...options,
+    });
+    return { calls: tl.calls };
+  };
+
   describe('URL beat forwarding (PUL-F011)', () => {
-    // ADR-015: URL beat is timeline-runner state. The bridge's only
-    // job is to forward `beat` and `onBeatMissing` from the loader to
-    // the resolver as `headBeat` / `onBeatMissing`. Label existence
-    // and seeking remain the runner's responsibility.
+    const beatTarget = (id: string, beat: string): NavigationTarget => ({
+      ...sceneTarget(id),
+      beat,
+    });
 
-    it('forwards `beat` to the runner for a single-scene target', async () => {
-      const seen: { beat?: string }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { beat?: string } = {};
-          if ('beat' in input) captured.beat = input.beat;
-          seen.push(captured);
+    it('forwards beat + onBeatMissing as headBeat + onBeatMissing', async () => {
+      const onBeatMissing = (): void => undefined;
+      const { calls } = await loadWith(
+        beatTarget('intro', 'hook'),
+        [buildScene({ id: 'intro' })],
+        [],
+        {
+          beat: 'hook',
+          onBeatMissing,
         },
-        beat: 'hook',
+      );
+      expect(calls[0]?.opts.headBeat).toBe('hook');
+      expect(calls[0]?.opts.onBeatMissing).toBe(onBeatMissing);
+    });
+
+    it('does not forward onBeatMissing when beat is omitted (paired contract)', async () => {
+      const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {
         onBeatMissing: () => undefined,
       });
-
-      expect(seen).toEqual([{ beat: 'hook' }]);
+      expect('headBeat' in (calls[0]?.opts ?? {})).toBe(false);
+      expect('onBeatMissing' in (calls[0]?.opts ?? {})).toBe(false);
     });
 
-    it('forwards `beat` to the head scene only of a composition slice', async () => {
-      // Composition slice with two entries; the head must receive
-      // `beat`, the tail must not. ADR-015: URL beat targets the
-      // active head scene only — no search through later scenes.
-      // `composition-index` (per ADR-013) is the valid grammar for
-      // pairing composition with beat; `kind: 'composition'` alone
-      // would be rejected by the parser and the loader's defense-in-
-      // depth check.
-      const seen: { id: string; beat?: string }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
+    it('throws when beat is supplied without onBeatMissing (paired-required contract)', async () => {
+      const resolved = resolveSceneNavigation(beatTarget('intro', 'hook'), {
+        scenes: createSceneRegistry([buildScene({ id: 'intro' })]),
+        compositions: createCompositionRegistry([]),
       }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { id: string; beat?: string } = { id: input.scene.id };
-          if ('beat' in input) captured.beat = input.beat;
-          seen.push(captured);
-        },
-        beat: 'hook',
-        onBeatMissing: () => undefined,
-      });
-
-      expect(seen).toEqual([{ id: 'intro', beat: 'hook' }, { id: 'middle' }]);
-    });
-
-    it('forwards `onBeatMissing` to the head scene only', async () => {
-      const callbacks: (((() => void) | undefined) | 'absent')[] = [];
-      const sentinel = (): void => undefined;
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          callbacks.push('onBeatMissing' in input ? input.onBeatMissing : 'absent');
-        },
-        beat: 'hook',
-        onBeatMissing: sentinel,
-      });
-
-      expect(callbacks).toEqual([sentinel, 'absent']);
-    });
-
-    it('does not forward `onBeatMissing` when `beat` is omitted (paired contract)', async () => {
-      // `onBeatMissing` is meaningless without a `beat` to trigger it.
-      // The bridge drops the callback when the caller forgot to supply
-      // a beat so the resolver / runner never see an impossible state.
-      const onBeatMissingPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          onBeatMissingPresence.push('onBeatMissing' in input);
-        },
-        onBeatMissing: () => undefined,
-      });
-
-      expect(onBeatMissingPresence).toEqual([false]);
-    });
-
-    it('throws when `beat` is supplied without `onBeatMissing` (paired-required contract)', async () => {
-      // PUL-F011 / ADR-015: a `beat` without an `onBeatMissing` would
-      // silently lose the missing-label diagnostic the runner is
-      // contracted to surface. The bridge fails fast at the boundary,
-      // mirroring the resolver's check.
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
       await expect(
-        loadSceneNavigationTarget(target, {
+        loadSceneNavigationTarget(resolved, {
           ctx: {},
           preloadAssets: () => undefined,
-          runTimeline: () => undefined,
+          timeline: recordingTimeline().adapter,
           beat: 'hook',
         }),
-      ).rejects.toThrow(
-        /^scene navigation failed: "onBeatMissing" is required when "beat" is supplied/,
-      );
+      ).rejects.toThrow(/"onBeatMissing" is required when "beat" is supplied/);
     });
 
-    it('does not forward `beat` when the option is omitted', async () => {
-      const seen: SceneNavigationTarget['scene'][] = [];
-      const beatPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene);
-          beatPresence.push('beat' in input);
-        },
-      });
-
-      expect(seen).toHaveLength(1);
-      expect(beatPresence).toEqual([false]);
+    it('does not forward beat when omitted', async () => {
+      const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {});
+      expect('headBeat' in (calls[0]?.opts ?? {})).toBe(false);
     });
   });
 
-  describe('URL loop-mode repeat forwarding (PUL-F015)', () => {
-    // ADR-018: under `mode=loop` the runner restarts the addressed
-    // scene's timeline on completion. The bridge's only job is to
-    // forward the `repeat` option from the loader to the resolver as
-    // `headRepeat`. The resolver scopes delivery to the head scene's
-    // run input only — restart-on-completion is the runner's contract.
+  // The four single-scene-execution modes (loop / paused / scrub /
+  // screenshot) share the same bridge behavior: forward the hint as the
+  // `head*` run option, and truncate a composition slice to the head so
+  // "no following entries run" is structural — independent of the
+  // adapter honoring the hint. `present` (presenter) is the odd one out:
+  // it runs the FULL slice and forwards the controller once.
+  const headHintCases = [
+    { name: 'loop (PUL-F015)', option: 'repeat', value: 'until-aborted', runKey: 'headRepeat' },
+    { name: 'paused (PUL-F016)', option: 'hold', value: 'first-frame', runKey: 'headHold' },
+    {
+      name: 'scrub (PUL-F017)',
+      option: 'cueGate',
+      value: 'monotonic-forward',
+      runKey: 'headCueGate',
+    },
+    {
+      name: 'screenshot (PUL-F018)',
+      option: 'screenshot',
+      value: 'capture',
+      runKey: 'headScreenshot',
+    },
+  ] as const;
 
-    it('forwards `repeat` to the runner for a single-scene target', async () => {
-      const seen: { repeat?: 'until-aborted' }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { repeat?: 'until-aborted' } = {};
-          if ('repeat' in input) captured.repeat = input.repeat;
-          seen.push(captured);
-        },
-        repeat: 'until-aborted',
+  for (const { name, option, value, runKey } of headHintCases) {
+    describe(`URL ${name} forwarding`, () => {
+      it(`forwards ${option} as ${runKey} for a single-scene target`, async () => {
+        const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {
+          [option]: value,
+        });
+        expect((calls[0]?.opts as Record<string, unknown>)[runKey]).toBe(value);
+        expect(segmentIds(calls[0]?.segments ?? [])).toEqual(['intro']);
       });
 
-      expect(seen).toEqual([{ repeat: 'until-aborted' }]);
-    });
-
-    it('truncates a composition slice to the addressed head when `repeat` is supplied — structural defense against runner non-conformance', async () => {
-      // PUL-F015 / ADR-018: under `repeat: 'until-aborted'` the head's
-      // timeline restarts forever — following composition entries
-      // cannot run by the requirement's definition. The bridge
-      // truncates the slice to a single entry as a structural defense
-      // so a runner that ignores `input.repeat` (or returns
-      // synchronously by mistake) cannot silently degrade loop-mode
-      // navigation into normal composition playback. This is layered
-      // with the loader's `applySingleSceneSlice` so direct bridge
-      // callers — outside the loader path — get the same guarantee.
-      const seen: { id: string; repeat: 'until-aborted' | undefined }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push({ id: input.scene.id, repeat: input.repeat });
-        },
-        repeat: 'until-aborted',
+      it(`truncates a composition slice to the addressed head when ${option} is supplied`, async () => {
+        const { calls } = await loadWith(
+          compositionTarget('full-talk'),
+          [buildScene({ id: 'a' }), buildScene({ id: 'b' }), buildScene({ id: 'c' })],
+          [{ id: 'full-talk', manifest: ['a', 'b', 'c'] }],
+          { [option]: value },
+        );
+        expect((calls[0]?.opts as Record<string, unknown>)[runKey]).toBe(value);
+        expect(segmentIds(calls[0]?.segments ?? [])).toEqual(['a']);
       });
 
-      // Only the head ran; the tail (`middle`) was structurally
-      // dropped. A regression that omitted bridge-level truncation
-      // would observe `middle` as a second runner entry here.
-      expect(seen).toEqual([{ id: 'intro', repeat: 'until-aborted' }]);
-    });
-
-    it('does not truncate a composition slice when `repeat` is absent — non-loop navigations run the full slice', async () => {
-      // The structural defense fires only under `repeat`. Composition
-      // navigation under any non-loop mode must still run every entry
-      // — a regression that always truncated would silently break
-      // normal composition playback (and standalone slice handling
-      // belongs to the loader, not the bridge).
-      const seen: string[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene.id);
-        },
+      it(`does not truncate a composition slice when ${option} is absent`, async () => {
+        const { calls } = await loadWith(
+          compositionTarget('full-talk'),
+          [buildScene({ id: 'a' }), buildScene({ id: 'b' }), buildScene({ id: 'c' })],
+          [{ id: 'full-talk', manifest: ['a', 'b', 'c'] }],
+          {},
+        );
+        expect(segmentIds(calls[0]?.segments ?? [])).toEqual(['a', 'b', 'c']);
       });
 
-      expect(seen).toEqual(['intro', 'middle']);
-    });
-
-    it('does not forward `repeat` when the option is omitted', async () => {
-      const repeatPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          repeatPresence.push('repeat' in input);
-        },
+      it(`does not forward ${runKey} when ${option} is omitted`, async () => {
+        const { calls } = await loadWith(
+          sceneTarget('intro'),
+          [buildScene({ id: 'intro' })],
+          [],
+          {},
+        );
+        expect(runKey in (calls[0]?.opts ?? {})).toBe(false);
       });
-
-      expect(repeatPresence).toEqual([false]);
     });
-
-    it('forwards `repeat` and `beat` independently — both reach the head without coupling', async () => {
-      // The bridge plumbs two independent head-only forwardings. A
-      // regression that paired them — e.g. dropping `repeat` when
-      // `beat` is absent, or vice versa — would break valid URLs
-      // like `?scene=x&mode=loop` (no beat) and `?scene=x&beat=hook`
-      // (no loop).
-      const seen: { beat?: string; repeat?: 'until-aborted' }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { beat?: string; repeat?: 'until-aborted' } = {};
-          if ('beat' in input) captured.beat = input.beat;
-          if ('repeat' in input) captured.repeat = input.repeat;
-          seen.push(captured);
-        },
-        beat: 'hook',
-        onBeatMissing: () => undefined,
-        repeat: 'until-aborted',
-      });
-
-      expect(seen).toEqual([{ beat: 'hook', repeat: 'until-aborted' }]);
-    });
-  });
-
-  describe('URL paused-mode hold forwarding (PUL-F016)', () => {
-    // ADR-019: under `mode=paused` the runner mounts the addressed
-    // scene and holds it at its first frame without advancing the
-    // timeline. The bridge's only job is to forward the `hold` option
-    // from the loader to the resolver as `headHold`. The resolver
-    // scopes delivery to the head scene's run input only —
-    // hold-at-first-frame is the runner's contract.
-
-    it('forwards `hold` to the runner for a single-scene target', async () => {
-      const seen: { hold?: 'first-frame' }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { hold?: 'first-frame' } = {};
-          if ('hold' in input) captured.hold = input.hold;
-          seen.push(captured);
-        },
-        hold: 'first-frame',
-      });
-
-      expect(seen).toEqual([{ hold: 'first-frame' }]);
-    });
-
-    it('truncates a composition slice to the addressed head when `hold` is supplied — structural defense against runner non-conformance', async () => {
-      // PUL-F016 / ADR-019: under `hold: 'first-frame'` the head's
-      // timeline does not advance — by definition following
-      // composition entries cannot run. The bridge truncates the
-      // slice to a single entry as a structural defense so a runner
-      // that ignores `input.hold` (or returns synchronously by
-      // mistake) cannot silently degrade paused-mode navigation into
-      // normal composition playback. This is layered with the
-      // loader's `applySingleSceneSlice` so direct bridge callers —
-      // outside the loader path — get the same guarantee. Mirrors
-      // the layered defense ADR-018 records for `repeat`.
-      const seen: { id: string; hold: 'first-frame' | undefined }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push({ id: input.scene.id, hold: input.hold });
-        },
-        hold: 'first-frame',
-      });
-
-      // Only the head ran; the tail (`middle`) was structurally
-      // dropped. A regression that omitted bridge-level truncation
-      // under `hold` would observe `middle` as a second runner entry
-      // here.
-      expect(seen).toEqual([{ id: 'intro', hold: 'first-frame' }]);
-    });
-
-    it('does not truncate a composition slice when `hold` is absent — non-paused navigations run the full slice', async () => {
-      // The structural defense fires only under `hold` (or `repeat`).
-      // Composition navigation under any non-paused, non-loop mode
-      // must still run every entry — a regression that always
-      // truncated would silently break normal composition playback.
-      const seen: string[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene.id);
-        },
-      });
-
-      expect(seen).toEqual(['intro', 'middle']);
-    });
-
-    it('does not forward `hold` when the option is omitted', async () => {
-      const holdPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          holdPresence.push('hold' in input);
-        },
-      });
-
-      expect(holdPresence).toEqual([false]);
-    });
-
-    it('forwards `hold`, `beat`, and `repeat` independently — all three reach the head without coupling', async () => {
-      // The bridge plumbs three independent head-only forwardings. A
-      // regression that paired them — e.g. dropping `hold` when
-      // `repeat` is also supplied, or vice versa — would break valid
-      // URL combinations. Note that `mode=paused` and `mode=loop` are
-      // mutually exclusive at the URL boundary (mode is a single
-      // field), but a programmatic caller can supply both options to
-      // the bridge and both must reach the runner so the runner
-      // policy decides.
-      const seen: {
-        beat?: string;
-        hold?: 'first-frame';
-        repeat?: 'until-aborted';
-      }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: {
-            beat?: string;
-            hold?: 'first-frame';
-            repeat?: 'until-aborted';
-          } = {};
-          if ('beat' in input) captured.beat = input.beat;
-          if ('hold' in input) captured.hold = input.hold;
-          if ('repeat' in input) captured.repeat = input.repeat;
-          seen.push(captured);
-        },
-        beat: 'hook',
-        onBeatMissing: () => undefined,
-        hold: 'first-frame',
-        repeat: 'until-aborted',
-      });
-
-      expect(seen).toEqual([{ beat: 'hook', hold: 'first-frame', repeat: 'until-aborted' }]);
-    });
-  });
-
-  describe('URL scrub-mode cue-gate forwarding (PUL-F017)', () => {
-    // ADR-020: under `mode=scrub` the runner gates audio cues to
-    // monotonic forward playback. The bridge's only job is to
-    // forward the `cueGate` option from the loader to the resolver
-    // as `headCueGate`. The resolver scopes delivery to the head
-    // scene's run input only — gating the cue stream is the
-    // runner's contract.
-
-    it('forwards `cueGate` to the runner for a single-scene target', async () => {
-      const seen: { cueGate?: 'monotonic-forward' }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { cueGate?: 'monotonic-forward' } = {};
-          if ('cueGate' in input) captured.cueGate = input.cueGate;
-          seen.push(captured);
-        },
-        cueGate: 'monotonic-forward',
-      });
-
-      expect(seen).toEqual([{ cueGate: 'monotonic-forward' }]);
-    });
-
-    it('truncates a composition slice to the addressed head when `cueGate` is supplied — structural defense against runner non-conformance', async () => {
-      // PUL-F017 / ADR-020: under `cueGate: 'monotonic-forward'`
-      // scrub is single-scene-execution at the addressed head — by
-      // definition following composition entries do not run because
-      // the user is interactively scrubbing one timeline. The bridge
-      // truncates the slice to a single entry as a structural
-      // defense so a runner that ignores `input.cueGate` cannot
-      // silently degrade scrub-mode navigation into normal
-      // composition playback. This is layered with the loader's
-      // `applySingleSceneSlice` so direct bridge callers — outside
-      // the loader path — get the same guarantee. Mirrors the
-      // layered defense ADR-018 records for `repeat` and ADR-019
-      // records for `hold`.
-      const seen: { id: string; cueGate: 'monotonic-forward' | undefined }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push({ id: input.scene.id, cueGate: input.cueGate });
-        },
-        cueGate: 'monotonic-forward',
-      });
-
-      // Only the head ran; the tail (`middle`) was structurally
-      // dropped. A regression that omitted bridge-level truncation
-      // under `cueGate` would observe `middle` as a second runner
-      // entry here.
-      expect(seen).toEqual([{ id: 'intro', cueGate: 'monotonic-forward' }]);
-    });
-
-    it('does not truncate a composition slice when `cueGate` is absent — non-scrub navigations run the full slice', async () => {
-      // The structural defense fires only under `cueGate` (or
-      // `repeat` / `hold`). Composition navigation under any
-      // non-scrub, non-loop, non-paused mode must still run every
-      // entry — a regression that always truncated would silently
-      // break normal composition playback.
-      const seen: string[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene.id);
-        },
-      });
-
-      expect(seen).toEqual(['intro', 'middle']);
-    });
-
-    it('does not forward `cueGate` when the option is omitted', async () => {
-      const cueGatePresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          cueGatePresence.push('cueGate' in input);
-        },
-      });
-
-      expect(cueGatePresence).toEqual([false]);
-    });
-
-    it('forwards `cueGate`, `beat`, `repeat`, and `hold` independently — all four reach the head without coupling', async () => {
-      // The bridge plumbs four independent head-only forwardings. A
-      // regression that paired them — e.g. dropping `cueGate` when
-      // `repeat` is also supplied, or vice versa — would break valid
-      // combinations a programmatic caller can legitimately request.
-      // Note that `mode=scrub`, `mode=loop`, and `mode=paused` are
-      // mutually exclusive at the URL boundary (mode is a single
-      // field), but a programmatic caller can supply any combination
-      // of these options to the bridge and all must reach the runner
-      // so the runner-side policy decides.
-      const seen: {
-        beat?: string;
-        cueGate?: 'monotonic-forward';
-        hold?: 'first-frame';
-        repeat?: 'until-aborted';
-      }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: {
-            beat?: string;
-            cueGate?: 'monotonic-forward';
-            hold?: 'first-frame';
-            repeat?: 'until-aborted';
-          } = {};
-          if ('beat' in input) captured.beat = input.beat;
-          if ('cueGate' in input) captured.cueGate = input.cueGate;
-          if ('hold' in input) captured.hold = input.hold;
-          if ('repeat' in input) captured.repeat = input.repeat;
-          seen.push(captured);
-        },
-        beat: 'hook',
-        onBeatMissing: () => undefined,
-        cueGate: 'monotonic-forward',
-        hold: 'first-frame',
-        repeat: 'until-aborted',
-      });
-
-      expect(seen).toEqual([
-        {
-          beat: 'hook',
-          cueGate: 'monotonic-forward',
-          hold: 'first-frame',
-          repeat: 'until-aborted',
-        },
-      ]);
-    });
-  });
-
-  describe('URL screenshot-mode capture forwarding (PUL-F018)', () => {
-    // ADR-021: under `mode=screenshot` the runner renders the
-    // addressed scene at the addressed beat (or first frame), holds
-    // the timeline still, suppresses all audio, and sources any
-    // randomness from a deterministic seed. The bridge's only job is
-    // to forward the `screenshot` option from the loader to the
-    // resolver as `headScreenshot`. The resolver scopes delivery to
-    // the head scene's run input only — honoring the capture bundle
-    // is the runner's contract.
-
-    it('forwards `screenshot` to the runner for a single-scene target', async () => {
-      const seen: { screenshot?: 'capture' }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        // Direct bridge callers (this test, future export
-        // pipelines, etc.) MUST build a ctx coherent with the
-        // runner-input `screenshot` flag, because PUL-F018's
-        // determinism clause flows through the scene-side
-        // `ctx.mode === 'screenshot'` seam (ADR-021's split).
-        // Passing `screenshot: 'capture'` to the bridge with a
-        // ctx whose mode disagreed (e.g. `mode: 'present'`)
-        // would leave scene `create(ctx)` thinking it's not in
-        // capture mode while the runner thinks it is.
-        ctx: { mode: 'screenshot' },
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: { screenshot?: 'capture' } = {};
-          if ('screenshot' in input) captured.screenshot = input.screenshot;
-          seen.push(captured);
-        },
-        screenshot: 'capture',
-      });
-
-      expect(seen).toEqual([{ screenshot: 'capture' }]);
-    });
-
-    it('truncates a composition slice to the addressed head when `screenshot` is supplied — structural defense against runner non-conformance', async () => {
-      // PUL-F018 / ADR-021: under `screenshot: 'capture'`
-      // screenshot is single-scene-execution at the addressed head —
-      // by definition following composition entries do not run
-      // because the runtime is rendering one deterministic frame.
-      // The bridge truncates the slice to a single entry as a
-      // structural defense so a runner that ignores
-      // `input.screenshot` cannot silently degrade screenshot-mode
-      // navigation into normal composition playback. This is
-      // layered with the loader's `applySingleSceneSlice` so direct
-      // bridge callers — outside the loader path — get the same
-      // guarantee. Mirrors the layered defense ADR-018 / ADR-019 /
-      // ADR-020 record for `repeat` / `hold` / `cueGate`.
-      const seen: { id: string; screenshot: 'capture' | undefined }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        // ADR-021's split: callers supplying `screenshot:
-        // 'capture'` to the bridge must also build a ctx whose
-        // mode is coherent. See the prior test for rationale.
-        ctx: { mode: 'screenshot' },
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push({ id: input.scene.id, screenshot: input.screenshot });
-        },
-        screenshot: 'capture',
-      });
-
-      // Only the head ran; the tail (`middle`) was structurally
-      // dropped. A regression that omitted bridge-level truncation
-      // under `screenshot` would observe `middle` as a second
-      // runner entry here.
-      expect(seen).toEqual([{ id: 'intro', screenshot: 'capture' }]);
-    });
-
-    it('does not truncate a composition slice when `screenshot` is absent — non-screenshot navigations run the full slice', async () => {
-      // The structural defense fires only under `screenshot` (or
-      // `repeat` / `hold` / `cueGate`). Composition navigation
-      // under any non-screenshot, non-loop, non-paused, non-scrub
-      // mode must still run every entry — a regression that always
-      // truncated would silently break normal composition playback.
-      const seen: string[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene.id);
-        },
-      });
-
-      expect(seen).toEqual(['intro', 'middle']);
-    });
-
-    it('does not forward `screenshot` when the option is omitted', async () => {
-      const screenshotPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          screenshotPresence.push('screenshot' in input);
-        },
-      });
-
-      expect(screenshotPresence).toEqual([false]);
-    });
-
-    it('forwards `screenshot`, `beat`, `repeat`, `hold`, and `cueGate` independently — all five reach the head without coupling', async () => {
-      // The bridge plumbs five independent head-only forwardings. A
-      // regression that paired them — e.g. dropping `screenshot`
-      // when `cueGate` is also supplied, or vice versa — would
-      // break valid combinations a programmatic caller can
-      // legitimately request. Note that `mode=screenshot`,
-      // `mode=scrub`, `mode=loop`, and `mode=paused` are mutually
-      // exclusive at the URL boundary (mode is a single field),
-      // but a programmatic caller can supply any combination of
-      // these options to the bridge and all must reach the runner
-      // so the runner-side policy decides. This is also the
-      // regression test for URLs like
-      // `?scene=x&beat=midpoint&mode=screenshot` — the natural
-      // deterministic-frame-capture-at-named-beat path PUL-F018
-      // names directly.
-      const seen: {
-        beat?: string;
-        cueGate?: 'monotonic-forward';
-        hold?: 'first-frame';
-        repeat?: 'until-aborted';
-        screenshot?: 'capture';
-      }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        // This test exercises a programmatic caller that supplies
-        // combinations the URL grammar can't produce (modes are
-        // mutually exclusive at the URL boundary). There is no
-        // single coherent `ctx.mode` for "all four modes at once,"
-        // so an opaque `{}` ctx is intentional here — the
-        // assertion is about runner-input plumbing, not about the
-        // scene-side `ctx.mode` seam. Production callers (loader
-        // path) always pair the runner-input fields with a
-        // coherent `ctx.mode`; that pairing is exercised by the
-        // single-mode tests above.
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          const captured: {
-            beat?: string;
-            cueGate?: 'monotonic-forward';
-            hold?: 'first-frame';
-            repeat?: 'until-aborted';
-            screenshot?: 'capture';
-          } = {};
-          if ('beat' in input) captured.beat = input.beat;
-          if ('cueGate' in input) captured.cueGate = input.cueGate;
-          if ('hold' in input) captured.hold = input.hold;
-          if ('repeat' in input) captured.repeat = input.repeat;
-          if ('screenshot' in input) captured.screenshot = input.screenshot;
-          seen.push(captured);
-        },
-        beat: 'midpoint',
-        onBeatMissing: () => undefined,
-        cueGate: 'monotonic-forward',
-        hold: 'first-frame',
-        repeat: 'until-aborted',
-        screenshot: 'capture',
-      });
-
-      expect(seen).toEqual([
-        {
-          beat: 'midpoint',
-          cueGate: 'monotonic-forward',
-          hold: 'first-frame',
-          repeat: 'until-aborted',
-          screenshot: 'capture',
-        },
-      ]);
-    });
-  });
+  }
 
   describe('URL present-mode presenter forwarding (PUL-F020)', () => {
-    // ADR-023: under `mode=present` the loader builds a per-navigation
-    // PresenterController bound to the per-navigation AbortSignal and
-    // forwards it via the bridge. The bridge's only job is to forward
-    // the `presenter` option from the loader to the resolver as
-    // `presenter`. Unlike the head-only forwardings, the resolver
-    // hands the controller to EVERY scene in the composition slice
-    // (mode=present runs the full slice; commands act on the active
-    // scene). The bridge does not interpret the controller; runner-
-    // side translation of commands is the runner's contract.
+    const makePresenter = (): ReturnType<typeof createPresenterController> => {
+      const controller = new AbortController();
+      return createPresenterController({ subscribe: () => () => undefined }, controller.signal);
+    };
 
-    it('forwards `presenter` to the runner for a single-scene target', async () => {
-      const seen: { hasPresenter: boolean }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-      const ac = new AbortController();
-      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          // Per ADR-023 the runner sees a per-scene wrapper, not
-          // the navigation controller directly. The bridge contract
-          // is "a controller reaches the runner" — the per-scene
-          // wrapping is exercised by the resolver test.
-          seen.push({ hasPresenter: input.presenter !== undefined });
-        },
+    it('forwards the presenter controller once into the run options', async () => {
+      const presenter = makePresenter();
+      const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {
         presenter,
       });
-
-      expect(seen).toEqual([{ hasPresenter: true }]);
+      expect(calls[0]?.opts.presenter).toBe(presenter);
     });
 
-    it('forwards `presenter` to EVERY scene in a composition slice (NOT head-only)', async () => {
-      // Mode=present is the only mode that runs the full composition
-      // slice, and presenter commands act on whichever scene is
-      // currently active. A regression that scoped `presenter` to
-      // plan[0] (matching the head-only `repeat` / `hold` /
-      // `cueGate` / `screenshot` pattern) would silently drop
-      // presenter input for every scene after the head.
-      const seen: { id: string; hasPresenter: boolean }[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-      const ac = new AbortController();
-      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
+    it('does not truncate the slice when presenter is supplied — present-mode runs the full composition', async () => {
+      const presenter = makePresenter();
+      const { calls } = await loadWith(
+        compositionTarget('full-talk'),
+        [buildScene({ id: 'a' }), buildScene({ id: 'b' }), buildScene({ id: 'c' })],
+        [{ id: 'full-talk', manifest: ['a', 'b', 'c'] }],
+        { presenter },
+      );
+      expect(segmentIds(calls[0]?.segments ?? [])).toEqual(['a', 'b', 'c']);
+      expect(calls[0]?.opts.presenter).toBe(presenter);
+    });
 
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          // Per ADR-023 the runner sees a per-scene wrapper around
-          // the navigation controller. The bridge contract here is
-          // "a controller reaches every scene" — the per-scene
-          // wrapping detail is exercised by the resolver's
-          // per-scene-detach test.
-          seen.push({ id: input.scene.id, hasPresenter: input.presenter !== undefined });
-        },
+    it('forwards onPresenterError paired with presenter', async () => {
+      const presenter = makePresenter();
+      const onPresenterError = (): void => undefined;
+      const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {
         presenter,
+        onPresenterError,
       });
-
-      expect(seen).toEqual([
-        { id: 'intro', hasPresenter: true },
-        { id: 'middle', hasPresenter: true },
-      ]);
+      expect(calls[0]?.opts.onPresenterError).toBe(onPresenterError);
     });
 
-    it('does not truncate a composition slice when `presenter` is supplied — present-mode runs the full slice', async () => {
-      // The loader's `applySingleSceneSlice` truncates only the five
-      // single-scene-execution modes (standalone / loop / paused /
-      // scrub / screenshot); the bridge's `truncateToHead` truncates
-      // only when one of the four head-only runner-input hints is
-      // supplied. A regression that added `presenter` to either
-      // truncation path would silently drop the tail of every
-      // present-mode composition.
-      const seen: string[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const middle = buildScene({ id: 'middle' });
-      const scenes = createSceneRegistry([intro, middle]);
-      const compositions = createCompositionRegistry([
-        { id: 'full-talk', manifest: ['intro', 'middle'] },
-      ]);
-      const target = resolveSceneNavigation(compositionIndexTarget('full-talk', 0), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-      const ac = new AbortController();
-      const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          seen.push(input.scene.id);
-        },
-        presenter,
-      });
-
-      expect(seen).toEqual(['intro', 'middle']);
-    });
-
-    it('does not forward `presenter` when the option is omitted', async () => {
-      const presenterPresence: boolean[] = [];
-      const intro = buildScene({ id: 'intro' });
-      const scenes = createSceneRegistry([intro]);
-      const compositions = createCompositionRegistry([]);
-      const target = resolveSceneNavigation(sceneTarget('intro'), {
-        scenes,
-        compositions,
-      }) as SceneNavigationTarget;
-
-      await loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        runTimeline: (input) => {
-          presenterPresence.push('presenter' in input);
-        },
-      });
-
-      expect(presenterPresence).toEqual([false]);
+    it('does not forward presenter when omitted', async () => {
+      const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {});
+      expect('presenter' in (calls[0]?.opts ?? {})).toBe(false);
     });
   });
 });

@@ -1,43 +1,51 @@
-// Composition resolver — PUL-F004.
+// Composition resolver — PUL-F004 (with the resolution lifecycle revised
+// by ADR-025).
 //
 // Plays a composition manifest end-to-end against a scene registry.
 // Given a manifest, the runtime SHALL: (a) verify every referenced
 // scene id exists in the registry; (b) preload assets declared by each
-// scene; (c) mount each scene in order via `create(ctx)`; (d) run its
-// timeline; (e) tear it down via `cleanup(ctx)` before mounting the
-// next scene.
+// scene; (c) mount each scene in order via `create(ctx)`; (d) compose
+// the scene timelines into one master timeline and play it; (e) tear
+// every scene down via `cleanup(ctx)`.
+//
+// ADR-025 supersedes ADR-002 §Resolution / ADR-011's per-scene
+// `mount → run timeline → cleanup → advance` ordering. The runtime owns
+// ONE master timeline per active composition (the transport surface —
+// play / pause / seek / speed / labels), so every scene's DOM must
+// coexist while the master plays. The new ordering:
+//
+//   1. validate the manifest; build the plan (resolve scene ids →
+//      modules; snapshot per-entry `range` / `behavior` overrides).
+//   2. MOUNT phase — for each scene in manifest order: `preloadAssets`,
+//      `await create(ctx)`. Scenes are NOT torn down between steps.
+//      Abort checkpoints: before any scene, after each preload, after
+//      each create. A scene whose `create` was attempted joins the
+//      cleanup list even if `create` itself threw.
+//   3. COMPOSE + RUN phase — collect each mounted scene's
+//      `timeline(ctx)` value and hand them to the injected timeline
+//      adapter, which composes the master, applies the head hints
+//      (beat / loop / paused / screenshot / cueGate / presenter), plays
+//      it, and resolves on the master's natural completion or on abort.
+//   4. CLEANUP phase — `await cleanup(ctx)` for every mounted scene in
+//      reverse mount order, ALWAYS (including every failure path in 2/3).
 //
 // References:
-//  - ADR-002 §Resolution — the canonical 5-step lifecycle this module
-//    implements.
+//  - ADR-002 §Resolution — the original 5-step lifecycle; its per-scene
+//    ordering is superseded by ADR-025.
 //  - ADR-008 — mandatory cleanup invariant (cleanup runs whenever the
-//    scene was touched, including failure paths after `create(ctx)` or
-//    timeline execution).
+//    scene was touched, including failure paths after `create(ctx)`).
 //  - ADR-011 — composition resolver as a pure orchestrator; asset
-//    preloading and timeline execution are injected adapters so the
-//    resolver does not depend on the asset loader (PUL-F005+) or the
-//    GSAP timeline engine (ADR-003). Per-entry `range` and `behavior`
-//    overrides flow through the runner adapter input so the future
-//    GSAP runner can honor sub-range cuts and behavior overrides
-//    without another resolver-signature change.
+//    preloading and timeline composition/playback are injected adapters
+//    so the resolver does not depend on the asset loader (PUL-F005+) or
+//    GSAP (ADR-003 / ADR-025).
+//  - ADR-025 — timeline adapter + composition master + the revised
+//    resolution lifecycle this module implements.
 //  - PUL-P001 — cleanup is a policy-level invariant.
-//  - PUL-F006 — `cleanup(ctx)` runs on every scene exit. Four exit
-//    paths, all routed through `runScene`'s unconditional second
-//    try/catch (see ADR-011 risk-table for design rationale):
-//      1. normal advance         — happy-path loop iteration.
-//      2. presenter skip         — TWO shapes: (a) cooperative
-//                                  scene exit (runner returns void;
-//                                  resolver cannot distinguish from
-//                                  completion per ADR-011), and (b)
-//                                  composition-level abort via
-//                                  `ResolveCompositionOptions.signal`
-//                                  (checked pre-iteration and
-//                                  post-preload, and forwarded to
-//                                  the runner).
-//      3. runtime error in scene — create / timeline / runner throws.
-//      4. composition end        — final scene's cleanup is terminal.
-//    Cleanup is invoked exactly once per scene activation. Do NOT
-//    add a parallel cleanup path for skip or error.
+//  - PUL-F006 — `cleanup(ctx)` runs on every scene exit; the
+//    composition-level abort signal (`ResolveCompositionOptions.signal`)
+//    is checked at the mount checkpoints and forwarded to the timeline
+//    adapter, which resolves (does not throw) on abort so the cleanup
+//    phase always runs.
 
 import {
   type BehaviorOverride,
@@ -48,302 +56,132 @@ import {
   findUnregisteredEntries,
 } from './composition';
 import { describeError } from './error';
-import { type PresenterController, createPresenterController } from './presenter';
+import type { PresenterController } from './presenter';
 import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
 /**
  * Adapter that preloads the assets declared by a scene before its
  * `create(ctx)` runs (clause b of PUL-F004). Receives the validated
- * scene module so it can read both `scene.assets` and `scene.id` (the
- * latter is useful for diagnostic logging inside the adapter).
- *
- * May return synchronously (`void`) or asynchronously
- * (`Promise<void>`); the resolver awaits the result before proceeding
- * to `create`. Throwing or rejecting aborts the composition; subsequent
- * scenes are not visited.
+ * scene module so it can read both `scene.assets` and `scene.id`. May
+ * return synchronously or asynchronously; the resolver awaits the
+ * result before proceeding to `create`. Throwing or rejecting aborts
+ * the composition; subsequent scenes are not mounted.
  */
 export type AssetPreloader = (scene: SceneModule) => void | Promise<void>;
 
 /**
- * Inputs the resolver passes to the {@link SceneTimelineRunner} for
- * one scene. The shape carries everything the runner needs to honor
- * per-entry overrides without forcing the resolver to interpret them
- * itself:
- *
- *  - `scene` — the validated scene module (ADR-008's "stable, addressable
- *    identity").
- *  - `timeline` — the value `scene.timeline(ctx)` returned, awaited so
- *    async timeline factories resolve to a concrete timeline before the
- *    runner sees them.
- *  - `range` — optional sub-range from an object entry's
- *    `CompositionEntryOverride.range` (PUL-F003); the runner interprets
- *    the labels against its own timeline implementation (ADR-003 §Labels).
- *  - `behavior` — optional behavior-override blob from an object entry's
- *    `CompositionEntryOverride.behavior`; key semantics are the runner's
- *    contract with its callers (ADR-011).
- *
- * `range` and `behavior` are absent when the entry is a bare string.
+ * One scene's contribution to the composition's master timeline. The
+ * resolver collects one of these per mounted scene (in manifest order)
+ * and hands the list to the injected {@link CompositionTimelineAdapter}.
  */
-export interface SceneTimelineRunInput {
-  readonly scene: SceneModule;
+export interface SceneTimelineSegment {
+  /** The scene id (composition entry id). Used for label namespacing. */
+  readonly id: string;
+  /**
+   * The value the scene's `timeline(ctx)` returned, handed to the
+   * adapter unchanged — NOT awaited: a GSAP timeline (ADR-003 /
+   * ADR-025) is itself thenable (`Animation.prototype.then` resolves on
+   * completion), so awaiting it would block until the timeline finished
+   * — forever, for a paused one — rather than yielding the timeline.
+   * Async scene setup goes in `create(ctx)`; the adapter's validator
+   * rejects a `Promise` that still arrives here.
+   */
   readonly timeline: unknown;
+  /**
+   * Per-entry sub-range override from an object manifest entry's
+   * `CompositionEntryOverride.range` (PUL-F003). The adapter interprets
+   * the labels against its own timeline implementation (ADR-003 §Labels);
+   * absent for bare-string entries.
+   */
   readonly range?: SubRange;
+  /**
+   * Per-entry behavior-override blob from an object manifest entry's
+   * `CompositionEntryOverride.behavior`. Key semantics are the adapter's
+   * contract with its callers (ADR-011); absent for bare-string entries.
+   */
   readonly behavior?: BehaviorOverride;
-  /**
-   * Cancellation signal forwarded from
-   * {@link ResolveCompositionOptions.signal} when the caller supplied
-   * one. The runner adapter is responsible for honoring it — typically
-   * by polling `signal.aborted`, listening for the `'abort'` event, or
-   * calling `signal.throwIfAborted()` at safe points in its timeline
-   * traversal. When the runner throws (or rejects) in response to an
-   * abort, the resolver still invokes `cleanup(ctx)` for the active
-   * scene per PUL-F006 (mandatory cleanup on every scene exit). Absent
-   * when the caller did not pass a `signal`.
-   */
-  readonly signal?: AbortSignal;
-  /**
-   * URL beat label (PUL-F011) the runner SHOULD seek to before
-   * playing the timeline. Only present on the run input for the FIRST
-   * scene of the resolved composition slice — subsequent scenes never
-   * receive `beat` because ADR-015 scopes URL beat to the active head
-   * scene only. Absent when the navigation target had no `beat=`
-   * parameter. Label-existence checking is the runner's responsibility
-   * (the resolver does not parse the timeline value).
-   */
-  readonly beat?: string;
-  /**
-   * Non-fatal callback the runner SHOULD invoke when {@link beat} is
-   * supplied but the named label does not exist in the timeline
-   * (PUL-F011 / ADR-015).
-   *
-   * On invocation, the runner MUST NOT throw, reject, or otherwise
-   * signal a lifecycle failure (the resolver would treat that as a
-   * fatal scene error and unmount via cleanup). The runner MUST also
-   * NOT seek to the requested label — there is no such label. The
-   * scene's playback position MUST be the timeline's start (PUL-F011's
-   * "scene's first beat"). Whether the runner then plays the timeline
-   * forward from that start, holds parked, or hands control to a
-   * presenter is the runner's contract with its callers — the
-   * requirement only mandates the position, not the post-position
-   * behavior.
-   *
-   * Paired with {@link beat}: only present on the head scene's run
-   * input, and only when the caller supplied `onBeatMissing` on
-   * {@link ResolveCompositionOptions}.
-   */
-  readonly onBeatMissing?: () => void;
-  /**
-   * Repeat hint for the head scene's timeline (PUL-F015 / ADR-018).
-   * When `'until-aborted'`, the runner SHOULD restart the timeline on
-   * completion and continue restarting until the navigation aborts or
-   * disposes (e.g. a future GSAP runner uses `timeline.repeat(-1)`).
-   *
-   * Only present on the run input for the FIRST scene of the resolved
-   * composition slice — subsequent scenes never receive `repeat`
-   * because a head whose timeline never naturally completes cannot
-   * advance to following entries. Absent when the navigation target
-   * had no `mode=loop` parameter.
-   *
-   * Discriminated by literal type so future repeat semantics (e.g. a
-   * fixed-iteration variant) can extend the union without breaking
-   * existing runners — a runner that ignores the field, or that only
-   * recognizes `'until-aborted'`, gracefully degrades to no-repeat
-   * behavior. The resolver does not interpret the value.
-   */
-  readonly repeat?: 'until-aborted';
-  /**
-   * Hold hint for the head scene's timeline (PUL-F016 / ADR-019). When
-   * `'first-frame'`, the runner SHOULD render the addressed scene's
-   * timeline at time `0` and hold it there without advancing (e.g. a
-   * future GSAP runner calls `timeline.pause()` after seeking to time
-   * 0). The mount/preload/`create(ctx)`/`timeline(ctx)` flow runs
-   * normally; only timeline progression is suppressed.
-   *
-   * Only present on the run input for the FIRST scene of the resolved
-   * composition slice — subsequent scenes never receive `hold`
-   * because a head whose timeline never advances cannot reach the
-   * following entries. Absent when the navigation target had no
-   * `mode=paused` parameter.
-   *
-   * Discriminated by literal type so future hold semantics (e.g. a
-   * specific-frame variant for screenshot determinism) can extend
-   * the union without breaking existing runners — a runner that
-   * ignores the field, or that only recognizes `'first-frame'`,
-   * gracefully degrades to no-hold behavior. The resolver does not
-   * interpret the value.
-   *
-   * `hold` and `repeat` are independent fields on the runner input;
-   * the URL grammar makes their parent modes (`paused` and `loop`)
-   * mutually exclusive (mode is a single field), but a programmatic
-   * caller could supply both, and the runner's policy decides which
-   * wins. ADR-019 records the runner-side preference: `hold` wins
-   * over `repeat` when both are set, because a paused timeline never
-   * completes for the repeat to fire on.
-   */
-  readonly hold?: 'first-frame';
-  /**
-   * Cue-gate hint for the head scene's timeline (PUL-F017 / ADR-020).
-   * When `'monotonic-forward'`:
-   *
-   * - A runner that schedules audio cues MUST fire each cue only on
-   *   monotonic forward crossings of its trigger time. Backwards
-   *   scrub, jump-to-beat, hydration, and direct seek MUST NOT
-   *   produce cue-fire events. This is the runner-side enforcement
-   *   of PUL-F017's "audio cues SHALL fire only on monotonic
-   *   forward playback" SHALL — the runtime-level SHALL is
-   *   delivered by combining loader mode dispatch (`cueGate` set on
-   *   the head's run input under `mode=scrub`) + runner conformance
-   *   (this field's MUST).
-   * - A runner that does NOT have an audio-cue subsystem (e.g., the
-   *   placeholder timeline runner today; a future Node-side test
-   *   harness that never schedules audio) has no cues to gate and
-   *   trivially satisfies the gate. The placeholder runner's
-   *   "ignore the field" behavior is correct because there are no
-   *   cues to suppress.
-   *
-   * The hint also signals scrub-mode is active; the future
-   * scrub-controls UI surface drives the timeline's playhead through
-   * the runner's transport API while the runner consults
-   * `input.cueGate` to decide whether each cue's time crossing
-   * counts as monotonic-forward.
-   *
-   * Only present on the run input for the FIRST scene of the resolved
-   * composition slice — subsequent scenes never receive `cueGate`
-   * because under scrub the slice is truncated upstream and the
-   * head's interactive timeline never hands off to following
-   * entries. Absent when the navigation target had no `mode=scrub`
-   * parameter.
-   *
-   * Discriminated by literal type so future cue-gating semantics
-   * (e.g. an `'all-suppressed'` variant for deterministic frame
-   * capture under `mode=screenshot`) can extend the union without
-   * breaking audio-capable runners that only recognize the existing
-   * variant. A runner that recognizes a future variant it does not
-   * understand SHOULD log a warning and fall back to its strictest
-   * known gating policy (rather than silently dropping the gate).
-   * The resolver does not interpret the value.
-   *
-   * `cueGate`, `repeat`, and `hold` are independent fields on the
-   * runner input; the URL grammar makes their parent modes
-   * (`scrub`, `loop`, `paused`) mutually exclusive (mode is a single
-   * field), but a programmatic caller could supply more than one
-   * and the runner's policy decides which wins.
-   */
-  readonly cueGate?: 'monotonic-forward';
-  /**
-   * Screenshot capture-bundle hint for the head scene's timeline
-   * (PUL-F018 / ADR-021). When `'capture'`, the runner MUST render
-   * the addressed scene at the addressed frame — `input.beat` if
-   * present, else frame 0 — and HOLD there (no animation in
-   * progress); the runner MUST also suppress all audio output it
-   * controls. These are the runner-side axes of PUL-F018's bundle:
-   * frame freeze at beat-or-zero, no animation, audio suppression
-   * via the runner's audio adapter (e.g. ADR-004's future Howler
-   * integration). Both are runner-input concerns because they
-   * happen on or after the runner sees this bundle.
-   *
-   * Scene-side concerns — specifically PUL-F018's "any randomness
-   * sourced from a deterministic seed" clause — are NOT delivered
-   * through this field. Scene `create(ctx)` and `timeline(ctx)`
-   * run BEFORE the runner ever sees `input.screenshot`, so a flag
-   * on the runner input cannot gate randomness consumed during
-   * those phases. Scene-side determinism flows through the
-   * existing PUL-F012 / ADR-007 `ctx.mode === 'screenshot'` seam
-   * (available from `create(ctx)` forward) plus a future
-   * deterministic-seed surface on `ctx` (e.g. `ctx.seed`) the
-   * scene reads. The runner-input `behavior` field is NOT this
-   * surface — `behavior` is a per-entry manifest override
-   * (ADR-002 / ADR-011) consumed by the runner at timeline
-   * execution time, not by `create(ctx)`. ADR-021 records the
-   * split.
-   *
-   * Only present on the run input for the FIRST scene of the
-   * resolved composition slice — subsequent scenes never receive
-   * `screenshot` because under screenshot the slice is truncated
-   * upstream and the captured frame belongs to one scene. Absent
-   * when the navigation target had no `mode=screenshot` parameter.
-   *
-   * Discriminated by literal type so future capture semantics (e.g.
-   * `'capture-still'` vs a future multi-frame variant) can extend
-   * the union without breaking existing runners — a runner that
-   * ignores the field, or that only recognizes `'capture'`,
-   * gracefully degrades to no-capture behavior. The placeholder
-   * timeline runner (which has no real timeline and no audio
-   * engine) ignores the field today and vacuously satisfies the
-   * runner-side axes because none of the affected subsystems are
-   * wired. ADR-003's GSAP runner + ADR-004's Howler integration
-   * deliver the active runner-side behavior; scene-side
-   * determinism is delivered through `ctx.mode` + a future seed
-   * surface. The resolver does not interpret the value.
-   *
-   * `screenshot`, `beat`, `repeat`, `hold`, and `cueGate` are
-   * independent fields on the runner input. The URL grammar makes
-   * the parent modes (`screenshot`, `loop`, `paused`, `scrub`)
-   * mutually exclusive (mode is a single field), but a programmatic
-   * caller could supply more than one and the runner's policy
-   * decides which wins. `beat` under `mode=screenshot` IS honored as
-   * the addressed-frame anchor (PUL-F018 explicitly calls for "at
-   * the addressed beat"), unlike `mode=paused` where ADR-019 records
-   * "first frame wins."
-   */
-  readonly screenshot?: 'capture';
-  /**
-   * Presenter command controller (PUL-F020 / PUL-F021 / ADR-023 /
-   * ADR-024). Forwarded to EVERY scene's run input under
-   * `mode=present` (NOT a head-only field): mode=present runs the
-   * FULL composition slice, and presenter commands act on whichever
-   * scene is currently active. Analogous to {@link signal} in shape,
-   * not to the head-only runner-input hints (`repeat` / `hold` /
-   * `cueGate` / `screenshot` — those modes are single-scene by
-   * construction).
-   *
-   * The runner subscribes via `presenter.subscribe(handler)` to
-   * receive {@link import('./presenter').PresenterCommand}s. The
-   * controller auto-detaches every subscription when the
-   * per-navigation `AbortSignal` fires, so a runner that forgets to
-   * unsubscribe cannot leak across navigations. The controller also
-   * validates incoming commands at its boundary (unknown kinds are
-   * dropped before reaching the runner).
-   *
-   * Translation of each command into a timeline operation
-   * (advance → play to next beat, hold → hold at the current beat,
-   * skip-forward / skip-backward → seek to next/prev beat,
-   * pause → native pause at the current playhead, resume → resume
-   * playback from that preserved playhead — the PUL-F021 "same
-   * point" semantics, ADR-024) is the runner's contract per ADR-003
-   * (GSAP transport API). `pause` / `resume` are a transport-freeze
-   * gate orthogonal to the beat-pacing kinds (`hold` / `advance` /
-   * `skip-*`): `pause` snapshots beat-pacing state and `resume`
-   * restores it without clearing a prior `hold`, and only `resume`
-   * unfreezes transport. Duplicate pause-while-paused and
-   * resume-while-playing are idempotent no-ops at the runner. ADR-024
-   * *Cross-command precedence* is the binding rule for how the kinds
-   * compose; this seam only delivers them. A runner that ignores
-   * `input.presenter` gracefully degrades — the placeholder runner
-   * does this today because it has no real timeline to drive.
-   *
-   * Absent for every mode other than `present` (the loader scopes
-   * delivery; the resolver does not enforce mode coherence because
-   * mode dispatch is a loader concern per ADR-007).
-   */
-  readonly presenter?: PresenterController;
 }
 
 /**
- * Adapter that runs a single scene's timeline (clause d of PUL-F004).
- * Receives a {@link SceneTimelineRunInput} bundle. Resolves when the
- * scene's timeline has ended; the resolver then runs `cleanup(ctx)`
- * (clause e). Throwing or rejecting aborts the composition; cleanup
- * still runs for the failing scene.
+ * The head-scoped hints the resolver forwards to the timeline adapter's
+ * `run`. All apply to the head scene (the first entry of the resolved
+ * slice — `segments[0]`): `headBeat` seeks the master to the head
+ * scene's named label; `headHold` / `headScreenshot` / `headRepeat` /
+ * `headCueGate` correspond to the single-scene workbench modes whose
+ * slices are truncated to the head (ADR-017 — ADR-021). `presenter` is
+ * forwarded for the whole composition (`mode=present` runs the full
+ * slice), though translating its commands to transport is the adapter's
+ * future contract (PUL-F020 / PUL-F021 / ADR-023 / ADR-024).
  */
-export type SceneTimelineRunner = (input: SceneTimelineRunInput) => void | Promise<void>;
+export interface CompositionTimelineRunOptions {
+  /**
+   * Composition-level abort signal (navigation supersession / dispose).
+   * The adapter resolves — does not throw — when it fires, so the
+   * resolver's cleanup phase always runs.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * URL beat label (PUL-F011 / ADR-015) the adapter seeks the head
+   * scene to. Requires {@link onBeatMissing}.
+   */
+  readonly headBeat?: string;
+  /**
+   * Non-fatal callback the adapter invokes when {@link headBeat} names
+   * a label that does not exist. The adapter MUST NOT throw or reject
+   * on a missing label.
+   */
+  readonly onBeatMissing?: () => void;
+  /** URL loop hint (PUL-F015 / ADR-018): the adapter sets the master to repeat forever. */
+  readonly headRepeat?: 'until-aborted';
+  /**
+   * URL paused hint (PUL-F016 / ADR-019): the adapter holds the master
+   * at frame 0. Wins over {@link headBeat} and {@link headRepeat}.
+   */
+  readonly headHold?: 'first-frame';
+  /**
+   * URL scrub hint (PUL-F017 / ADR-020): no effect until the audio
+   * engine lands (PUL-F024) — there are no cues to gate yet.
+   */
+  readonly headCueGate?: 'monotonic-forward';
+  /**
+   * URL screenshot hint (PUL-F018 / ADR-021): the adapter freezes the
+   * master at the addressed beat (or frame 0).
+   */
+  readonly headScreenshot?: 'capture';
+  /**
+   * Present-mode presenter command controller (PUL-F020 / ADR-023).
+   * Forwarded as-is; command → transport translation is the adapter's
+   * future contract.
+   */
+  readonly presenter?: PresenterController;
+  /** Diagnostic sink paired with {@link presenter} (PUL-F020 / ADR-023). */
+  readonly onPresenterError?: (err: unknown) => void;
+}
 
 /**
- * Inputs to {@link resolveComposition}. All fields are required: the
- * resolver does not provide defaults so the caller's wiring is
- * explicit at the call site (workbench bootstrap, export pipeline, or
- * test harness).
+ * Adapter that composes the active composition's scene timelines into a
+ * master timeline and plays it (clause d of PUL-F004, ADR-025). The
+ * GSAP implementation is `createGsapCompositionTimeline` in
+ * `./timeline.ts`; the resolver depends only on this interface so it
+ * stays GSAP-free (ADR-011).
+ *
+ * `run` resolves when the master completes (terminal — the resolver
+ * tears every scene down) or when `opts.signal` aborts; it rejects
+ * (e.g. with `SceneTimelineTypeError`) when a scene's timeline value is
+ * invalid — the resolver wraps the rejection and cleanup still runs.
+ */
+export interface CompositionTimelineAdapter {
+  run(
+    segments: readonly SceneTimelineSegment[],
+    opts: CompositionTimelineRunOptions,
+  ): Promise<void>;
+}
+
+/**
+ * Inputs to {@link resolveComposition}. All fields are required except
+ * the head hints / signal / presenter so the caller's wiring is explicit
+ * at the call site (workbench bootstrap, export pipeline, test harness).
  */
 export interface ResolveCompositionOptions {
   /** Source of truth for which scenes exist (PUL-F002). */
@@ -352,186 +190,44 @@ export interface ResolveCompositionOptions {
   readonly manifest: CompositionManifest;
   /**
    * Opaque scene context passed straight through to every lifecycle
-   * hook. Per ADR-003 / ADR-004 this will carry `ctx.gsap`, `ctx.audio`
-   * and similar engine handles when those subsystems land; the resolver
-   * itself does not inspect or extend it.
+   * hook. Carries `ctx.gsap` (ADR-003) and similar engine handles; the
+   * resolver itself does not inspect or extend it.
    */
   readonly ctx: unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
   readonly preloadAssets: AssetPreloader;
-  /** Timeline-execution adapter — see {@link SceneTimelineRunner}. */
-  readonly runTimeline: SceneTimelineRunner;
-  /**
-   * Optional cancellation signal for composition-level abort (PUL-F006
-   * "skip rest of composition" exit path; see ADR-011 risk-table for
-   * design rationale). The resolver checks `signal.aborted` at three
-   * checkpoints — pre-start, post-preload, and forwarded into the
-   * runner via {@link SceneTimelineRunInput.signal} — and throws with
-   * a checkpoint-specific message when aborted. `signal.reason` is
-   * forwarded as `Error.cause`. A runner that aborts mid-timeline
-   * still routes through the cleanup-always path so the active
-   * scene's cleanup fires. Absent (`undefined`) disables the
-   * abort path entirely; the runner is also free to ignore a
-   * forwarded signal.
-   */
+  /** Timeline-composition/playback adapter — see {@link CompositionTimelineAdapter}. */
+  readonly timeline: CompositionTimelineAdapter;
+  /** Optional composition-level abort signal — see {@link CompositionTimelineRunOptions.signal}. */
   readonly signal?: AbortSignal;
-  /**
-   * URL beat label (PUL-F011) to forward to the FIRST scene's run
-   * input as {@link SceneTimelineRunInput.beat}. Subsequent scenes
-   * never receive a beat — ADR-015 scopes URL beat to the active head
-   * scene only, so a composition slice does not search later scenes
-   * for the label. Absent when the navigation target had no `beat=`
-   * parameter.
-   */
+  /** URL beat label (PUL-F011 / ADR-015) — see {@link CompositionTimelineRunOptions.headBeat}. */
   readonly headBeat?: string;
-  /**
-   * Non-fatal callback paired with {@link headBeat}. Forwarded to the
-   * head scene's run input as {@link SceneTimelineRunInput.onBeatMissing}
-   * so the runner can report a missing label without rejecting (which
-   * would trigger PUL-F006 cleanup and unmount the scene, violating
-   * PUL-F011's "remain at the scene's first beat").
-   *
-   * REQUIRED whenever {@link headBeat} is supplied: a beat without a
-   * diagnostic surface would silently lose the missing-label error
-   * the runner reports — the resolver throws when this invariant is
-   * violated rather than letting the diagnostic vanish. Absent when
-   * {@link headBeat} is also absent.
-   */
+  /** Non-fatal missing-beat callback — REQUIRED whenever {@link headBeat} is supplied. */
   readonly onBeatMissing?: () => void;
-  /**
-   * URL loop-mode repeat hint (PUL-F015 / ADR-018) to forward to the
-   * FIRST scene's run input as {@link SceneTimelineRunInput.repeat}.
-   * Subsequent scenes never receive a repeat hint — under
-   * `mode=loop` the head's timeline never naturally completes, so
-   * following composition entries cannot run. Absent when the
-   * navigation target had no `mode=loop` parameter.
-   *
-   * The resolver does not interpret the value — honoring "restart on
-   * completion" is the runner's contract per ADR-018. A runner that
-   * ignores the field gracefully degrades to no-repeat (a regression
-   * the seam tests in `scene-loader.test.ts` pin against the loader
-   * boundary, where mode dispatch lives).
-   */
+  /** URL loop hint (PUL-F015 / ADR-018). */
   readonly headRepeat?: 'until-aborted';
-  /**
-   * URL paused-mode hold hint (PUL-F016 / ADR-019) to forward to the
-   * FIRST scene's run input as {@link SceneTimelineRunInput.hold}.
-   * Subsequent scenes never receive a hold hint — under `mode=paused`
-   * the head's timeline never advances, so following composition
-   * entries cannot run. Absent when the navigation target had no
-   * `mode=paused` parameter.
-   *
-   * The resolver does not interpret the value — honoring
-   * "hold at first frame" is the runner's contract per ADR-019. A
-   * runner that ignores the field gracefully degrades to no-hold (a
-   * regression the seam tests in `scene-loader.test.ts` pin against
-   * the loader boundary, where mode dispatch lives).
-   */
+  /** URL paused hint (PUL-F016 / ADR-019). */
   readonly headHold?: 'first-frame';
-  /**
-   * URL scrub-mode cue-gate hint (PUL-F017 / ADR-020) to forward to
-   * the FIRST scene's run input as
-   * {@link SceneTimelineRunInput.cueGate}. Subsequent scenes never
-   * receive a cue-gate hint — under `mode=scrub` the slice is
-   * truncated upstream so the head's interactive timeline does not
-   * hand off to following composition entries. Absent when the
-   * navigation target had no `mode=scrub` parameter.
-   *
-   * The resolver does not interpret the value — honoring "audio
-   * cues fire only on monotonic forward playback" is the runner's
-   * contract per ADR-020. A runner that ignores the field
-   * gracefully degrades to no-gating (a regression the seam tests
-   * in `scene-loader.test.ts` pin against the loader boundary,
-   * where mode dispatch lives).
-   */
+  /** URL scrub hint (PUL-F017 / ADR-020). */
   readonly headCueGate?: 'monotonic-forward';
-  /**
-   * URL screenshot-mode capture hint (PUL-F018 / ADR-021) to forward
-   * to the FIRST scene's run input as
-   * {@link SceneTimelineRunInput.screenshot}. Subsequent scenes
-   * never receive a screenshot hint — under `mode=screenshot` the
-   * slice is truncated upstream so the captured frame belongs to
-   * one scene; following composition entries cannot run because the
-   * runtime is rendering a single deterministic frame. Absent when
-   * the navigation target had no `mode=screenshot` parameter.
-   *
-   * The resolver does not interpret the value — honoring the
-   * runner-side axes of the capture bundle (frame freeze at
-   * beat-or-zero, no animation, all audio suppressed) is the
-   * runner's contract per ADR-021. The fourth axis of PUL-F018's
-   * statement — "any randomness sourced from a deterministic
-   * seed" — is NOT the runner's contract via this field; it
-   * flows through the scene-side `ctx.mode === 'screenshot'` seam
-   * (PUL-F012 / ADR-007) plus a future scene-side seed surface
-   * on `ctx`, because scene `create(ctx)` and `timeline(ctx)`
-   * run BEFORE this field reaches the runner. A runner that
-   * ignores the field gracefully degrades (the placeholder runner
-   * today vacuously satisfies the runner-side axes because none
-   * of the affected subsystems exist; ADR-003's GSAP runner +
-   * ADR-004's audio engine deliver active runner-side behavior
-   * when they land; scene-side determinism is delivered through
-   * `ctx`). A regression that gated `headScreenshot` on an
-   * unrelated condition is pinned by the seam tests in
-   * `scene-loader.test.ts` against the loader boundary, where
-   * mode dispatch lives.
-   */
+  /** URL screenshot hint (PUL-F018 / ADR-021). */
   readonly headScreenshot?: 'capture';
-  /**
-   * URL present-mode presenter controller (PUL-F020 / ADR-023) to
-   * forward to EVERY scene's run input as
-   * {@link SceneTimelineRunInput.presenter}. Unlike the head-only
-   * forwardings above, `presenter` is NOT scoped to plan[0]:
-   * `mode=present` is the only mode that runs the FULL composition
-   * slice (no truncation), and presenter commands act on whichever
-   * scene is currently active. Analogous to {@link signal} in the
-   * resolver's forwarding semantics.
-   *
-   * The resolver does not interpret the controller — translating
-   * {@link import('./presenter').PresenterCommand}s into timeline
-   * operations is the runner's contract per ADR-003 / ADR-023. A
-   * runner that ignores `input.presenter` (e.g. the placeholder
-   * runner with no real timeline) gracefully degrades to no-op
-   * command handling.
-   *
-   * Absent for every mode other than `present` because the loader
-   * scopes delivery (the resolver does not enforce mode coherence;
-   * mode dispatch is a loader concern per ADR-007). A direct bridge
-   * caller that supplies `presenter` for a non-present-mode
-   * navigation will see the controller forwarded to the runner, but
-   * production navigation through the loader cannot reach that
-   * state.
-   */
+  /** Present-mode presenter command controller (PUL-F020 / ADR-023). */
   readonly presenter?: PresenterController;
-  /**
-   * Optional diagnostic sink for the per-scene presenter wrapper
-   * (PUL-F020 / ADR-023). When the resolver wraps `presenter` in a
-   * per-scene child controller, it threads this sink so the
-   * wrapper's boundary diagnostics (unknown command kind, runner-
-   * handler exception) surface through the same channel as every
-   * other navigation-level error. Absent: per-scene wrapper drops
-   * diagnostics silently (matches the navigation controller's
-   * behavior when the loader didn't supply its own `onError`).
-   *
-   * Threaded only when a `presenter` is supplied — non-present-mode
-   * navigations have no wrapper and ignore this field.
-   */
+  /** Diagnostic sink paired with {@link presenter}. */
   readonly onPresenterError?: (err: unknown) => void;
 }
 
 /**
  * Render a kebab id (scene id, manifest entry id, etc.) for inclusion
- * in a diagnostic message. Centralizing the quoting style means a
- * future change (e.g., to backticks for code-style rendering) lands
- * in one place rather than ten string templates across the file.
+ * in a diagnostic message — one place to change the quoting style.
  */
 const quoteId = (id: string): string => `"${id}"`;
 
 /**
  * One entry of the resolver's internal execution plan. Built once at
- * preflight time and iterated during lifecycle execution so the
- * resolver is immune to caller-owned manifest mutations performed
- * inside lifecycle callbacks (codex review: snapshot the manifest
- * before lifecycle side effects).
+ * preflight time so the resolver is immune to caller-owned manifest
+ * mutations performed inside lifecycle callbacks.
  */
 interface PlanStep {
   readonly scene: SceneModule;
@@ -545,29 +241,23 @@ interface PlanStep {
  * match on origin without parsing scene-specific detail.
  */
 const fail = (detail: string, cause: unknown): Error =>
-  // ES2024 has Error.cause natively per tsconfig target; verbatimModule
-  // syntax is happy without runtime feature detection.
   new Error(`composition resolution failed: ${detail}`, { cause });
 
 /**
  * Build the resolver's wrapping `AggregateError` for a combined
- * lifecycle + cleanup failure. The `errors` array preserves both
- * failures programmatically without mutating either error's
- * `cause` chain.
+ * lifecycle + cleanup failure (or multiple cleanup failures). The
+ * `errors` array preserves the phase error (first) and the cleanup
+ * errors (in order) programmatically without mutating any of them.
  */
 const failAggregate = (detail: string, errors: readonly unknown[]): AggregateError =>
   new AggregateError(errors, `composition resolution failed: ${detail}`);
 
 /**
  * Throws a wrapped abort error if the optional signal is currently
- * aborted; otherwise returns. The function wrapper exists to defeat
- * TypeScript's control-flow narrowing across the resolver's two
- * abort checkpoints (pre-iteration and post-preload): without it,
- * the second `signal?.aborted === true` read would be narrowed to
- * `false | undefined` by the first checkpoint's then-throw branch
- * and the second check would be flagged as unreachable. The signal's
- * `aborted` getter can flip between checkpoints, so the runtime
- * check must run even when TS thinks it cannot.
+ * aborted; otherwise returns. The function wrapper defeats TypeScript's
+ * control-flow narrowing across the resolver's mount checkpoints — the
+ * `aborted` getter can flip between checkpoints, so the runtime check
+ * must run even when TS thinks a later one is unreachable.
  */
 function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
   if (signal?.aborted === true) {
@@ -576,269 +266,43 @@ function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
 }
 
 /**
- * Build the {@link SceneTimelineRunInput} for one plan step. Omits
- * `range` / `behavior` / `beat` / `onBeatMissing` from the output
- * object when absent on the source entry rather than emitting
- * `field: undefined` keys, so the runner's `field in input` checks
- * behave intuitively.
- *
- * `beat` and `onBeatMissing` are caller-supplied per-call (resolver
- * passes them only for the head plan step); the rest are per-entry
- * (resolver derives from the manifest snapshot).
- *
- * `presenter` is forwarded to every plan step (NOT head-only) per
- * PUL-F020 / ADR-023 — `mode=present` is the only mode that runs
- * the full composition slice, and presenter commands act on
- * whichever scene is currently active.
- */
-function buildRunInput(
-  step: PlanStep,
-  timeline: unknown,
-  signal: AbortSignal | undefined,
-  beat: string | undefined,
-  onBeatMissing: (() => void) | undefined,
-  repeat: 'until-aborted' | undefined,
-  hold: 'first-frame' | undefined,
-  cueGate: 'monotonic-forward' | undefined,
-  screenshot: 'capture' | undefined,
-  presenter: PresenterController | undefined,
-): SceneTimelineRunInput {
-  const input: { -readonly [K in keyof SceneTimelineRunInput]: SceneTimelineRunInput[K] } = {
-    scene: step.scene,
-    timeline,
-  };
-  if (step.range !== undefined) input.range = step.range;
-  if (step.behavior !== undefined) input.behavior = step.behavior;
-  if (signal !== undefined) input.signal = signal;
-  if (beat !== undefined) input.beat = beat;
-  if (onBeatMissing !== undefined) input.onBeatMissing = onBeatMissing;
-  if (repeat !== undefined) input.repeat = repeat;
-  if (hold !== undefined) input.hold = hold;
-  if (cueGate !== undefined) input.cueGate = cueGate;
-  if (screenshot !== undefined) input.screenshot = screenshot;
-  if (presenter !== undefined) input.presenter = presenter;
-  return input;
-}
-
-/**
- * Resolves and plays `manifest` against `registry`.
- *
- * Algorithm (PUL-F004):
- *  1. Defensively call {@link assertCompositionManifest} (boundary
- *     validation; the same pattern `createSceneRegistry` uses for
- *     `assertSceneModule`).
- *  2. Walk every entry and aggregate ALL missing scene ids into a
- *     single error before any side effect — clause (a). This is
- *     friendlier than fail-on-first because a manifest author fixes
- *     every typo in one pass.
- *  3. For each entry in order:
- *       a. `await preloadAssets(scene)` — clause (b). Failure aborts
- *          the composition; create / timeline / cleanup do not run for
- *          the failing scene and subsequent scenes are not visited.
- *       b. `await scene.create(ctx)` — clause (c).
- *       c. `await runTimeline({ scene, timeline, range?, behavior? })`
- *          — clause (d). The timeline value is awaited before being
- *          handed to the runner so async timeline factories resolve to
- *          a concrete timeline.
- *       d. `await scene.cleanup(ctx)` — clause (e). Cleanup runs
- *          whenever step (b) was attempted — including when create
- *          itself threw (resources may have been partially acquired)
- *          and when timeline execution threw. This is the
- *          mandatory-cleanup invariant from ADR-008 / PUL-P001.
- *
- * Failure semantics:
- *  - A failing preload, create, or timeline aborts the composition;
- *    the original error is attached as `Error.cause` of the wrapping
- *    error so it is never silently dropped.
- *  - When both the lifecycle phase AND cleanup throw, the wrapping
- *    error is an `AggregateError` whose `errors` array carries both
- *    the phase error and the cleanup error in order. Neither is
- *    mutated; both are programmatically recoverable.
- *  - A cleanup-only failure (timeline succeeded) is re-raised with
- *    `Error.cause` set to the original cleanup error.
- *
- * PUL-F006 presenter-skip handling (`options.signal`): if the caller
- * supplies an `AbortSignal`, the resolver checks `signal.aborted`
- * before each scene's preload (so an abort between scenes prevents
- * the next scene from being touched) and forwards the signal to the
- * runner via `SceneTimelineRunInput.signal` (so the runner can honor
- * a mid-scene abort by throwing, which routes through the
- * cleanup-always path above). Pre-start aborts throw without
- * visiting any scene; inter-scene aborts throw with the previously-
- * completed scene id named in the message. The resolver does not
- * inspect `signal.reason`; it is forwarded as `Error.cause`.
- *
- * `range` and `behavior` overrides are forwarded to the runner adapter
- * unchanged (the resolver does not interpret them — that is the
- * runner's job per ADR-011).
- */
-export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
-  const {
-    registry,
-    manifest,
-    ctx,
-    preloadAssets,
-    runTimeline,
-    signal,
-    headBeat,
-    onBeatMissing,
-    headRepeat,
-    headHold,
-    headCueGate,
-    headScreenshot,
-    presenter,
-    onPresenterError,
-  } = options;
-
-  // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
-  // silently lose the missing-label diagnostic the runner is contracted
-  // to surface (the runner MUST NOT throw on missing labels; the
-  // callback is its only error channel). Failing fast at the boundary
-  // is better than running a doomed lifecycle that reports nothing.
-  // Routed through the resolver's `fail(...)` helper so the error
-  // carries the documented `composition resolution failed:` envelope
-  // — callers pattern-matching on origin get the same prefix as
-  // every other resolver-level failure.
-  if (headBeat !== undefined && onBeatMissing === undefined) {
-    throw fail(
-      '"onBeatMissing" is required when "headBeat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
-      undefined,
-    );
-  }
-
-  assertCompositionManifest(manifest);
-  const plan = buildPlan(manifest, registry);
-
-  // Per-scene lifecycle, strictly sequential. Each iteration runs
-  // preload → create → timeline → cleanup before the next iteration's
-  // preload begins (clause e of PUL-F004). Iterating the resolver-
-  // owned `plan` snapshot means lifecycle callbacks cannot mutate the
-  // execution path mid-flight by reaching back into the caller's
-  // manifest.
-  //
-  // PUL-F006 abort checkpoints: at the top of each iteration (catches
-  // both abort-before-any-scene and inter-scene aborts) AND after
-  // preload (catches mid-preload aborts before the scene is activated).
-  // No separate pre-loop check is needed because `assertCompositionManifest`
-  // and `buildPlan` are synchronous — there is no yield point between
-  // them and the loop's first iteration check.
-  //
-  // PUL-F011: `headBeat` / `onBeatMissing` (when supplied) are forwarded
-  // to the FIRST scene's run input only. Subsequent scenes do not
-  // receive them — ADR-015 scopes URL beat to the active head scene.
-  // Snapshot the resolved head-only forwardings once. Each is
-  // delivered to the run input of the FIRST plan step only —
-  // subsequent steps see `undefined` for every field. Bundling them
-  // in a single object keeps the per-iteration call site small and
-  // bounds `resolveComposition`'s cognitive complexity as more
-  // mode-specific head fields land (ADR-018 / ADR-019 / ADR-020 /
-  // ADR-021).
-  const headOnly = resolveHeadOnly({
-    headBeat,
-    onBeatMissing,
-    headRepeat,
-    headHold,
-    headCueGate,
-    headScreenshot,
-  });
-  const noHeadOnly: HeadOnlyFields = {
-    beat: undefined,
-    onBeatMissing: undefined,
-    repeat: undefined,
-    hold: undefined,
-    cueGate: undefined,
-    screenshot: undefined,
-  };
-
-  let lastCompletedSceneId: string | undefined;
-  for (const [index, step] of plan.entries()) {
-    throwIfAborted(
-      signal,
-      lastCompletedSceneId === undefined
-        ? 'aborted before any scene was visited'
-        : `aborted between scenes after ${quoteId(lastCompletedSceneId)}`,
-    );
-    await preloadScene(step.scene, preloadAssets);
-    throwIfAborted(
-      signal,
-      `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
-    );
-    const stepHeadOnly = index === 0 ? headOnly : noHeadOnly;
-    await runScene(step, ctx, runTimeline, signal, stepHeadOnly, presenter, onPresenterError);
-    lastCompletedSceneId = step.scene.id;
-  }
-}
-
-/**
- * The head-only forwardings the resolver hands to plan[0]'s run
- * input. Every field is independently optional. Subsequent plan
- * steps receive a struct with every field set to `undefined` so
- * the runner sees absent keys (the same key-presence semantics
- * ADR-015 / ADR-018 / ADR-019 / ADR-020 / ADR-021 record).
- */
-interface HeadOnlyFields {
-  readonly beat: string | undefined;
-  readonly onBeatMissing: (() => void) | undefined;
-  readonly repeat: 'until-aborted' | undefined;
-  readonly hold: 'first-frame' | undefined;
-  readonly cueGate: 'monotonic-forward' | undefined;
-  readonly screenshot: 'capture' | undefined;
-}
-
-/**
- * Map the caller-supplied resolver options to the head-only field
- * struct. Pure function — extracted from `resolveComposition` so the
- * latter stays within Sonar's cognitive-complexity budget as more
- * mode-specific head fields land.
- *
- * `onBeatMissing` is paired with `headBeat` per ADR-015. Drop the
- * callback when no beat is supplied — otherwise the runner would
- * see `input.onBeatMissing` with no `input.beat` to trigger it
- * against, an impossible state per the documented contract.
- *
- * `headRepeat` (ADR-018), `headHold` (ADR-019), `headCueGate`
- * (ADR-020), and `headScreenshot` (ADR-021) are head-only because
- * each mode's structural promise (no following entries run under
- * `mode=loop` / `paused` / `scrub` / `screenshot`) means
- * forwarding any of them to non-head scenes would imply a
- * following entry could itself run under that mode's semantics,
- * which contradicts the requirement scoping. The slice truncation
- * at the loader / bridge enforces "no following entries run" as a
- * structural defense; forwarding head-only here is the resolver's
- * complementary scoping.
- */
-function resolveHeadOnly(options: {
-  readonly headBeat: string | undefined;
-  readonly onBeatMissing: (() => void) | undefined;
-  readonly headRepeat: 'until-aborted' | undefined;
-  readonly headHold: 'first-frame' | undefined;
-  readonly headCueGate: 'monotonic-forward' | undefined;
-  readonly headScreenshot: 'capture' | undefined;
-}): HeadOnlyFields {
-  return {
-    beat: options.headBeat,
-    onBeatMissing: options.headBeat === undefined ? undefined : options.onBeatMissing,
-    repeat: options.headRepeat,
-    hold: options.headHold,
-    cueGate: options.headCueGate,
-    screenshot: options.headScreenshot,
-  };
-}
-
-/**
  * Clause (a) plus snapshot capture: walk every entry exactly once,
  * resolve every scene id against the registry, snapshot per-entry
  * `range` / `behavior` overrides, and aggregate ALL missing ids into
- * one error before any side effect. Aggregating beats fail-on-first
- * because a manifest author fixes every typo in one pass; snapshotting
- * means lifecycle callbacks cannot retroactively alter the plan by
- * mutating the caller's manifest array (codex review).
+ * one error before any side effect (friendlier than fail-on-first — a
+ * manifest author fixes every typo in one pass).
  */
 function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): readonly PlanStep[] {
   const missing = findUnregisteredEntries(manifest, (id) => registry.has(id));
   if (missing.length > 0) {
     const list = missing.map(({ id, index }) => `${quoteId(id)} (entry [${index}])`).join(', ');
     throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
+  }
+  // ADR-025: the mount-all lifecycle activates every entry concurrently
+  // (every scene's DOM coexists while the master plays), so two entries
+  // with the same scene id would share one activation context — the
+  // second `create(ctx)` would clobber the first's DOM / listeners and
+  // `cleanup(ctx)` could not tell which occurrence it owns. Per-entry
+  // activation contexts (a container / occurrence handle threaded
+  // through create / timeline / cleanup) are a follow-up; until then a
+  // composition slice may not repeat a scene id. Single-scene workbench
+  // modes truncate the slice to the head before the resolver sees it,
+  // so a `[x, x]` composition is still navigable under those modes.
+  const occurrences = new Map<string, number[]>();
+  for (const [index, entry] of manifest.entries()) {
+    const id = entryId(entry);
+    const at = occurrences.get(id);
+    if (at === undefined) occurrences.set(id, [index]);
+    else at.push(index);
+  }
+  for (const [id, indices] of occurrences) {
+    if (indices.length > 1) {
+      const entryList = indices.map((i) => `[${i}]`).join(', ');
+      throw fail(
+        `composition references scene id ${quoteId(id)} more than once (entries ${entryList}) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)`,
+        undefined,
+      );
+    }
   }
   const plan: PlanStep[] = [];
   for (const entry of manifest) {
@@ -850,11 +314,7 @@ function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): read
   return Object.freeze(plan);
 }
 
-/**
- * Clause (b): await the injected asset preloader for one scene. A
- * preload failure aborts before any lifecycle hook touches the scene
- * — neither `create` nor `cleanup` runs.
- */
+/** Clause (b): await the injected asset preloader for one scene. */
 async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): Promise<void> {
   try {
     await preloadAssets(scene);
@@ -863,140 +323,194 @@ async function preloadScene(scene: SceneModule, preloadAssets: AssetPreloader): 
   }
 }
 
-/**
- * Clauses (c), (d), (e): mount, run timeline, cleanup. Both `create`
- * and `timeline` run inside a single try so cleanup fires whenever
- * the scene was touched (codex preflight: cleanup must run after
- * `create` OR timeline execution if resources may have been acquired).
- * Cleanup failures are surfaced through {@link finalizeSceneFailure}.
- */
-async function runScene(
-  step: PlanStep,
-  ctx: unknown,
-  runTimeline: SceneTimelineRunner,
-  signal: AbortSignal | undefined,
-  headOnly: HeadOnlyFields,
-  presenter: PresenterController | undefined,
-  onPresenterError: ((err: unknown) => void) | undefined,
-): Promise<void> {
-  // PUL-F020 / ADR-023: when the loader supplied a navigation-level
-  // `presenter` controller, wrap it in a PER-SCENE child controller
-  // bound to a per-scene `AbortController` that we fire after the
-  // scene's cleanup. Without this wrapping, a runner that subscribes
-  // via `input.presenter.subscribe(...)` and forgets to unsubscribe
-  // when the scene exits would keep receiving commands during the
-  // NEXT scene's runner — violating "presenter commands act on the
-  // active scene." The navigation-level controller's auto-detach on
-  // navigation abort is the navigation-end safety net; the per-scene
-  // wrapping is the per-scene-end safety net. Both layers compose:
-  // a navigation-level abort cascades through the per-scene wrapper
-  // automatically (the wrapper's source is the navigation controller,
-  // so when the navigation tears down its source-side subscriptions
-  // the wrapper's emissions stop).
-  //
-  // Allocated only when the resolver actually has a presenter to
-  // wrap; the per-scene controller is undefined for the common
-  // no-presenter path so the per-scene plumbing has zero cost in
-  // non-present-mode navigations.
-  const perSceneAbort = presenter === undefined ? undefined : new AbortController();
-  const perScenePresenter =
-    presenter === undefined || perSceneAbort === undefined
-      ? undefined
-      : createPresenterController(presenter, perSceneAbort.signal, onPresenterError);
-
-  // Track failure with explicit booleans so `throw undefined` /
-  // `Promise.reject(undefined)` are still treated as failures. Using
-  // `phaseError !== undefined` as the sentinel would silently swallow
-  // those (legal JS) cases.
-  const { scene } = step;
-  let phase: 'create' | 'timeline' = 'create';
-  let phaseFailed = false;
-  let phaseError: unknown;
+/** Clause (c): mount one scene via `create(ctx)`. */
+async function mountScene(scene: SceneModule, ctx: unknown): Promise<void> {
   try {
     await scene.create(ctx);
-    phase = 'timeline';
-    // Await the timeline factory so async timeline constructors resolve
-    // to a concrete timeline before the runner sees them. Awaiting a
-    // non-Promise value is identity, so synchronous timeline factories
-    // are unaffected.
-    const timeline = await scene.timeline(ctx);
-    await runTimeline(
-      buildRunInput(
-        step,
-        timeline,
-        signal,
-        headOnly.beat,
-        headOnly.onBeatMissing,
-        headOnly.repeat,
-        headOnly.hold,
-        headOnly.cueGate,
-        headOnly.screenshot,
-        perScenePresenter,
-      ),
-    );
-  } catch (err) {
-    phaseFailed = true;
-    phaseError = err;
+  } catch (cause) {
+    throw fail(`scene ${quoteId(scene.id)} create threw: ${describeError(cause)}`, cause);
   }
-
-  let cleanupFailed = false;
-  let cleanupError: unknown;
-  try {
-    await scene.cleanup(ctx);
-  } catch (err) {
-    cleanupFailed = true;
-    cleanupError = err;
-  }
-
-  // Tear the per-scene presenter controller down AFTER cleanup so a
-  // runner that subscribed in `runTimeline` and forgot to unsubscribe
-  // still sees its subscription release before the next scene's
-  // runner is invoked. Cleanup runs first so any cleanup hook that
-  // legitimately calls into the runner (no current pattern, but
-  // defensive) still observes presenter commands. Idempotent:
-  // aborting an already-aborted signal is a no-op.
-  perSceneAbort?.abort();
-
-  finalizeSceneFailure(scene, phase, phaseFailed, phaseError, cleanupFailed, cleanupError);
 }
 
 /**
- * Convert the failure flags into a thrown wrapping error, or return
- * cleanly when neither phase nor cleanup failed.
- *
- * - Both failed: throws an `AggregateError` whose `errors` array
- *   carries both the phase error and the cleanup error in order. The
- *   message names both. Neither caller-supplied error is mutated. The
- *   `errors` array — NOT `Error.cause` — is the public contract for
- *   double-fault recovery.
- * - Only phase failed: rethrown wrapped, with the original as
- *   `Error.cause`.
- * - Only cleanup failed: rethrown wrapped as a cleanup-only failure.
+ * Collect each mounted scene's `timeline(ctx)` value into a segment list
+ * (in mount order), carrying the per-entry `range` / `behavior`
+ * overrides through to the adapter unchanged. `timeline(ctx)` is NOT
+ * awaited — see {@link SceneTimelineSegment.timeline}. A throwing
+ * `timeline(ctx)` factory aborts the composition (every mounted scene
+ * is then torn down).
  */
-function finalizeSceneFailure(
-  scene: SceneModule,
-  phase: 'create' | 'timeline',
-  phaseFailed: boolean,
-  phaseError: unknown,
-  cleanupFailed: boolean,
-  cleanupError: unknown,
-): void {
-  if (phaseFailed && cleanupFailed) {
+function composeSegments(mounted: readonly PlanStep[], ctx: unknown): SceneTimelineSegment[] {
+  return mounted.map((step) => {
+    let timeline: unknown;
+    try {
+      timeline = step.scene.timeline(ctx);
+    } catch (cause) {
+      throw fail(`scene ${quoteId(step.scene.id)} timeline threw: ${describeError(cause)}`, cause);
+    }
+    const segment: { -readonly [K in keyof SceneTimelineSegment]: SceneTimelineSegment[K] } = {
+      id: step.scene.id,
+      timeline,
+    };
+    if (step.range !== undefined) segment.range = step.range;
+    if (step.behavior !== undefined) segment.behavior = step.behavior;
+    return segment;
+  });
+}
+
+/**
+ * Tear down every mounted scene via `cleanup(ctx)`, in reverse mount
+ * order (last in, first out — symmetric with the mount phase). Each
+ * scene's cleanup runs even if a previous one threw; the wrapped thrown
+ * values are collected and returned (the caller decides whether to
+ * re-raise them). Never throws.
+ */
+async function cleanupAll(mounted: readonly PlanStep[], ctx: unknown): Promise<readonly unknown[]> {
+  const errors: unknown[] = [];
+  for (const step of [...mounted].reverse()) {
+    try {
+      await step.scene.cleanup(ctx);
+    } catch (err) {
+      errors.push(
+        fail(`scene ${quoteId(step.scene.id)} cleanup threw: ${describeError(err)}`, err),
+      );
+    }
+  }
+  return errors;
+}
+
+/**
+ * Build the {@link CompositionTimelineRunOptions} the resolver forwards
+ * to the adapter, omitting absent keys (so an adapter that branches on
+ * `'<key>' in opts` sees absent rather than `undefined`).
+ */
+function buildRunOptions(options: ResolveCompositionOptions): CompositionTimelineRunOptions {
+  const opts: {
+    -readonly [K in keyof CompositionTimelineRunOptions]: CompositionTimelineRunOptions[K];
+  } = {};
+  if (options.signal !== undefined) opts.signal = options.signal;
+  if (options.headBeat !== undefined) {
+    opts.headBeat = options.headBeat;
+    if (options.onBeatMissing !== undefined) opts.onBeatMissing = options.onBeatMissing;
+  }
+  if (options.headRepeat !== undefined) opts.headRepeat = options.headRepeat;
+  if (options.headHold !== undefined) opts.headHold = options.headHold;
+  if (options.headCueGate !== undefined) opts.headCueGate = options.headCueGate;
+  if (options.headScreenshot !== undefined) opts.headScreenshot = options.headScreenshot;
+  if (options.presenter !== undefined) {
+    opts.presenter = options.presenter;
+    if (options.onPresenterError !== undefined) opts.onPresenterError = options.onPresenterError;
+  }
+  return opts;
+}
+
+/**
+ * Resolves and plays `manifest` against `registry` using the lifecycle
+ * in the module header (mount-all → compose-master → play → cleanup-all,
+ * ADR-025).
+ *
+ * Failure semantics:
+ *  - A failing preload / `create` / `timeline(ctx)` / timeline-adapter
+ *    `run` aborts the composition; every mounted scene is torn down
+ *    (reverse order), then the original error is re-raised wrapped with
+ *    the `composition resolution failed:` prefix and the original as
+ *    `Error.cause`.
+ *  - When the phase failure AND one or more cleanup hooks throw, the
+ *    wrapping error is an `AggregateError` whose `errors` array carries
+ *    the phase error first then the cleanup errors in order. Nothing is
+ *    mutated; everything is programmatically recoverable.
+ *  - A navigation abort during master playback makes the adapter's `run`
+ *    resolve (not throw); the resolver then tears every scene down and
+ *    re-raises an `aborted during composition playback` error so the
+ *    loader's pure-abort suppression applies.
+ *  - The happy path tears every scene down and resolves; a cleanup-only
+ *    failure is re-raised as an `AggregateError` of the cleanup errors.
+ */
+export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
+  const { registry, manifest, ctx, preloadAssets, timeline, signal } = options;
+
+  // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
+  // silently lose the missing-label diagnostic the adapter is
+  // contracted to surface — fail fast at the boundary, with the
+  // documented `composition resolution failed:` envelope.
+  if (options.headBeat !== undefined && options.onBeatMissing === undefined) {
+    throw fail(
+      '"onBeatMissing" is required when "headBeat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+      undefined,
+    );
+  }
+
+  assertCompositionManifest(manifest);
+  const plan = buildPlan(manifest, registry);
+
+  // Pre-start abort: nothing was touched, so this needs no cleanup.
+  throwIfAborted(signal, 'aborted before the composition started');
+
+  // Scenes mounted so far (created, or create-attempted) — the cleanup
+  // list. Built up during the mount phase; torn down (always) at the
+  // end. The old per-scene `runScene` try/catch is replaced by this
+  // composition-wide try/catch around the mount + compose + run phases.
+  const mounted: PlanStep[] = [];
+  try {
+    // MOUNT phase. Strictly sequential, manifest order. Abort
+    // checkpoints: after each preload (catches a mid-preload abort) and
+    // after each create (catches an abort between this scene and the
+    // next — the playback abort is handled by the timeline adapter).
+    for (const step of plan) {
+      await preloadScene(step.scene, preloadAssets);
+      throwIfAborted(
+        signal,
+        `aborted after preloading ${quoteId(step.scene.id)}, before scene activation`,
+      );
+      // Add to the cleanup list BEFORE `create` so a scene whose
+      // `create` partially ran (then threw) is still torn down.
+      mounted.push(step);
+      await mountScene(step.scene, ctx);
+      throwIfAborted(signal, `aborted after mounting ${quoteId(step.scene.id)}`);
+    }
+
+    // COMPOSE + RUN phase. Collect every mounted scene's timeline value
+    // and hand the slice to the timeline adapter, which composes the
+    // master, applies the head hints, plays it, and resolves on the
+    // master's natural completion or on abort. The adapter does NOT
+    // throw on abort — it resolves; the signal is re-checked below.
+    const segments = composeSegments(mounted, ctx);
+    try {
+      await timeline.run(segments, buildRunOptions(options));
+    } catch (cause) {
+      throw fail(`composition timeline failed: ${describeError(cause)}`, cause);
+    }
+  } catch (phaseError) {
+    // Mandatory cleanup: tear down every mounted scene (reverse order),
+    // then re-raise — aggregating cleanup errors if any.
+    const cleanupErrors = await cleanupAll(mounted, ctx);
+    if (cleanupErrors.length > 0) {
+      throw failAggregate(
+        `composition aborted with ${cleanupErrors.length} cleanup failure(s) after: ${describeError(phaseError)}`,
+        [phaseError, ...cleanupErrors],
+      );
+    }
+    throw phaseError;
+  }
+
+  // Happy path, or a navigation abort during master playback (the
+  // adapter resolved without throwing). Tear every scene down, then
+  // surface an abort error if the signal fired (so the loader's
+  // pure-abort suppression applies) or aggregate any cleanup failures.
+  const cleanupErrors = await cleanupAll(mounted, ctx);
+  if (signal?.aborted === true) {
+    if (cleanupErrors.length > 0) {
+      throw failAggregate(
+        `composition aborted during playback with ${cleanupErrors.length} cleanup failure(s)`,
+        [fail('aborted during composition playback', signal.reason), ...cleanupErrors],
+      );
+    }
+    throw fail('aborted during composition playback', signal.reason);
+  }
+  if (cleanupErrors.length > 0) {
     throw failAggregate(
-      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)} (cleanup also failed: ${describeError(cleanupError)})`,
-      [phaseError, cleanupError],
-    );
-  }
-  if (phaseFailed) {
-    throw fail(
-      `scene ${quoteId(scene.id)} ${phase} threw: ${describeError(phaseError)}`,
-      phaseError,
-    );
-  }
-  if (cleanupFailed) {
-    throw fail(
-      `scene ${quoteId(scene.id)} cleanup threw: ${describeError(cleanupError)}`,
-      cleanupError,
+      `composition completed but ${cleanupErrors.length} cleanup hook(s) threw`,
+      cleanupErrors,
     );
   }
 }

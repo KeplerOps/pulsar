@@ -9,6 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `src/runtime/timeline.ts` — the GSAP timeline adapter (PUL-F022 /
+  ADR-003 / ADR-025), the runtime's single GSAP boundary:
+  `createTimelineEngine()` returns the `gsap` handle scenes receive as
+  `ctx.gsap`; `assertSceneTimeline` validates a scene's `timeline(ctx)`
+  return (`null` is accepted as "no timeline authored yet"; a `Promise`
+  is rejected — async scene setup goes in `create(ctx)`);
+  `composeMasterTimeline(engine, segments)` nests the active
+  composition slice's scene timelines into ONE master GSAP timeline,
+  copying each scene's labels into the master under a deterministic
+  namespace (`<sceneId>:<label>`, disambiguated to `<sceneId>#<n>:<label>`
+  for a composition that reuses a scene id — ADR-002 allows repeated
+  entries); `MasterTimeline` is the transport surface PUL-F022 mandates
+  — `play` / `pause` / `isPaused` / `seek(time | label)` (unknown label
+  or non-finite time → `TimelineSeekError`) / `setSpeed(multiplier)`
+  (finite number `> 0` — zero / negative / NaN / Infinity / non-number
+  → `TimelineSpeedError`, prior rate unchanged) / `speed` / `repeat` /
+  `time` / `duration` / frozen `labels` / `hasLabel` / `labelFor` /
+  `onComplete` / `kill`; `createGsapCompositionTimeline({ engine,
+  onMaster? })` is the composition-level `CompositionTimelineAdapter`
+  the workbench wires onto the resolver (ADR-011 + ADR-025) — its
+  `run(segments, opts)` composes the master, applies the head hints
+  (`headBeat` seek with the non-fatal `onBeatMissing` fallback,
+  `headRepeat` loop, `headHold` freeze-at-frame-0 winning over beat,
+  `headScreenshot` freeze-at-beat; `headCueGate` is a no-op until the
+  audio engine lands per PUL-F024), reports the live master to
+  `onMaster` (the seam the future workbench transport / scrub UI and
+  presenter HUD drive), and plays the master — resolving on its natural
+  completion (the resolver then tears every scene down) or on the
+  per-navigation `AbortSignal`.
+- `src/runtime/composition-resolver.ts` exports `SceneTimelineSegment`,
+  `CompositionTimelineRunOptions`, and `CompositionTimelineAdapter`
+  (`run(segments, opts): Promise<void>`) — the composition-level
+  timeline seam that replaces the per-scene `SceneTimelineRunner` /
+  `SceneTimelineRunInput`. The resolver depends only on the interface,
+  so it stays GSAP-free; the GSAP implementation is `timeline.ts`.
+- `docs/adrs/025-timeline-adapter-boundary.md` — records the PUL-F022
+  decision: the timeline adapter as the runtime's GSAP boundary
+  (`ctx.gsap`, `composeMasterTimeline`, the `MasterTimeline` transport
+  surface, `createGsapCompositionTimeline` replacing the placeholder
+  runner); the revised resolution lifecycle (mount every scene →
+  compose ONE master → play → cleanup every scene in reverse, ALWAYS)
+  superseding ADR-002 §Resolution's and ADR-011's per-scene
+  `mount → run timeline → cleanup → advance` ordering — the
+  cleanup-always invariant, error envelopes, missing-id pre-flight, and
+  abort seam are preserved, only the cleanup-vs-next-create ordering
+  changed; deterministic namespaced master labels for repeated scene
+  entries; speed as a validated positive transport parameter on the
+  master; `scene.timeline(ctx)` no longer awaited (a GSAP timeline is
+  thenable); the test-file split; and what stays follow-up with this
+  adapter as the seam they extend — windowed/lazy scene mounting
+  (Remotion `<Series>` style), cross-scene transition rendering &
+  visibility coordination, bidirectional cross-scene `seek`, per-entry
+  `range` sub-range cuts (PUL-F003 / ADR-011), presenter → transport
+  translation (PUL-F020 / PUL-F021 / ADR-024), the workbench transport /
+  scrub UI (PUL-F017's controls clause), and audio-cue gating
+  (PUL-F024). PUL-F022 transitions to ACTIVE. Indexed in
+  `docs/adrs/README.md` (ADR-002 / ADR-011 marked ordering-superseded).
+- `tests/runtime/scene-loader.helpers.ts` — shared fixtures for the
+  split PUL-F008 scene-loader suites (`buildScene` / `buildStage` /
+  `stubCtx` / target builders / `noopTimeline` / `recordingTimeline`)
+  plus an `asTimeline` shim that maps the new `(segments, opts)` adapter
+  call onto the old per-scene callback shape, so tests that only pin a
+  per-navigation hint keep their bodies.
+- `gsap` (3.x, core package) added as a runtime dependency in
+  `package.json` / `pnpm-lock.yaml` (ADR-003 — core GSAP only; bonus /
+  Club plugins require a separate ADR).
+- `docs/design/pul-f022-timeline-orchestration-preflight.md` — codex
+  architecture preflight design context for PUL-F022: the boundary
+  (scene schema / composition schema / URL grammar / mode dispatch /
+  lifecycle / cleanup / cancellation / asset security / presenter
+  input / error envelope / config / observability layers), the
+  required reuse of the existing runtime incumbents, the timeline
+  adapter as the extension seam, the guardrails (no direct `gsap`
+  imports in scenes, no hand-rolled timers, deterministic master
+  labels, validated speed), and the non-goals.
 - `docs/adrs/024-presenter-pause-resume.md` — records the PUL-F021
   contract decision: presenter pause/resume extends the existing
   ADR-023 presenter command seam rather than adding a new URL mode,
@@ -740,6 +815,54 @@ all land with end-to-end tests (see ADR-020).
 
 ### Changed
 
+- `src/runtime/composition-resolver.ts` — `resolveComposition`
+  rewritten to the ADR-025 lifecycle: validate → MOUNT every scene in
+  the slice (`preloadAssets` + `await create(ctx)`, no teardown between
+  steps; abort checkpoints before any scene, after each preload, after
+  each create) → COMPOSE every scene's `timeline(ctx)` value (NOT
+  awaited) → RUN the injected `CompositionTimelineAdapter.run(segments,
+  opts)` (one master, played, resolves on completion or abort) →
+  CLEANUP every scene in reverse, ALWAYS. The per-scene
+  `SceneTimelineRunner` / `SceneTimelineRunInput` are gone; `ctx` is
+  still opaque; the cleanup-always invariant, `composition resolution
+  failed:` / `AggregateError` envelopes, missing-id pre-flight, and
+  abort handling are preserved (a navigation abort during playback
+  re-raises `aborted during composition playback` after cleanup so the
+  loader's pure-abort suppression applies).
+- `src/runtime/scene-loader.ts` — `WorkbenchSceneCtx` gains a required
+  `gsap` member (PUL-F022 / ADR-003): scenes build their timeline with
+  `ctx.gsap` in `timeline(ctx)`, so the timeline engine stays a single
+  swappable dependency rather than a per-scene import. `createSceneLoader`
+  takes a `timeline: CompositionTimelineAdapter` option instead of
+  `runTimeline`; it still passes `ctx` opaquely to lifecycle hooks.
+- `src/runtime/scene-navigation.ts` — `loadSceneNavigationTarget` takes
+  a `timeline: CompositionTimelineAdapter` option instead of
+  `runTimeline`; the single-scene-mode slice truncation (`truncateToHead`)
+  and the head-hint forwarding are unchanged.
+- `src/main.ts` — the placeholder timeline runner (which only parked
+  each scene until abort and ignored every mode hint) is replaced by
+  `createGsapCompositionTimeline({ engine: timelineEngine })` (wired as
+  the loader's `timeline` adapter); `buildCtx(mode)` now also supplies
+  `gsap`. This is the "real GSAP-backed runtime path" the PUL-F022
+  preflight named as the ACTIVE bar — composition-spanning master-timeline
+  composition plus play / pause / seek / speed change / named-label
+  behavior, wired end to end.
+- `src/scenes/placeholder.ts` — `isWorkbenchCtx` now narrows to
+  `Pick<WorkbenchSceneCtx, 'stage' | 'mode'>` (the subset the
+  placeholder scene reads) rather than the full `WorkbenchSceneCtx`, so
+  adding `gsap` to the ctx does not make the predicate unsound;
+  `ctx.gsap` is left unvalidated here because this scene does not touch
+  it (a future scene that builds a timeline validates `gsap` in its own
+  ctx predicate).
+- `tests/runtime/scene-loader.test.ts` — split into focused suites
+  (`scene-loader.test.ts` navigation/errors/abort, `scene-loader-beat-mode.test.ts`,
+  `scene-loader-present.test.ts`, `scene-loader-standalone-loop.test.ts`,
+  `scene-loader-paused-scrub.test.ts`, `scene-loader-screenshot-prompter.test.ts`)
+  over `scene-loader.helpers.ts`, so no file exceeds the repo's size
+  budget; all suites updated to the `timeline` adapter seam and the new
+  cleanup-vs-next-create ordering. `tests/runtime/composition-resolver.test.ts`
+  and `tests/runtime/timeline.test.ts` rewritten for the new lifecycle /
+  adapter; `tests/runtime/scene-navigation.test.ts` updated.
 - `tests/runtime/scene-loader.test.ts` — F015 / F016 / F017 / F018
   negative-mode loops (`does not set <hint> for any non-<mode>
   mode`) renamed `... lifecycle-running mode` and scoped to

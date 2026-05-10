@@ -1,2022 +1,604 @@
-import { describe, expect, it } from 'vitest';
+// Composition resolver — PUL-F004 with the lifecycle revised by ADR-025.
+//
+// The resolver now: validates the manifest → builds the plan → mounts
+// every scene in manifest order (preload + `create`, NOT torn down
+// between steps) → collects each scene's `timeline(ctx)` and hands the
+// slice to the injected `CompositionTimelineAdapter` (which composes one
+// master and plays it) → tears every scene down via `cleanup(ctx)` in
+// reverse mount order, ALWAYS. These tests exercise that lifecycle, its
+// abort checkpoints, and its failure semantics with a spying scene
+// factory and a recording timeline adapter (the GSAP adapter has its
+// own tests in `timeline.test.ts`).
+
+import { describe, expect, it, vi } from 'vitest';
 import type { CompositionManifest } from '../../src/runtime/composition';
 import {
-  type AssetPreloader,
-  type ResolveCompositionOptions,
-  type SceneTimelineRunInput,
-  type SceneTimelineRunner,
+  type CompositionTimelineAdapter,
+  type CompositionTimelineRunOptions,
+  type SceneTimelineSegment,
   resolveComposition,
 } from '../../src/runtime/composition-resolver';
-import { createPresenterController } from '../../src/runtime/presenter';
 import { createSceneRegistry } from '../../src/runtime/registry';
-import type { SceneModule } from '../../src/runtime/scene';
+import type { SceneLifecycleFn, SceneModule } from '../../src/runtime/scene';
 
-// Each lifecycle hook + preloader + runner pushes a record into a
-// shared array so tests can assert ordering directly. The shape carries
-// just enough to identify which hook fired for which scene.
-interface CallRecord {
-  readonly hook: 'preload' | 'create' | 'timeline' | 'runTimeline' | 'cleanup';
-  readonly sceneId: string;
-  readonly ctx?: unknown;
-  readonly value?: unknown;
-}
+// ----- spying scene factory -------------------------------------------------
 
-interface BuildSceneOpts {
-  readonly id: string;
-  readonly assets?: readonly string[];
-  readonly create?: SceneModule['create'];
-  readonly timeline?: SceneModule['timeline'];
-  readonly cleanup?: SceneModule['cleanup'];
-}
+type HookOverrides = Partial<Pick<SceneModule, 'create' | 'timeline' | 'cleanup'>>;
 
-const buildScene = (opts: BuildSceneOpts): SceneModule => ({
-  id: opts.id,
-  title: opts.id,
-  duration: 1000,
+/** A minimal scene module; pass a shared `log` array to record hook calls. */
+const scene = (id: string, hooks: HookOverrides = {}): SceneModule => ({
+  id,
+  title: id,
+  duration: null,
   tags: [],
-  assets: opts.assets ?? [],
+  assets: [],
   captions: [],
   defaultNext: null,
-  standalone: false,
+  standalone: true,
   trailerSafe: false,
-  create: opts.create ?? (() => undefined),
-  timeline: opts.timeline ?? (() => undefined),
-  cleanup: opts.cleanup ?? (() => undefined),
+  create: hooks.create ?? ((): void => undefined),
+  timeline: hooks.timeline ?? ((): null => null),
+  cleanup: hooks.cleanup ?? ((): void => undefined),
 });
 
-interface Harness {
-  readonly log: CallRecord[];
-  readonly options: ResolveCompositionOptions;
-}
-
-interface HarnessOpts {
-  readonly scenes: readonly BuildSceneOpts[];
-  readonly manifest: CompositionManifest;
-  readonly ctx?: unknown;
-  readonly preloadAssets?: AssetPreloader;
-  readonly runTimeline?: SceneTimelineRunner;
-}
-
-const buildHarness = (opts: HarnessOpts): Harness => {
-  const log: CallRecord[] = [];
-  const sceneById = new Map<string, SceneModule>();
-  const wrappedScenes = opts.scenes.map((s) => {
-    const create =
-      s.create ??
-      ((ctx) => {
-        log.push({ hook: 'create', sceneId: s.id, ctx });
-      });
-    const timeline =
-      s.timeline ??
-      ((ctx) => {
-        log.push({ hook: 'timeline', sceneId: s.id, ctx });
-        return `${s.id}-timeline-value`;
-      });
-    const cleanup =
-      s.cleanup ??
-      ((ctx) => {
-        log.push({ hook: 'cleanup', sceneId: s.id, ctx });
-      });
-    const scene = buildScene(
-      s.assets === undefined
-        ? { id: s.id, create, timeline, cleanup }
-        : { id: s.id, assets: s.assets, create, timeline, cleanup },
-    );
-    sceneById.set(s.id, scene);
-    return scene;
+/** A scene that records `create:<id>` / `timeline:<id>` / `cleanup:<id>` into `log`. */
+const recordingScene = (id: string, log: string[], extra: HookOverrides = {}): SceneModule =>
+  scene(id, {
+    create:
+      extra.create ??
+      ((): void => {
+        log.push(`create:${id}`);
+      }),
+    timeline:
+      extra.timeline ??
+      ((): null => {
+        log.push(`timeline:${id}`);
+        return null;
+      }),
+    cleanup:
+      extra.cleanup ??
+      ((): void => {
+        log.push(`cleanup:${id}`);
+      }),
   });
-  const registry = createSceneRegistry(wrappedScenes);
-  const ctx = opts.ctx ?? { tag: 'ctx' };
-  const preloadAssets: AssetPreloader =
-    opts.preloadAssets ??
-    ((scene) => {
-      log.push({ hook: 'preload', sceneId: scene.id });
-    });
-  const runTimeline: SceneTimelineRunner =
-    opts.runTimeline ??
-    (({ scene, timeline }) => {
-      log.push({ hook: 'runTimeline', sceneId: scene.id, value: timeline });
-    });
-  return {
-    log,
-    options: { registry, manifest: opts.manifest, ctx, preloadAssets, runTimeline },
+
+// ----- recording timeline adapter -------------------------------------------
+
+interface AdapterCall {
+  readonly segments: readonly SceneTimelineSegment[];
+  readonly opts: CompositionTimelineRunOptions;
+}
+
+type AdapterBehavior =
+  | { readonly kind: 'resolve' }
+  | { readonly kind: 'reject'; readonly error: unknown }
+  | { readonly kind: 'park' }; // resolves only when `opts.signal` aborts (or no signal)
+
+/**
+ * A `CompositionTimelineAdapter` stub that records every `run(segments,
+ * opts)` call and resolves / rejects / parks-until-abort per `behavior`.
+ * Optionally logs `run` into a shared array (to pin the lifecycle order).
+ */
+const recordingTimeline = (
+  behavior: AdapterBehavior = { kind: 'resolve' },
+  log?: string[],
+): { adapter: CompositionTimelineAdapter; calls: AdapterCall[] } => {
+  const calls: AdapterCall[] = [];
+  const adapter: CompositionTimelineAdapter = {
+    run(segments, opts) {
+      log?.push('run');
+      calls.push({ segments, opts });
+      if (behavior.kind === 'reject') return Promise.reject(behavior.error);
+      if (behavior.kind === 'park') {
+        return new Promise<void>((resolve) => {
+          const sig = opts.signal;
+          if (sig === undefined || sig.aborted) {
+            resolve();
+            return;
+          }
+          sig.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      return Promise.resolve();
+    },
   };
+  return { adapter, calls };
 };
 
-describe('resolveComposition (PUL-F004)', () => {
-  describe('manifest defense (boundary)', () => {
-    it('throws the assertCompositionManifest grammar when the manifest is not an array', async () => {
-      const { options } = buildHarness({ scenes: [], manifest: [] });
-      await expect(
-        resolveComposition({
-          ...options,
-          manifest: 'not an array' as unknown as CompositionManifest,
-        }),
-      ).rejects.toThrow(/^composition manifest is invalid:/);
-    });
+// ----- options helper -------------------------------------------------------
 
-    it('throws the assertCompositionManifest grammar when an entry is malformed', async () => {
-      const { options } = buildHarness({ scenes: [], manifest: [] });
-      await expect(
-        resolveComposition({
-          ...options,
-          manifest: ['NOT-KEBAB'] as unknown as CompositionManifest,
-        }),
-      ).rejects.toThrow(/^composition entry \[0\] is invalid: id must be/);
-    });
+interface ResolveArgs {
+  readonly scenes: readonly SceneModule[];
+  readonly manifest: CompositionManifest;
+  readonly timeline?: CompositionTimelineAdapter;
+  readonly preloadAssets?: (scene: SceneModule) => void | Promise<void>;
+  readonly ctx?: unknown;
+  readonly signal?: AbortSignal;
+  readonly headBeat?: string;
+  readonly onBeatMissing?: () => void;
+  readonly headRepeat?: 'until-aborted';
+  readonly headHold?: 'first-frame';
+  readonly headCueGate?: 'monotonic-forward';
+  readonly headScreenshot?: 'capture';
+}
+
+const run = (args: ResolveArgs): Promise<void> =>
+  resolveComposition({
+    registry: createSceneRegistry([...args.scenes]),
+    manifest: args.manifest,
+    ctx: args.ctx ?? {},
+    preloadAssets: args.preloadAssets ?? ((): void => undefined),
+    timeline: args.timeline ?? recordingTimeline().adapter,
+    ...(args.signal === undefined ? {} : { signal: args.signal }),
+    ...(args.headBeat === undefined ? {} : { headBeat: args.headBeat }),
+    ...(args.onBeatMissing === undefined ? {} : { onBeatMissing: args.onBeatMissing }),
+    ...(args.headRepeat === undefined ? {} : { headRepeat: args.headRepeat }),
+    ...(args.headHold === undefined ? {} : { headHold: args.headHold }),
+    ...(args.headCueGate === undefined ? {} : { headCueGate: args.headCueGate }),
+    ...(args.headScreenshot === undefined ? {} : { headScreenshot: args.headScreenshot }),
   });
 
-  describe('clause (a) — every referenced scene id exists in the registry', () => {
-    it('resolves an empty manifest with no preload / runner / scene-hook calls', async () => {
-      const { log, options } = buildHarness({ scenes: [], manifest: [] });
-      await expect(resolveComposition(options)).resolves.toBeUndefined();
-      expect(log).toEqual([]);
-    });
+const aborted = (reason?: unknown): AbortSignal => {
+  const c = new AbortController();
+  c.abort(reason);
+  return c.signal;
+};
 
-    it('throws an actionable error naming a single missing id and its entry index', async () => {
-      const { options } = buildHarness({
-        scenes: [{ id: 'scene-a' }],
-        manifest: ['scene-a', 'missing-scene'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: unknown scene id\(s\): "missing-scene" \(entry \[1\]\) — not registered$/,
-      );
-    });
+const flushMicrotasks = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-    it('aggregates every missing id (in entry order) in a single error', async () => {
-      const { options } = buildHarness({
-        scenes: [{ id: 'scene-a' }],
-        manifest: ['missing-x', 'scene-a', { id: 'missing-y' }, 'missing-z'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: unknown scene id\(s\): "missing-x" \(entry \[0\]\), "missing-y" \(entry \[2\]\), "missing-z" \(entry \[3\]\) — not registered$/,
-      );
-    });
+// ----------------------------------------------------------------------------
 
-    it('catches a missing id on an object entry the same as a bare-string entry', async () => {
-      const { options } = buildHarness({
-        scenes: [{ id: 'scene-a' }],
-        manifest: [{ id: 'object-missing' }],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: unknown scene id\(s\): "object-missing" \(entry \[0\]\) — not registered$/,
-      );
-    });
-
-    it('runs id pre-flight before any preload / create / timeline / cleanup', async () => {
-      const { log, options } = buildHarness({
-        scenes: [{ id: 'scene-a' }],
-        manifest: ['scene-a', 'missing-scene'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow();
-      expect(log).toEqual([]);
-    });
+describe('resolveComposition — boundary validation', () => {
+  it('resolves an empty manifest without touching scenes or the timeline', async () => {
+    const { adapter, calls } = recordingTimeline();
+    await expect(run({ scenes: [], manifest: [], timeline: adapter })).resolves.toBeUndefined();
+    expect(calls).toEqual([{ segments: [], opts: {} }]);
   });
 
-  describe('clause (b) — preload assets declared by each scene', () => {
-    it('calls preloadAssets once per entry, with the scene module, in manifest order', async () => {
-      const preloadCalls: SceneModule[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          { id: 'scene-a', assets: ['a1.png'] },
-          { id: 'scene-b', assets: ['b1.png', 'b2.png'] },
-        ],
-        manifest: ['scene-a', 'scene-b'],
-        preloadAssets: (scene) => {
-          preloadCalls.push(scene);
-        },
-      });
-      await resolveComposition(options);
-      expect(preloadCalls.map((s) => ({ id: s.id, assets: s.assets }))).toEqual([
-        { id: 'scene-a', assets: ['a1.png'] },
-        { id: 'scene-b', assets: ['b1.png', 'b2.png'] },
-      ]);
-    });
-
-    it("completes scene N's preload before calling scene N's create", async () => {
-      const log: string[] = [];
-      let resolvePreloadA: (() => void) | undefined;
-      const preloadAGate = new Promise<void>((res) => {
-        resolvePreloadA = res;
-      });
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('create-a');
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        preloadAssets: async (scene) => {
-          log.push(`preload-${scene.id}-start`);
-          if (scene.id === 'scene-a') {
-            await preloadAGate;
-          }
-          log.push(`preload-${scene.id}-end`);
-        },
-      });
-      const resolverPromise = resolveComposition(options);
-      // Flush microtasks until the preloader adapter has started, so the
-      // assertion does not depend on the number of internal await hops
-      // between resolveComposition and the adapter.
-      while (log.length === 0) {
-        await Promise.resolve();
-      }
-      expect(log).toEqual(['preload-scene-a-start']);
-      resolvePreloadA?.();
-      await resolverPromise;
-      expect(log).toEqual(['preload-scene-a-start', 'preload-scene-a-end', 'create-a']);
-    });
-
-    it('aborts when preloadAssets rejects: no create / timeline / cleanup; subsequent scenes not visited', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('create-a');
-            },
-            timeline: () => {
-              log.push('timeline-a');
-            },
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-          {
-            id: 'scene-b',
-            create: () => {
-              log.push('create-b');
-            },
-          },
-        ],
-        manifest: ['scene-a', 'scene-b'],
-        preloadAssets: (scene) => {
-          log.push(`preload-${scene.id}`);
-          if (scene.id === 'scene-a') {
-            throw new Error('asset 404');
-          }
-        },
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" preloadAssets threw: asset 404$/,
-      );
-      expect(log).toEqual(['preload-scene-a']);
-    });
-
-    it('preserves the original preload error as Error.cause', async () => {
-      const root = new Error('asset 404');
-      const { options } = buildHarness({
-        scenes: [{ id: 'scene-a' }],
-        manifest: ['scene-a'],
-        preloadAssets: () => {
-          throw root;
-        },
-      });
-      try {
-        await resolveComposition(options);
-        expect.unreachable('expected preload error to propagate');
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).cause).toBe(root);
-      }
-    });
+  it('defensively validates the manifest shape (assertCompositionManifest)', async () => {
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately malformed input for the boundary check.
+      run({ scenes: [], manifest: [{ notAnEntry: true }] as any }),
+    ).rejects.toThrow(/composition entry \[0\] is invalid/);
   });
 
-  describe('clause (c) — mount each scene via create(ctx)', () => {
-    it('calls create with ctx, in manifest order, after that scene preload completes', async () => {
-      const ctx = { id: 'shared-ctx' };
-      const createCalls: { sceneId: string; ctx: unknown }[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: (c) => {
-              createCalls.push({ sceneId: 'scene-a', ctx: c });
-            },
-          },
-          {
-            id: 'scene-b',
-            create: (c) => {
-              createCalls.push({ sceneId: 'scene-b', ctx: c });
-            },
-          },
-        ],
-        manifest: ['scene-a', 'scene-b'],
-        ctx,
-      });
-      await resolveComposition(options);
-      expect(createCalls).toEqual([
-        { sceneId: 'scene-a', ctx },
-        { sceneId: 'scene-b', ctx },
-      ]);
-    });
-
-    it('still calls cleanup when create rejects (resources may have been partially acquired); subsequent scenes not visited; create error re-raised', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('create-a');
-              throw new Error('mount failed');
-            },
-            timeline: () => {
-              log.push('timeline-a');
-            },
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-          {
-            id: 'scene-b',
-            create: () => {
-              log.push('create-b');
-            },
-          },
-        ],
-        manifest: ['scene-a', 'scene-b'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" create threw: mount failed$/,
-      );
-      expect(log).toEqual(['create-a', 'cleanup-a']);
-    });
-  });
-
-  describe('clause (d) — run its timeline', () => {
-    it('passes scene.timeline(ctx) value through to runTimeline(scene, value)', async () => {
-      const sentinel = { kind: 'timeline-handle', label: 'fake-gsap-timeline' };
-      const runCalls: { sceneId: string; value: unknown }[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            timeline: () => sentinel,
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: ({ scene, timeline }) => {
-          runCalls.push({ sceneId: scene.id, value: timeline });
-        },
-      });
-      await resolveComposition(options);
-      expect(runCalls).toEqual([{ sceneId: 'scene-a', value: sentinel }]);
-    });
-
-    it('awaits an async (Promise-returning) scene.timeline factory before handing the resolved value to runTimeline', async () => {
-      const sentinel = { kind: 'resolved-timeline' };
-      const runCalls: { sceneId: string; value: unknown }[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            timeline: async () => sentinel,
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: ({ scene, timeline }) => {
-          runCalls.push({ sceneId: scene.id, value: timeline });
-        },
-      });
-      await resolveComposition(options);
-      // Runner must receive the resolved sentinel object, not a Promise.
-      expect(runCalls).toHaveLength(1);
-      const onlyCall = runCalls[0];
-      expect(onlyCall).toBeDefined();
-      expect(onlyCall?.sceneId).toBe('scene-a');
-      expect(onlyCall?.value).toBe(sentinel);
-      expect(onlyCall?.value instanceof Promise).toBe(false);
-    });
-
-    it('forwards range / behavior overrides from object entries to runTimeline', async () => {
-      const runCalls: SceneTimelineRunInput[] = [];
-      const { options } = buildHarness({
-        scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-        manifest: ['scene-a', { id: 'scene-b', range: ['intro', 'outro'], behavior: { speed: 2 } }],
-        runTimeline: (input) => {
-          runCalls.push(input);
-        },
-      });
-      await resolveComposition(options);
-      expect(runCalls).toHaveLength(2);
-      const aCall = runCalls[0];
-      const bCall = runCalls[1];
-      expect(aCall).toBeDefined();
-      expect(aCall?.scene.id).toBe('scene-a');
-      expect(aCall?.range).toBeUndefined();
-      expect(aCall?.behavior).toBeUndefined();
-      expect(bCall).toBeDefined();
-      expect(bCall?.scene.id).toBe('scene-b');
-      expect(bCall?.range).toEqual(['intro', 'outro']);
-      expect(bCall?.behavior).toEqual({ speed: 2 });
-    });
-
-    it('awaits runTimeline before calling cleanup', async () => {
-      const log: string[] = [];
-      let resolveRun: (() => void) | undefined;
-      const runGate = new Promise<void>((res) => {
-        resolveRun = res;
-      });
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: async ({ scene }) => {
-          log.push(`runTimeline-${scene.id}-start`);
-          await runGate;
-          log.push(`runTimeline-${scene.id}-end`);
-        },
-      });
-      const resolverPromise = resolveComposition(options);
-      // Flush microtasks until runTimeline has started executing, so
-      // the assertion does not depend on the number of internal await
-      // hops between resolveComposition and the runner adapter.
-      while (log.length === 0) {
-        await Promise.resolve();
-      }
-      expect(log).toEqual(['runTimeline-scene-a-start']);
-      resolveRun?.();
-      await resolverPromise;
-      expect(log).toEqual(['runTimeline-scene-a-start', 'runTimeline-scene-a-end', 'cleanup-a']);
-    });
-
-    it('still calls cleanup when runTimeline rejects; subsequent scenes not visited; timeline error re-raised', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-          {
-            id: 'scene-b',
-            create: () => {
-              log.push('create-b');
-            },
-          },
-        ],
-        manifest: ['scene-a', 'scene-b'],
-        runTimeline: ({ scene }) => {
-          if (scene.id === 'scene-a') {
-            throw new Error('gsap exploded');
-          }
-        },
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" timeline threw: gsap exploded$/,
-      );
-      expect(log).toEqual(['cleanup-a']);
-    });
-
-    it('still calls cleanup when scene.timeline(ctx) itself throws', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            timeline: () => {
-              throw new Error('timeline ctor failed');
-            },
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" timeline threw: timeline ctor failed$/,
-      );
-      expect(log).toEqual(['cleanup-a']);
-    });
-  });
-
-  describe('clause (e) — cleanup before next mount', () => {
-    it('calls cleanup with ctx after a successful timeline', async () => {
-      const ctx = { id: 'cleanup-ctx' };
-      const cleanupArgs: unknown[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: (c) => {
-              cleanupArgs.push(c);
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        ctx,
-      });
-      await resolveComposition(options);
-      expect(cleanupArgs).toEqual([ctx]);
-    });
-
-    it('orders preload → create → timeline → runTimeline → cleanup before the next preload (3-scene happy path)', async () => {
-      const { log, options } = buildHarness({
-        scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
-        manifest: ['scene-a', 'scene-b', 'scene-c'],
-      });
-      await resolveComposition(options);
-      expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
-        'preload:scene-a',
-        'create:scene-a',
-        'timeline:scene-a',
-        'runTimeline:scene-a',
-        'cleanup:scene-a',
-        'preload:scene-b',
-        'create:scene-b',
-        'timeline:scene-b',
-        'runTimeline:scene-b',
-        'cleanup:scene-b',
-        'preload:scene-c',
-        'create:scene-c',
-        'timeline:scene-c',
-        'runTimeline:scene-c',
-        'cleanup:scene-c',
-      ]);
-    });
-
-    it('re-raises a cleanup-only failure (timeline succeeded)', async () => {
-      const root = new Error('cleanup boom');
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              throw root;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      try {
-        await resolveComposition(options);
-        expect.unreachable('expected cleanup-only failure to propagate');
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        expect((err as Error).message).toMatch(
-          /^composition resolution failed: scene "scene-a" cleanup threw: cleanup boom$/,
-        );
-        expect((err as Error).cause).toBe(root);
-      }
-    });
-
-    it('throws an AggregateError carrying both the timeline error and the cleanup error when both fail (no caller-error mutation)', async () => {
-      const timelineErr = new Error('runner failed');
-      const cleanupErr = new Error('and so did cleanup');
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              throw cleanupErr;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: () => {
-          throw timelineErr;
-        },
-      });
-      try {
-        await resolveComposition(options);
-        expect.unreachable('expected combined failure to propagate');
-      } catch (err) {
-        expect(err).toBeInstanceOf(AggregateError);
-        const top = err as AggregateError;
-        expect(top.message).toMatch(
-          /^composition resolution failed: scene "scene-a" timeline threw: runner failed \(cleanup also failed: and so did cleanup\)$/,
-        );
-        expect(top.errors).toEqual([timelineErr, cleanupErr]);
-        // The resolver must NOT mutate the caller-supplied errors.
-        expect((timelineErr as Error & { cause?: unknown }).cause).toBeUndefined();
-        expect((cleanupErr as Error & { cause?: unknown }).cause).toBeUndefined();
-      }
-    });
-
-    it('throws an AggregateError carrying both the create error and the cleanup error when both fail (no caller-error mutation)', async () => {
-      const createErr = new Error('mount blew up');
-      const cleanupErr = new Error('cleanup also blew up');
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              throw createErr;
-            },
-            cleanup: () => {
-              throw cleanupErr;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      try {
-        await resolveComposition(options);
-        expect.unreachable('expected combined failure to propagate');
-      } catch (err) {
-        expect(err).toBeInstanceOf(AggregateError);
-        const top = err as AggregateError;
-        expect(top.message).toMatch(
-          /^composition resolution failed: scene "scene-a" create threw: mount blew up \(cleanup also failed: cleanup also blew up\)$/,
-        );
-        expect(top.errors).toEqual([createErr, cleanupErr]);
-        expect((createErr as Error & { cause?: unknown }).cause).toBeUndefined();
-        expect((cleanupErr as Error & { cause?: unknown }).cause).toBeUndefined();
-      }
-    });
-
-    it('preserves a non-Error throw + cleanup failure together (no upcasting required)', async () => {
-      const stringThrow = 'create blew up but threw a string, not an Error';
-      const cleanupErr = new Error('cleanup error');
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              throw stringThrow;
-            },
-            cleanup: () => {
-              throw cleanupErr;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      try {
-        await resolveComposition(options);
-        expect.unreachable('expected combined failure to propagate');
-      } catch (err) {
-        expect(err).toBeInstanceOf(AggregateError);
-        const top = err as AggregateError;
-        // String throw appears in the message verbatim and is preserved
-        // in errors[] alongside the cleanup error.
-        expect(top.message).toMatch(
-          /^composition resolution failed: scene "scene-a" create threw: create blew up but threw a string, not an Error \(cleanup also failed: cleanup error\)$/,
-        );
-        expect(top.errors).toEqual([stringThrow, cleanupErr]);
-      }
-    });
-  });
-
-  describe('lifecycle hook return-value handling', () => {
-    it('handles synchronous (non-Promise) return values for create / timeline / cleanup the same as async ones', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('sync-create');
-              return undefined;
-            },
-            timeline: () => {
-              log.push('sync-timeline');
-              return 42;
-            },
-            cleanup: () => {
-              log.push('sync-cleanup');
-              return undefined;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: ({ timeline }) => {
-          log.push(`runTimeline-received-${String(timeline)}`);
-        },
-      });
-      await resolveComposition(options);
-      expect(log).toEqual([
-        'sync-create',
-        'sync-timeline',
-        'runTimeline-received-42',
-        'sync-cleanup',
-      ]);
-    });
-  });
-
-  describe('manifest snapshot (codex review: snapshot before lifecycle side effects)', () => {
-    it('iterates a snapshot of the manifest — caller mutations during a lifecycle hook do not retarget later entries', async () => {
-      const visited: string[] = [];
-      // Mutable manifest the test will retarget mid-flight.
-      const mutableManifest: { id: string }[] = [
-        { id: 'scene-a' },
-        { id: 'scene-b' },
-        { id: 'scene-c' },
-      ];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              visited.push('scene-a');
-              // Mutate the caller-owned manifest after the resolver has
-              // already started iterating it. If the resolver re-read
-              // the manifest for steps 1 and 2 we'd see "unknown scene
-              // id" failures here. The snapshot path makes this a
-              // no-op for the resolver.
-              mutableManifest[1] = { id: 'unregistered-substitute' };
-              mutableManifest[2] = { id: 'also-unregistered' };
-            },
-          },
-          {
-            id: 'scene-b',
-            create: () => {
-              visited.push('scene-b');
-            },
-          },
-          {
-            id: 'scene-c',
-            create: () => {
-              visited.push('scene-c');
-            },
-          },
-        ],
-        manifest: mutableManifest as unknown as CompositionManifest,
-      });
-      await expect(resolveComposition(options)).resolves.toBeUndefined();
-      expect(visited).toEqual(['scene-a', 'scene-b', 'scene-c']);
-    });
-  });
-
-  describe('non-Error throw paths (codex review: do not use undefined as failure sentinel)', () => {
-    // `throw undefined` and `Promise.reject(undefined)` are both legal
-    // JS. The resolver must still treat them as failures. These tests
-    // pin that: dropping the boolean failure flags in favor of
-    // `phaseError !== undefined` would silently swallow these cases.
-    it('treats `throw undefined` from create as a failure (no scene-completed pretense)', async () => {
-      const cleanupCalls: number[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              throw undefined;
-            },
-            cleanup: () => {
-              cleanupCalls.push(1);
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" create threw: undefined$/,
-      );
-      // Cleanup must still run because create was attempted.
-      expect(cleanupCalls).toEqual([1]);
-    });
-
-    it('treats `Promise.reject(undefined)` from runTimeline as a failure', async () => {
-      const cleanupCalls: number[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              cleanupCalls.push(1);
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        runTimeline: () => Promise.reject(undefined),
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" timeline threw: undefined$/,
-      );
-      expect(cleanupCalls).toEqual([1]);
-    });
-
-    it('treats `throw undefined` from cleanup as a failure', async () => {
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            cleanup: () => {
-              throw undefined;
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" cleanup threw: undefined$/,
-      );
-    });
-
-    it('treats `throw undefined` from preloadAssets as a failure (no create / cleanup)', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('create');
-            },
-            cleanup: () => {
-              log.push('cleanup');
-            },
-          },
-        ],
-        manifest: ['scene-a'],
-        preloadAssets: () => {
-          throw undefined;
-        },
-      });
-      await expect(resolveComposition(options)).rejects.toThrow(
-        /^composition resolution failed: scene "scene-a" preloadAssets threw: undefined$/,
-      );
-      expect(log).toEqual([]);
-    });
-  });
-
-  describe('manifest entry shapes', () => {
-    it('accepts object entries with range / behavior overrides without reading either field', async () => {
-      const log: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              log.push('create-a');
-            },
-            cleanup: () => {
-              log.push('cleanup-a');
-            },
-          },
-        ],
-        manifest: [
-          {
-            id: 'scene-a',
-            range: ['intro', 'outro'],
-            behavior: { speed: 2, loop: true },
-          },
-        ],
-      });
-      await resolveComposition(options);
-      // The resolver must not interpret range/behavior in PUL-F004 — it
-      // just runs the scene's normal lifecycle. Lifecycle hooks fire
-      // exactly once (no special handling triggered by the override
-      // fields).
-      expect(log).toEqual(['create-a', 'cleanup-a']);
-    });
-
-    it('runs repeated scene ids as repeated lifecycle entries (no dedup) — codex preflight invariant', async () => {
-      const calls: string[] = [];
-      const { options } = buildHarness({
-        scenes: [
-          {
-            id: 'scene-a',
-            create: () => {
-              calls.push('create-a');
-            },
-            cleanup: () => {
-              calls.push('cleanup-a');
-            },
-          },
-        ],
-        manifest: ['scene-a', 'scene-a', 'scene-a'],
-      });
-      await resolveComposition(options);
-      expect(calls).toEqual([
-        'create-a',
-        'cleanup-a',
-        'create-a',
-        'cleanup-a',
-        'create-a',
-        'cleanup-a',
-      ]);
-    });
-
-    it('drives the ADR-002 trailer fixture (object entries with range overrides) end-to-end in order', async () => {
-      const { log, options } = buildHarness({
-        scenes: [{ id: 'scene-a' }, { id: 'scene-c' }],
-        // Literal copy of ADR-002 §Composition manifests `trailer`
-        // example. Both entries are object form; bare-string mixing is
-        // exercised separately below to keep this assertion honest
-        // about which fixture path it pins.
-        manifest: [
-          { id: 'scene-a', range: ['intro', 'hook'] },
-          { id: 'scene-c', range: 'payoff' },
-        ],
-      });
-      await resolveComposition(options);
-      expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
-        'preload:scene-a',
-        'create:scene-a',
-        'timeline:scene-a',
-        'runTimeline:scene-a',
-        'cleanup:scene-a',
-        'preload:scene-c',
-        'create:scene-c',
-        'timeline:scene-c',
-        'runTimeline:scene-c',
-        'cleanup:scene-c',
-      ]);
-    });
-
-    it('drives a manifest mixing bare-string and object entries end-to-end in declared order', async () => {
-      const { log, options } = buildHarness({
-        scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
-        manifest: [
-          'scene-a',
-          { id: 'scene-b', range: 'beat-1', behavior: { mode: 'demo' } },
-          'scene-c',
-        ],
-      });
-      await resolveComposition(options);
-      expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
-        'preload:scene-a',
-        'create:scene-a',
-        'timeline:scene-a',
-        'runTimeline:scene-a',
-        'cleanup:scene-a',
-        'preload:scene-b',
-        'create:scene-b',
-        'timeline:scene-b',
-        'runTimeline:scene-b',
-        'cleanup:scene-b',
-        'preload:scene-c',
-        'create:scene-c',
-        'timeline:scene-c',
-        'runTimeline:scene-c',
-        'cleanup:scene-c',
-      ]);
-    });
-  });
-});
-
-describe('per-scene cleanup invocation (PUL-F006)', () => {
-  // PUL-F006: "The runtime SHALL invoke `cleanup(ctx)` on every scene
-  // exit, including normal advance, presenter skip, runtime error
-  // within the scene, and composition end."
-  //
-  // The composition resolver shipped under PUL-F004 already centralizes
-  // cleanup invocation in `runScene` (unconditional second try/catch
-  // around `scene.cleanup(ctx)`). These tests anchor the four named
-  // exit paths to PUL-F006 so the invariant cannot regress quietly,
-  // and pin the codex-preflight "exactly once per scene activation"
-  // axis that the PUL-F004 tests only assert by ordering.
-  //
-  // ADR-011 explicitly defers AbortSignal-based cancellation to the
-  // wave-1 re-evaluation around PUL-F020 (presenter controls). PUL-F006
-  // does not implement a presenter-skip mechanism; it ensures the
-  // cleanup invariant the wave-1 mechanism will rely on. Presenter
-  // skip is therefore modeled here as a cooperative early return from
-  // the injected runner adapter — the same shape PUL-F020 will use
-  // when it lands.
-
-  const cleanupCount = (entries: readonly CallRecord[], sceneId: string): number =>
-    entries.filter((c) => c.hook === 'cleanup' && c.sceneId === sceneId).length;
-
-  it('normal advance: cleanup runs exactly once per scene as the resolver advances through a multi-scene composition, strictly before the next scene preload', async () => {
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
-      manifest: ['scene-a', 'scene-b', 'scene-c'],
-    });
-    await resolveComposition(options);
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-    expect(cleanupCount(log, 'scene-b')).toBe(1);
-    expect(cleanupCount(log, 'scene-c')).toBe(1);
-    expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
-      'preload:scene-a',
-      'create:scene-a',
-      'timeline:scene-a',
-      'runTimeline:scene-a',
-      'cleanup:scene-a',
-      'preload:scene-b',
-      'create:scene-b',
-      'timeline:scene-b',
-      'runTimeline:scene-b',
-      'cleanup:scene-b',
-      'preload:scene-c',
-      'create:scene-c',
-      'timeline:scene-c',
-      'runTimeline:scene-c',
-      'cleanup:scene-c',
-    ]);
-  });
-
-  it('presenter skip mid-scene via AbortSignal: runner throws via signal.throwIfAborted, cleanup still runs exactly once for the active scene, subsequent scenes are not visited', async () => {
-    // PUL-F006 presenter-skip exit path with a real cancellation
-    // contract. The caller supplies an AbortSignal; the runner observes
-    // it via SceneTimelineRunInput.signal and bails. The resolver's
-    // cleanup-always invariant (runScene's unconditional second
-    // try/catch) still fires for the active scene, then the abort
-    // propagates and subsequent scenes are not visited.
-    const controller = new AbortController();
-    let runnerSawSignal = false;
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: ({ signal }) => {
-        runnerSawSignal = signal !== undefined;
-        // Simulate a presenter skip cue mid-runner.
-        controller.abort(new Error('skip cue'));
-        // Honor the signal cooperatively.
-        signal?.throwIfAborted();
-        // unreachable past throwIfAborted
-      },
-    });
-    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow();
-    expect(runnerSawSignal).toBe(true);
-    // Active scene's cleanup ran exactly once — the cleanup-always
-    // invariant holds even when the runner aborts.
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-    // Scene B was never visited (no preload, no create, no cleanup).
-    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
-  });
-
-  it('presenter skip between scenes via AbortSignal: signal aborted after scene-a completes, scene-b is not preloaded or mounted', async () => {
-    // PUL-F006 inter-scene skip path. Scene A runs to completion
-    // (including cleanup); the signal is aborted just after. The
-    // resolver re-checks the signal between scenes and refuses to
-    // visit scene B. The error message names the previously-completed
-    // scene so callers can correlate.
-    const controller = new AbortController();
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: ({ scene }) => {
-        if (scene.id === 'scene-a') {
-          log.push({ hook: 'runTimeline', sceneId: scene.id });
-          // Abort fires DURING scene-a's runner, but the resolver
-          // does not check the signal again until scene-a's cleanup
-          // has completed and the loop is about to preload scene-b.
-          controller.abort(new Error('end of scene a, skip rest'));
-          return;
-        }
-      },
-    });
-    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
-      /^composition resolution failed: aborted between scenes after "scene-a"$/,
+  it('rejects with every unregistered scene id aggregated, before any side effect', async () => {
+    const log: string[] = [];
+    const preloadAssets = vi.fn((): void => undefined);
+    await expect(
+      run({
+        scenes: [recordingScene('intro', log)],
+        manifest: ['ghost-a', 'intro', 'ghost-b'],
+        preloadAssets,
+      }),
+    ).rejects.toThrow(
+      'composition resolution failed: unknown scene id(s): "ghost-a" (entry [0]), "ghost-b" (entry [2]) — not registered',
     );
-    // Scene A had its full lifecycle including cleanup.
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-    expect(log.filter((c) => c.sceneId === 'scene-a').map((c) => c.hook)).toEqual([
-      'preload',
-      'create',
-      'timeline',
-      'runTimeline',
-      'cleanup',
-    ]);
-    // Scene B was never visited.
-    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
-  });
-
-  it('presenter skip during async preload: signal abort observed after preload completes prevents scene activation; preloaded scene is not created, cleanup is not invoked', async () => {
-    // PUL-F006 post-preload signal check (codex review hardening).
-    // Async preload can take arbitrary wall-clock time during which
-    // the caller may abort. Without the post-preload check, the
-    // resolver would still mount and run the scene even though
-    // cancellation was requested mid-preload. This test pins that
-    // the resolver re-checks the signal between preload completion
-    // and scene activation.
-    const controller = new AbortController();
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      preloadAssets: async (scene) => {
-        log.push({ hook: 'preload', sceneId: scene.id });
-        // Simulate an async preload that completes after the signal
-        // has been aborted by some external presenter event.
-        controller.abort(new Error('skip during preload'));
-        await Promise.resolve();
-      },
-    });
-    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
-      /^composition resolution failed: aborted after preloading "scene-a", before scene activation$/,
-    );
-    // Preload happened (the preloader ran to completion before the
-    // resolver re-checked the signal), but the scene was never
-    // activated — no create, no timeline, no cleanup.
-    expect(log.map((c) => c.hook)).toEqual(['preload']);
-  });
-
-  it('presenter skip pre-start (signal already aborted on entry): no scene is mounted, no cleanup is invoked, resolver throws immediately', async () => {
-    // Edge of the PUL-F006 skip contract: the caller may abort the
-    // signal before resolveComposition is ever called. The resolver
-    // must not start any scene — there is nothing to clean up because
-    // nothing was activated.
-    const controller = new AbortController();
-    controller.abort(new Error('aborted before invocation'));
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-    });
-    await expect(resolveComposition({ ...options, signal: controller.signal })).rejects.toThrow(
-      /^composition resolution failed: aborted before any scene was visited$/,
-    );
-    // Nothing was touched — no preload, no create, no cleanup.
+    expect(preloadAssets).not.toHaveBeenCalled();
     expect(log).toEqual([]);
   });
 
-  it("composition end: the final scene's cleanup is the terminal lifecycle call (no preload, create, timeline, or cleanup after it)", async () => {
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-    });
-    await resolveComposition(options);
-    const lastCall = log[log.length - 1];
-    expect(lastCall).toBeDefined();
-    expect(lastCall?.hook).toBe('cleanup');
-    expect(lastCall?.sceneId).toBe('scene-b');
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-    expect(cleanupCount(log, 'scene-b')).toBe(1);
-  });
-
-  it('runtime error during create: cleanup of the failing scene fires exactly once, subsequent scenes are not visited', async () => {
-    const { log, options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          create: () => {
-            throw new Error('create boom');
-          },
-        },
-        { id: 'scene-b' },
-      ],
-      manifest: ['scene-a', 'scene-b'],
-    });
-    await expect(resolveComposition(options)).rejects.toThrow();
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-    expect(log.filter((c) => c.sceneId === 'scene-b')).toEqual([]);
-  });
-
-  it('runtime error during timeline factory: cleanup of the failing scene fires exactly once', async () => {
-    const { log, options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          timeline: () => {
-            throw new Error('timeline boom');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-    });
-    await expect(resolveComposition(options)).rejects.toThrow();
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-  });
-
-  it('runtime error during runner: cleanup of the failing scene fires exactly once', async () => {
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: () => {
-        throw new Error('runner boom');
-      },
-    });
-    await expect(resolveComposition(options)).rejects.toThrow();
-    expect(cleanupCount(log, 'scene-a')).toBe(1);
-  });
-
-  it('exactly once per occurrence: a manifest with the same scene id repeated yields one cleanup per occurrence (no dedup, no double-fire)', async () => {
-    const { log, options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a', 'scene-a', 'scene-a'],
-    });
-    await resolveComposition(options);
-    expect(cleanupCount(log, 'scene-a')).toBe(3);
-    expect(log.map((c) => `${c.hook}:${c.sceneId}`)).toEqual([
-      'preload:scene-a',
-      'create:scene-a',
-      'timeline:scene-a',
-      'runTimeline:scene-a',
-      'cleanup:scene-a',
-      'preload:scene-a',
-      'create:scene-a',
-      'timeline:scene-a',
-      'runTimeline:scene-a',
-      'cleanup:scene-a',
-      'preload:scene-a',
-      'create:scene-a',
-      'timeline:scene-a',
-      'runTimeline:scene-a',
-      'cleanup:scene-a',
-    ]);
-  });
-});
-
-describe('URL beat positioning forwarding (PUL-F011)', () => {
-  // PUL-F011: when `beat=<label>` is present, the runtime SHALL position
-  // the active scene's timeline at the named label; if the label does
-  // not exist, surface an error and remain at the scene's first beat.
-  // ADR-015 places label existence and seeking in the timeline-runner
-  // boundary. The resolver's job is forwarding URL beat state to the
-  // head scene's run input only; subsequent scenes in a composition
-  // slice do not receive `beat` (per ADR-015, `beat` targets the
-  // active head scene only).
-
-  it("forwards `headBeat` to plan[0]'s run input only — subsequent scenes get no beat", async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, headBeat: 'hook', onBeatMissing: () => undefined });
-    expect(runCalls).toHaveLength(2);
-    expect(runCalls[0]?.scene.id).toBe('scene-a');
-    expect(runCalls[0]?.beat).toBe('hook');
-    expect(runCalls[1]?.scene.id).toBe('scene-b');
-    expect(runCalls[1]?.beat).toBeUndefined();
-    // The `'beat' in input` check parallels how `range` / `behavior`
-    // are omitted when absent — the runner's branching can rely on key
-    // presence rather than checking for `undefined` separately.
-    expect('beat' in (runCalls[1] as object)).toBe(false);
-  });
-
-  it("forwards `onBeatMissing` to plan[0]'s run input only — subsequent scenes get no callback", async () => {
-    const callbacks: (SceneTimelineRunInput['onBeatMissing'] | undefined)[] = [];
-    const sentinel = (): void => undefined;
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        callbacks.push(input.onBeatMissing);
-      },
-    });
-    await resolveComposition({ ...options, headBeat: 'hook', onBeatMissing: sentinel });
-    expect(callbacks[0]).toBe(sentinel);
-    expect(callbacks[1]).toBeUndefined();
-  });
-
-  it('does not attach `beat` or `onBeatMissing` keys when neither option is supplied', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(1);
-    expect('beat' in (runCalls[0] as object)).toBe(false);
-    expect('onBeatMissing' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('does not attach `onBeatMissing` when `headBeat` is absent (paired contract)', async () => {
-    // The callback is meaningless without a beat to trigger it. If a
-    // caller passes `onBeatMissing` alone, the resolver drops it so
-    // the runner never sees `input.onBeatMissing` with no
-    // `input.beat` (an impossible state per the documented contract).
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, onBeatMissing: () => undefined });
-    expect(runCalls).toHaveLength(1);
-    expect('beat' in (runCalls[0] as object)).toBe(false);
-    expect('onBeatMissing' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('throws when `headBeat` is supplied without `onBeatMissing` (paired-required contract)', async () => {
-    // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing`
-    // would silently lose the missing-label diagnostic the runner
-    // is contracted to surface. The resolver fails fast at the
-    // boundary rather than running a doomed lifecycle that reports
-    // nothing.
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-    });
-    await expect(resolveComposition({ ...options, headBeat: 'hook' })).rejects.toThrow(
-      /^composition resolution failed: "onBeatMissing" is required when "headBeat" is supplied/,
+  it('rejects when headBeat is supplied without onBeatMissing', async () => {
+    await expect(run({ scenes: [scene('a')], manifest: ['a'], headBeat: 'hook' })).rejects.toThrow(
+      /"onBeatMissing" is required when "headBeat" is supplied/,
     );
   });
 
-  it('does not interpret `headBeat` itself — a runner that silently consumes it does not error', async () => {
-    // Resolver delegates label-existence checking to the runner per
-    // ADR-015. A runner that receives `beat: 'unknown-label'` and
-    // returns void normally must NOT cause the resolver to throw or
-    // skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
+  it('rejects a composition slice that repeats a scene id, before any side effect (ADR-025)', async () => {
+    // The mount-all lifecycle activates every entry concurrently, so two
+    // `intro` occurrences would share one activation context. Per-entry
+    // contexts are a follow-up; until then a repeated scene id in a
+    // slice is a navigation error (single-scene modes truncate the slice
+    // to the head, so they stay navigable).
+    const log: string[] = [];
+    const preloadAssets = vi.fn((): void => undefined);
     await expect(
-      resolveComposition({
-        ...options,
-        headBeat: 'never-defined',
-        onBeatMissing: () => undefined,
+      run({
+        scenes: [recordingScene('intro', log), recordingScene('demo', log)],
+        manifest: ['intro', 'demo', 'intro'],
+        preloadAssets,
       }),
-    ).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
+    ).rejects.toThrow(
+      'composition resolution failed: composition references scene id "intro" more than once (entries [0], [2]) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)',
+    );
+    expect(preloadAssets).not.toHaveBeenCalled();
+    expect(log).toEqual([]);
   });
 });
 
-describe('URL loop-mode runner repeat-hint forwarding (PUL-F015)', () => {
-  // PUL-F015: in `mode=loop`, the runtime SHALL run the addressed
-  // scene's timeline and restart it on completion. ADR-018 places
-  // mode dispatch at the loader and the repeat semantics at the
-  // timeline-runner adapter. The resolver's job is forwarding the
-  // URL-derived `headRepeat` hint to the head scene's run input only;
-  // subsequent scenes in a composition slice do not receive `repeat`
-  // because the head's looping timeline never naturally completes —
-  // following entries cannot run. The resolver does NOT interpret
-  // `headRepeat` itself; honoring "restart on completion" is the
-  // runner's contract.
-
-  it("forwards `headRepeat` to plan[0]'s run input only — subsequent scenes get no repeat", async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, headRepeat: 'until-aborted' });
-    expect(runCalls).toHaveLength(2);
-    expect(runCalls[0]?.scene.id).toBe('scene-a');
-    expect(runCalls[0]?.repeat).toBe('until-aborted');
-    expect(runCalls[1]?.scene.id).toBe('scene-b');
-    expect(runCalls[1]?.repeat).toBeUndefined();
-    // Parallel to `beat` / `range` / `behavior`: the key is OMITTED
-    // from the input object when absent, not set to `undefined`. The
-    // runner can branch on `'repeat' in input` rather than checking
-    // for `undefined`.
-    expect('repeat' in (runCalls[1] as object)).toBe(false);
-  });
-
-  it('does not attach `repeat` when `headRepeat` is absent', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(1);
-    expect('repeat' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('does not interpret `headRepeat` itself — a runner that ignores the hint and returns normally does not error', async () => {
-    // Resolver delegates restart-on-completion to the runner per
-    // ADR-018. A runner that receives `repeat: 'until-aborted'` and
-    // returns void normally (e.g. the placeholder runner that has no
-    // real timeline to repeat) must NOT cause the resolver to throw
-    // or skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
-    await expect(
-      resolveComposition({
-        ...options,
-        headRepeat: 'until-aborted',
-      }),
-    ).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
-  });
-
-  it('forwards `headRepeat` alongside `headBeat` independently — both reach plan[0] without coupling', async () => {
-    // `headRepeat` and `headBeat` are two independent head-only
-    // forwardings (PUL-F011 and PUL-F015). A regression that paired
-    // them — e.g. requiring `headBeat` whenever `headRepeat` is set,
-    // or vice versa — would break URLs like `?scene=x&beat=hook&mode=loop`.
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({
-      ...options,
-      headBeat: 'hook',
-      onBeatMissing: () => undefined,
-      headRepeat: 'until-aborted',
-    });
-    expect(runCalls).toHaveLength(1);
-    expect(runCalls[0]?.beat).toBe('hook');
-    expect(runCalls[0]?.repeat).toBe('until-aborted');
-  });
-});
-
-describe('URL paused-mode runner hold-hint forwarding (PUL-F016)', () => {
-  // PUL-F016: in `mode=paused`, the runtime SHALL mount the addressed
-  // scene and hold it at its first frame without advancing the
-  // timeline. ADR-019 places mode dispatch at the loader and the
-  // hold-at-first-frame semantics at the timeline-runner adapter. The
-  // resolver's job is forwarding the URL-derived `headHold` hint to
-  // the head scene's run input only; subsequent scenes in a
-  // composition slice do not receive `hold` because the head's
-  // timeline never advances under paused — following entries cannot
-  // run. The resolver does NOT interpret `headHold` itself; honoring
-  // hold-at-first-frame is the runner's contract.
-
-  it("forwards `headHold` to plan[0]'s run input only — subsequent scenes get no hold", async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, headHold: 'first-frame' });
-    expect(runCalls).toHaveLength(2);
-    expect(runCalls[0]?.scene.id).toBe('scene-a');
-    expect(runCalls[0]?.hold).toBe('first-frame');
-    expect(runCalls[1]?.scene.id).toBe('scene-b');
-    expect(runCalls[1]?.hold).toBeUndefined();
-    // Parallel to `beat` / `repeat` / `range` / `behavior`: the key is
-    // OMITTED from the input object when absent, not set to
-    // `undefined`. The runner can branch on `'hold' in input` rather
-    // than checking for `undefined`.
-    expect('hold' in (runCalls[1] as object)).toBe(false);
-  });
-
-  it('does not attach `hold` when `headHold` is absent', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(1);
-    expect('hold' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('does not interpret `headHold` itself — a runner that ignores the hint and returns normally does not error', async () => {
-    // Resolver delegates hold-at-first-frame to the runner per
-    // ADR-019. A runner that receives `hold: 'first-frame'` and
-    // returns void normally (e.g. the placeholder runner that has no
-    // real timeline to pause) must NOT cause the resolver to throw or
-    // skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
-    await expect(
-      resolveComposition({
-        ...options,
-        headHold: 'first-frame',
-      }),
-    ).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
-  });
-
-  it('forwards `headHold` alongside `headBeat` and `headRepeat` independently — all three reach plan[0] without coupling', async () => {
-    // `headHold`, `headBeat`, and `headRepeat` are three independent
-    // head-only forwardings (PUL-F016, PUL-F011, PUL-F015). A
-    // regression that paired them — e.g. requiring `headBeat` or
-    // `headRepeat` whenever `headHold` is set — would break URLs like
-    // `?scene=x&beat=hook&mode=paused` and
-    // `?scene=x&mode=paused` (paused alone, no beat).
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({
-      ...options,
-      headBeat: 'hook',
-      onBeatMissing: () => undefined,
-      headHold: 'first-frame',
-    });
-    expect(runCalls).toHaveLength(1);
-    expect(runCalls[0]?.beat).toBe('hook');
-    expect(runCalls[0]?.hold).toBe('first-frame');
-    expect(runCalls[0]?.repeat).toBeUndefined();
-  });
-});
-
-describe('URL scrub-mode runner cue-gate-hint forwarding (PUL-F017)', () => {
-  // PUL-F017: in `mode=scrub`, the runtime SHALL display timeline
-  // controls allowing the user to scrub forward, backward, and to
-  // named beats; audio cues SHALL fire only on monotonic forward
-  // playback. ADR-020 places mode dispatch at the loader and the
-  // cue-gate semantics at the timeline-runner adapter. The resolver's
-  // job is forwarding the URL-derived `headCueGate` hint to the head
-  // scene's run input only; subsequent scenes in a composition slice
-  // do not receive `cueGate` because under scrub the slice is
-  // truncated upstream and the head's interactive timeline never
-  // hands off to following entries. The resolver does NOT interpret
-  // `headCueGate` itself; honoring "audio cues fire only on monotonic
-  // forward playback" is the runner's contract.
-
-  it("forwards `headCueGate` to plan[0]'s run input only — subsequent scenes get no cueGate", async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, headCueGate: 'monotonic-forward' });
-    expect(runCalls).toHaveLength(2);
-    expect(runCalls[0]?.scene.id).toBe('scene-a');
-    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
-    expect(runCalls[1]?.scene.id).toBe('scene-b');
-    expect(runCalls[1]?.cueGate).toBeUndefined();
-    // Parallel to `beat` / `repeat` / `hold` / `range` / `behavior`:
-    // the key is OMITTED from the input object when absent, not set
-    // to `undefined`. The runner can branch on `'cueGate' in input`
-    // rather than checking for `undefined`.
-    expect('cueGate' in (runCalls[1] as object)).toBe(false);
-  });
-
-  it('does not attach `cueGate` when `headCueGate` is absent', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(1);
-    expect('cueGate' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('does not interpret `headCueGate` itself — a runner that ignores the hint and returns normally does not error', async () => {
-    // Resolver delegates monotonic-forward cue gating to the runner
-    // per ADR-020. A runner that receives `cueGate: 'monotonic-forward'`
-    // and returns void normally (e.g. the placeholder runner that has
-    // no real timeline and no real audio engine to gate cues against)
-    // must NOT cause the resolver to throw or skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
-    await expect(
-      resolveComposition({
-        ...options,
-        headCueGate: 'monotonic-forward',
-      }),
-    ).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
-  });
-
-  it('forwards `headCueGate` alongside `headBeat`, `headRepeat`, and `headHold` independently — all four reach plan[0] without coupling', async () => {
-    // `headCueGate`, `headBeat`, `headRepeat`, and `headHold` are
-    // four independent head-only forwardings. A regression that
-    // paired them — e.g. requiring `headBeat` whenever `headCueGate`
-    // is set, or dropping `headCueGate` when `headHold` is also
-    // supplied — would break valid combinations a programmatic
-    // bridge caller (test harness, future export pipeline) can
-    // legitimately request. The URL grammar makes the parent modes
-    // (`mode=loop`, `mode=paused`, `mode=scrub`) mutually exclusive
-    // (mode is a single field), so production callers won't supply
-    // more than one of `headRepeat` / `headHold` / `headCueGate`
-    // at once; the test exercises a programmatic caller scenario to
-    // pin that the resolver does not invent coupling between the
-    // four head-only fields. All four must reach plan[0] when all
-    // four are supplied — this is also the regression test for
-    // URLs like `?scene=x&beat=hook&mode=scrub` (scrub + named
-    // beat — exactly what PUL-F017's "to named beats" clause
-    // anticipates) which only sets `headBeat` + `headCueGate`.
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({
-      ...options,
-      headBeat: 'hook',
-      onBeatMissing: () => undefined,
-      headRepeat: 'until-aborted',
-      headHold: 'first-frame',
-      headCueGate: 'monotonic-forward',
-    });
-    expect(runCalls).toHaveLength(1);
-    expect(runCalls[0]?.beat).toBe('hook');
-    expect(runCalls[0]?.repeat).toBe('until-aborted');
-    expect(runCalls[0]?.hold).toBe('first-frame');
-    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
-  });
-});
-
-describe('URL screenshot-mode runner capture-hint forwarding (PUL-F018)', () => {
-  // PUL-F018: in `mode=screenshot`, the runtime SHALL render the
-  // addressed scene at the addressed beat (or first frame if no beat)
-  // with all asset preloads resolved, no animation in progress, all
-  // audio suppressed, and any randomness sourced from a deterministic
-  // seed. ADR-021 places mode dispatch at the loader and the
-  // capture-bundle semantics at the timeline-runner adapter. The
-  // resolver's job is forwarding the URL-derived `headScreenshot`
-  // hint to the head scene's run input only; subsequent scenes in a
-  // composition slice do not receive `screenshot` because under
-  // screenshot the slice is truncated upstream and the captured frame
-  // belongs to one scene. The resolver does NOT interpret
-  // `headScreenshot` itself; honoring "freeze at addressed frame, all
-  // audio suppressed, deterministic randomness" is the runner's
-  // contract.
-
-  it("forwards `headScreenshot` to plan[0]'s run input only — subsequent scenes get no screenshot", async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({ ...options, headScreenshot: 'capture' });
-    expect(runCalls).toHaveLength(2);
-    expect(runCalls[0]?.scene.id).toBe('scene-a');
-    expect(runCalls[0]?.screenshot).toBe('capture');
-    expect(runCalls[1]?.scene.id).toBe('scene-b');
-    expect(runCalls[1]?.screenshot).toBeUndefined();
-    // Parallel to `beat` / `repeat` / `hold` / `cueGate` / `range` /
-    // `behavior`: the key is OMITTED from the input object when
-    // absent, not set to `undefined`. The runner can branch on
-    // `'screenshot' in input` rather than checking for `undefined`.
-    expect('screenshot' in (runCalls[1] as object)).toBe(false);
-  });
-
-  it('does not attach `screenshot` when `headScreenshot` is absent', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(1);
-    expect('screenshot' in (runCalls[0] as object)).toBe(false);
-  });
-
-  it('does not interpret `headScreenshot` itself — a runner that ignores the hint and returns normally does not error', async () => {
-    // Resolver delegates the screenshot capture bundle (frame freeze,
-    // audio suppression, deterministic seed) to the runner per
-    // ADR-021. A runner that receives `screenshot: 'capture'` and
-    // returns void normally (e.g. the placeholder runner that has no
-    // real timeline, no audio engine, and no scene-side randomness)
-    // must NOT cause the resolver to throw or skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
-    await expect(
-      resolveComposition({
-        ...options,
-        headScreenshot: 'capture',
-      }),
-    ).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
-  });
-
-  it('forwards `headScreenshot` alongside `headBeat`, `headRepeat`, `headHold`, and `headCueGate` independently — all five reach plan[0] without coupling', async () => {
-    // `headScreenshot`, `headBeat`, `headRepeat`, `headHold`, and
-    // `headCueGate` are five independent head-only forwardings. A
-    // regression that paired them — e.g. dropping `headBeat` when
-    // `headScreenshot` is set, or dropping `headScreenshot` when
-    // `headHold` is also supplied — would break valid combinations a
-    // programmatic bridge caller (test harness, future export
-    // pipeline) can legitimately request. The URL grammar makes the
-    // parent modes (`mode=loop`, `mode=paused`, `mode=scrub`,
-    // `mode=screenshot`) mutually exclusive (mode is a single
-    // field), so production callers won't supply more than one of
-    // `headRepeat` / `headHold` / `headCueGate` / `headScreenshot`
-    // at once; the test exercises a programmatic caller scenario to
-    // pin that the resolver does not invent coupling between the
-    // five head-only fields. All five must reach plan[0] when all
-    // five are supplied — this is also the regression test for URLs
-    // like `?scene=x&beat=midpoint&mode=screenshot` (screenshot at
-    // a named beat — the natural deterministic-frame-capture
-    // anchor PUL-F018 names directly) which only sets `headBeat` +
-    // `headScreenshot`.
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition({
-      ...options,
-      headBeat: 'midpoint',
-      onBeatMissing: () => undefined,
-      headRepeat: 'until-aborted',
-      headHold: 'first-frame',
-      headCueGate: 'monotonic-forward',
-      headScreenshot: 'capture',
-    });
-    expect(runCalls).toHaveLength(1);
-    expect(runCalls[0]?.beat).toBe('midpoint');
-    expect(runCalls[0]?.repeat).toBe('until-aborted');
-    expect(runCalls[0]?.hold).toBe('first-frame');
-    expect(runCalls[0]?.cueGate).toBe('monotonic-forward');
-    expect(runCalls[0]?.screenshot).toBe('capture');
-  });
-});
-
-describe('URL present-mode runner presenter forwarding (PUL-F020 / PUL-F021)', () => {
-  // PUL-F020: in `mode=present`, the runtime SHALL accept presenter
-  // input (advance, hold, skip-forward, skip-backward); beat
-  // progression SHALL be interruptible without breaking timeline
-  // state. PUL-F021 (ADR-024): the runtime SHALL also accept `pause`
-  // / `resume` presenter input on this same seam — pause/resume is
-  // not a new mode, source, controller, or schema, just two more
-  // command kinds the resolver forwards to whichever scene's runner
-  // is currently active. ADR-023 places mode dispatch at the loader
-  // and the command-translation semantics (a kind → GSAP transport
-  // call) at the timeline-runner adapter. Unlike the head-only
-  // forwardings (`headBeat` / `headRepeat` / `headHold` /
-  // `headCueGate` / `headScreenshot`), `presenter` is forwarded to
-  // EVERY scene's run input because mode=present runs the FULL
-  // composition slice (no truncation) and presenter commands act on
-  // whichever scene is currently active. The shape is analogous to
-  // `signal`, not to the head-only hints. The resolver does NOT
-  // interpret the controller itself; subscribing and translating
-  // commands is the runner's contract.
-
-  it('forwards a `presenter` controller to EVERY scene in a multi-scene plan (NOT head-only) — commands delegate from the navigation controller', async () => {
-    // The resolver wraps the navigation-level controller in a
-    // PER-SCENE child controller (see ADR-023). The runner sees a
-    // distinct wrapper per scene, not the navigation controller
-    // directly — this is the per-scene-end safety net that detaches
-    // a forgotten subscription before the next scene starts. The
-    // wrapper still delegates to the source: a command emitted via
-    // the source reaches the wrapper subscriber.
-    const sourceHandlers = new Set<
-      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
-    >();
-    const source = {
-      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
-        sourceHandlers.add(handler);
-        return () => {
-          sourceHandlers.delete(handler);
-        };
-      },
+describe('resolveComposition — mount phase', () => {
+  it('preloads and creates every scene in manifest order, NOT torn down between steps', async () => {
+    const log: string[] = [];
+    const preloadAssets = (s: SceneModule): void => {
+      log.push(`preload:${s.id}`);
     };
-    const ac = new AbortController();
-    const presenter = createPresenterController(source, ac.signal);
-
-    const runReceivedKinds: { sceneId: string; kinds: string[] }[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }, { id: 'scene-c' }],
-      manifest: ['scene-a', 'scene-b', 'scene-c'],
-      runTimeline: (input) => {
-        const kinds: string[] = [];
-        // Subscribe; must observe a command emitted DURING this
-        // scene. Scene-id-keyed so the test assertion stays
-        // distinct per scene.
-        input.presenter?.subscribe((cmd) => kinds.push(cmd.kind));
-        // Emit while the wrapper subscription is live.
-        for (const h of sourceHandlers) h({ kind: 'advance' });
-        runReceivedKinds.push({ sceneId: input.scene.id, kinds });
-      },
+    const { adapter } = recordingTimeline({ kind: 'resolve' }, log);
+    await run({
+      scenes: [recordingScene('a', log), recordingScene('b', log)],
+      manifest: ['a', 'b'],
+      preloadAssets,
+      timeline: adapter,
     });
-    await resolveComposition({ ...options, presenter });
-    expect(runReceivedKinds).toEqual([
-      { sceneId: 'scene-a', kinds: ['advance'] },
-      { sceneId: 'scene-b', kinds: ['advance'] },
-      { sceneId: 'scene-c', kinds: ['advance'] },
+    expect(log).toEqual([
+      'preload:a',
+      'create:a',
+      'preload:b',
+      'create:b',
+      'timeline:a',
+      'timeline:b',
+      'run',
+      'cleanup:b',
+      'cleanup:a',
     ]);
   });
 
-  it('forwards the PUL-F021 pause and resume command kinds to the active scene runner (ADR-024)', async () => {
-    // PUL-F021 (ADR-024): `pause` / `resume` flow through the same
-    // per-scene presenter wrapper as the PUL-F020 kinds. The resolver
-    // does not interpret them — translating `pause` into a GSAP
-    // `pause()`, `resume` into playhead-preserving `play()`, and how
-    // those compose with the beat-pacing kinds (ADR-024
-    // *Cross-command precedence*) is the runner's job — but it must
-    // deliver them to the run input of the scene whose timeline is
-    // currently active, which is what this test pins.
-    const sourceHandlers = new Set<
-      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
-    >();
-    const source = {
-      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
-        sourceHandlers.add(handler);
-        return () => {
-          sourceHandlers.delete(handler);
-        };
-      },
+  it('aborts and tears down the scenes mounted so far when a preload throws (the failing scene is not created or cleaned)', async () => {
+    const log: string[] = [];
+    const preloadAssets = (s: SceneModule): void => {
+      if (s.id === 'b') throw new Error('preload kaboom');
+      log.push(`preload:${s.id}`);
     };
-    const ac = new AbortController();
-    const presenter = createPresenterController(source, ac.signal);
+    await expect(
+      run({
+        scenes: [recordingScene('a', log), recordingScene('b', log), recordingScene('c', log)],
+        manifest: ['a', 'b', 'c'],
+        preloadAssets,
+      }),
+    ).rejects.toThrow(
+      'composition resolution failed: scene "b" preloadAssets threw: preload kaboom',
+    );
+    // a was mounted then cleaned; b never created/cleaned; c never touched.
+    expect(log).toEqual(['preload:a', 'create:a', 'cleanup:a']);
+  });
 
-    const runReceivedKinds: { sceneId: string; kinds: string[] }[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        const kinds: string[] = [];
-        input.presenter?.subscribe((cmd) => kinds.push(cmd.kind));
-        // Emit a pause then a resume while this scene's wrapper
-        // subscription is live.
-        for (const h of sourceHandlers) h({ kind: 'pause' });
-        for (const h of sourceHandlers) h({ kind: 'resume' });
-        runReceivedKinds.push({ sceneId: input.scene.id, kinds });
-      },
+  it('aborts and tears down every mounted scene (including the failing one) when a create throws', async () => {
+    const log: string[] = [];
+    await expect(
+      run({
+        scenes: [
+          recordingScene('a', log),
+          recordingScene('b', log, {
+            create: () => {
+              log.push('create:b');
+              throw new Error('create kaboom');
+            },
+          }),
+          recordingScene('c', log),
+        ],
+        manifest: ['a', 'b', 'c'],
+      }),
+    ).rejects.toThrow('composition resolution failed: scene "b" create threw: create kaboom');
+    // a + b mounted (b's create attempted) → cleaned in reverse; c never touched.
+    expect(log).toEqual(['create:a', 'create:b', 'cleanup:b', 'cleanup:a']);
+  });
+
+  it('does not start the composition when the signal is already aborted', async () => {
+    const log: string[] = [];
+    const preloadAssets = vi.fn((): void => undefined);
+    await expect(
+      run({
+        scenes: [recordingScene('a', log)],
+        manifest: ['a'],
+        preloadAssets,
+        signal: aborted('user navigated away'),
+      }),
+    ).rejects.toThrow('composition resolution failed: aborted before the composition started');
+    expect(preloadAssets).not.toHaveBeenCalled();
+    expect(log).toEqual([]);
+  });
+
+  it('aborts after a slow preload, before the scene is activated', async () => {
+    const log: string[] = [];
+    const controller = new AbortController();
+    const preloadAssets = async (s: SceneModule): Promise<void> => {
+      log.push(`preload:${s.id}`);
+      if (s.id === 'a') controller.abort();
+      await flushMicrotasks();
+    };
+    await expect(
+      run({
+        scenes: [recordingScene('a', log), recordingScene('b', log)],
+        manifest: ['a', 'b'],
+        preloadAssets,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(
+      'composition resolution failed: aborted after preloading "a", before scene activation',
+    );
+    // a's preload ran; a's create never ran (aborted before activation); nothing to clean.
+    expect(log).toEqual(['preload:a']);
+  });
+
+  it('aborts after a scene was mounted, before the next is preloaded', async () => {
+    const log: string[] = [];
+    const controller = new AbortController();
+    await expect(
+      run({
+        scenes: [
+          recordingScene('a', log, {
+            create: async () => {
+              log.push('create:a');
+              controller.abort();
+              await flushMicrotasks();
+            },
+          }),
+          recordingScene('b', log),
+        ],
+        manifest: ['a', 'b'],
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow('composition resolution failed: aborted after mounting "a"');
+    // a mounted → cleaned; b never touched.
+    expect(log).toEqual(['create:a', 'cleanup:a']);
+  });
+});
+
+describe('resolveComposition — compose phase', () => {
+  it('hands the scene timeline values (and per-entry overrides) to the adapter as segments', async () => {
+    const tlA = { handle: 'a-timeline' };
+    const tlB = { handle: 'b-timeline' };
+    const { adapter, calls } = recordingTimeline();
+    await run({
+      scenes: [scene('a', { timeline: () => tlA }), scene('b', { timeline: () => tlB })],
+      manifest: ['a', { id: 'b', range: ['intro', 'outro'], behavior: { speed: 2 } }],
+      timeline: adapter,
     });
-    await resolveComposition({ ...options, presenter });
-    expect(runReceivedKinds).toEqual([
-      { sceneId: 'scene-a', kinds: ['pause', 'resume'] },
-      { sceneId: 'scene-b', kinds: ['pause', 'resume'] },
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.segments).toEqual([
+      { id: 'a', timeline: tlA },
+      { id: 'b', timeline: tlB, range: ['intro', 'outro'], behavior: { speed: 2 } },
     ]);
   });
 
-  it('detaches scene-A subscriptions before scene-B runs (per-scene auto-cleanup; runner that forgets to unsubscribe cannot leak across scenes)', async () => {
-    // Codex review: the navigation-level controller's auto-detach
-    // only fires on navigation abort. Without per-scene wrapping,
-    // scene-A's runner that forgets to unsubscribe would keep
-    // receiving commands during scene-B, violating "presenter
-    // commands act on the active scene."
-    const sourceHandlers = new Set<
-      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
-    >();
-    const source = {
-      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
-        sourceHandlers.add(handler);
-        return () => {
-          sourceHandlers.delete(handler);
-        };
-      },
-    };
-    const ac = new AbortController();
-    const presenter = createPresenterController(source, ac.signal);
-
-    // Each scene's "runner" subscribes and never unsubscribes
-    // explicitly. The per-scene wrapper must release the
-    // subscription on its own when the scene exits.
-    const sceneACommands: string[] = [];
-    const sceneBCommands: string[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        if (input.scene.id === 'scene-a') {
-          input.presenter?.subscribe((cmd) => sceneACommands.push(cmd.kind));
-        } else {
-          input.presenter?.subscribe((cmd) => sceneBCommands.push(cmd.kind));
-          // Emit AFTER subscribing during scene-b. If scene-a's
-          // subscription leaked, sceneACommands would now grow.
-          for (const h of sourceHandlers) h({ kind: 'advance' });
-        }
-      },
+  it('does NOT await the scene timeline value — a thenable reaches the adapter as-is', async () => {
+    // A GSAP timeline (ADR-003 / ADR-025) is itself thenable; awaiting it
+    // would block on completion. Modelled here with a thenable that never
+    // settles: if the resolver awaited it, `resolveComposition` would hang.
+    // biome-ignore lint/suspicious/noThenProperty: intentional thenable — it stands in for a GSAP timeline the resolver must not await.
+    const neverSettles = { then: () => undefined } as unknown;
+    const { adapter, calls } = recordingTimeline();
+    await run({
+      scenes: [scene('a', { timeline: () => neverSettles })],
+      manifest: ['a'],
+      timeline: adapter,
     });
-    await resolveComposition({ ...options, presenter });
-    expect(sceneACommands).toEqual([]);
-    expect(sceneBCommands).toEqual(['advance']);
+    expect(calls[0]?.segments).toEqual([{ id: 'a', timeline: neverSettles }]);
   });
 
-  it('omits `presenter` from every run input when not supplied (no `presenter in input` key)', async () => {
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
-      manifest: ['scene-a', 'scene-b'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    await resolveComposition(options);
-    expect(runCalls).toHaveLength(2);
-    for (const call of runCalls) {
-      expect('presenter' in (call as object)).toBe(false);
-    }
+  it('aborts and tears down every mounted scene when a timeline factory throws', async () => {
+    const log: string[] = [];
+    await expect(
+      run({
+        scenes: [
+          recordingScene('a', log),
+          recordingScene('b', log, {
+            timeline: () => {
+              log.push('timeline:b');
+              throw new Error('timeline kaboom');
+            },
+          }),
+          recordingScene('c', log),
+        ],
+        manifest: ['a', 'b', 'c'],
+      }),
+    ).rejects.toThrow('composition resolution failed: scene "b" timeline threw: timeline kaboom');
+    // all three mounted (mount phase completed) → cleaned in reverse.
+    expect(log).toEqual([
+      'create:a',
+      'create:b',
+      'create:c',
+      'timeline:a',
+      'timeline:b',
+      'cleanup:c',
+      'cleanup:b',
+      'cleanup:a',
+    ]);
   });
+});
 
-  it('does not interpret the controller — a runner that ignores `presenter` and returns normally does not error', async () => {
-    // Resolver delegates command translation to the runner per
-    // ADR-023. A runner that receives `input.presenter` and never
-    // subscribes (e.g. the placeholder runner that has no real
-    // timeline to drive) must NOT cause the resolver to throw or
-    // skip cleanup.
-    const cleanupCalls: string[] = [];
-    const { options } = buildHarness({
-      scenes: [
-        {
-          id: 'scene-a',
-          cleanup: () => {
-            cleanupCalls.push('scene-a');
-          },
-        },
-      ],
-      manifest: ['scene-a'],
-      runTimeline: () => undefined,
-    });
-    const ac = new AbortController();
-    const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
-    await expect(resolveComposition({ ...options, presenter })).resolves.toBeUndefined();
-    expect(cleanupCalls).toEqual(['scene-a']);
-  });
-
-  it('forwards `presenter` alongside `signal` and the head-only hints independently — every channel reaches the runner without coupling', async () => {
-    // `presenter`, `signal`, and the head-only forwardings are
-    // independent channels. A regression that paired them — e.g.
-    // dropping `presenter` when `headRepeat` is also supplied —
-    // would silently disable presenter input under combinations a
-    // direct bridge caller can request. Pinning the independence
-    // forces the resolver to forward each channel on its own
-    // gating condition.
-    const runCalls: SceneTimelineRunInput[] = [];
-    const { options } = buildHarness({
-      scenes: [{ id: 'scene-a' }],
-      manifest: ['scene-a'],
-      runTimeline: (input) => {
-        runCalls.push(input);
-      },
-    });
-    const ac = new AbortController();
-    const presenter = createPresenterController({ subscribe: () => () => undefined }, ac.signal);
-    const lifecycleSignal = new AbortController().signal;
-    await resolveComposition({
-      ...options,
-      signal: lifecycleSignal,
-      headBeat: 'midpoint',
-      onBeatMissing: () => undefined,
+describe('resolveComposition — run phase', () => {
+  it('forwards the head hints to the adapter, omitting absent keys', async () => {
+    const onBeatMissing = (): void => undefined;
+    const { adapter, calls } = recordingTimeline();
+    const controller = new AbortController();
+    await run({
+      scenes: [scene('a')],
+      manifest: ['a'],
+      timeline: adapter,
+      signal: controller.signal,
+      headBeat: 'hook',
+      onBeatMissing,
       headRepeat: 'until-aborted',
-      presenter,
     });
-    expect(runCalls).toHaveLength(1);
-    // Per ADR-023 the runner sees a per-scene wrapper, not the
-    // navigation controller directly. Assert the wrapper was
-    // present alongside the other independent channels — they
-    // must all coexist on the same run input.
-    expect(runCalls[0]?.presenter).toBeDefined();
-    expect(runCalls[0]?.presenter).not.toBe(presenter);
-    expect(runCalls[0]?.signal).toBe(lifecycleSignal);
-    expect(runCalls[0]?.beat).toBe('midpoint');
-    expect(runCalls[0]?.repeat).toBe('until-aborted');
+    expect(calls[0]?.opts).toEqual({
+      signal: controller.signal,
+      headBeat: 'hook',
+      onBeatMissing,
+      headRepeat: 'until-aborted',
+    });
+  });
+
+  it('passes only the timeline and segments when no hints are supplied', async () => {
+    const { adapter, calls } = recordingTimeline();
+    await run({ scenes: [scene('a')], manifest: ['a'], timeline: adapter });
+    expect(calls[0]?.opts).toEqual({});
+  });
+
+  it('tears every scene down and wraps the rejection when the adapter run rejects', async () => {
+    const log: string[] = [];
+    const cause = new Error('master kaboom');
+    await expect(
+      run({
+        scenes: [recordingScene('a', log), recordingScene('b', log)],
+        manifest: ['a', 'b'],
+        timeline: recordingTimeline({ kind: 'reject', error: cause }, log).adapter,
+      }),
+    ).rejects.toThrow('composition resolution failed: composition timeline failed: master kaboom');
+    expect(log).toEqual([
+      'create:a',
+      'create:b',
+      'timeline:a',
+      'timeline:b',
+      'run',
+      'cleanup:b',
+      'cleanup:a',
+    ]);
+  });
+
+  it('preserves the original error as Error.cause when the adapter run rejects', async () => {
+    const cause = new Error('master kaboom');
+    let caught: unknown;
+    await run({
+      scenes: [scene('a')],
+      manifest: ['a'],
+      timeline: recordingTimeline({ kind: 'reject', error: cause }).adapter,
+    }).then(
+      () => expect.unreachable('resolveComposition should have rejected'),
+      (err: unknown) => {
+        caught = err;
+      },
+    );
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBe(cause);
+  });
+
+  it('tears every scene down then surfaces an aborted error when the navigation aborts during playback', async () => {
+    const log: string[] = [];
+    const controller = new AbortController();
+    const promise = run({
+      scenes: [recordingScene('a', log), recordingScene('b', log)],
+      manifest: ['a', 'b'],
+      timeline: recordingTimeline({ kind: 'park' }, log).adapter,
+      signal: controller.signal,
+    });
+    await flushMicrotasks();
+    expect(log).toEqual(['create:a', 'create:b', 'timeline:a', 'timeline:b', 'run']);
+    controller.abort('navigated away');
+    await expect(promise).rejects.toThrow(
+      'composition resolution failed: aborted during composition playback',
+    );
+    expect(log).toEqual([
+      'create:a',
+      'create:b',
+      'timeline:a',
+      'timeline:b',
+      'run',
+      'cleanup:b',
+      'cleanup:a',
+    ]);
+  });
+});
+
+describe('resolveComposition — cleanup phase', () => {
+  it('tears every scene down in reverse mount order on the happy path', async () => {
+    const log: string[] = [];
+    await run({
+      scenes: [recordingScene('a', log), recordingScene('b', log), recordingScene('c', log)],
+      manifest: ['a', 'b', 'c'],
+    });
+    expect(log.slice(-3)).toEqual(['cleanup:c', 'cleanup:b', 'cleanup:a']);
+  });
+
+  it('runs every scene cleanup even if an earlier one throws, then re-raises an AggregateError', async () => {
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          cleanup: () => {
+            log.push('cleanup:b');
+            throw new Error('cleanup-b kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    // c, b, a all cleaned (b threw but a still ran).
+    expect(log.slice(-3)).toEqual(['cleanup:c', 'cleanup:b', 'cleanup:a']);
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as Error).message).toContain(
+      'composition completed but 1 cleanup hook(s) threw',
+    );
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(((caught as AggregateError).errors[0] as Error).message).toBe(
+      'composition resolution failed: scene "b" cleanup threw: cleanup-b kaboom',
+    );
+  });
+
+  it('aggregates the phase error and the cleanup error(s) when both fail (phase error first)', async () => {
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log, {
+          cleanup: () => {
+            log.push('cleanup:a');
+            throw new Error('cleanup-a kaboom');
+          },
+        }),
+        recordingScene('b', log, {
+          timeline: () => {
+            log.push('timeline:b');
+            throw new Error('timeline-b kaboom');
+          },
+        }),
+      ],
+      manifest: ['a', 'b'],
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeInstanceOf(AggregateError);
+    const errors = (caught as AggregateError).errors;
+    expect(errors).toHaveLength(2);
+    expect((errors[0] as Error).message).toBe(
+      'composition resolution failed: scene "b" timeline threw: timeline-b kaboom',
+    );
+    expect((errors[1] as Error).message).toBe(
+      'composition resolution failed: scene "a" cleanup threw: cleanup-a kaboom',
+    );
+    // both scenes' cleanup attempted.
+    expect(log.filter((e) => e.startsWith('cleanup:')).sort()).toEqual(['cleanup:a', 'cleanup:b']);
+  });
+
+  it('reports a cleanup failure during an aborted-playback exit (not suppressed by the abort)', async () => {
+    const log: string[] = [];
+    const controller = new AbortController();
+    let caught: unknown;
+    const promise = run({
+      scenes: [
+        recordingScene('a', log, {
+          cleanup: () => {
+            log.push('cleanup:a');
+            throw new Error('cleanup-a kaboom');
+          },
+        }),
+      ],
+      manifest: ['a'],
+      timeline: recordingTimeline({ kind: 'park' }).adapter,
+      signal: controller.signal,
+    });
+    await flushMicrotasks();
+    controller.abort();
+    await promise.catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as Error).message).toContain(
+      'composition aborted during playback with 1 cleanup failure(s)',
+    );
+  });
+
+  it('does not call any cleanup when no scene was mounted (already-aborted navigation)', async () => {
+    const log: string[] = [];
+    await run({
+      scenes: [recordingScene('a', log)],
+      manifest: ['a'],
+      signal: aborted(),
+    }).catch(() => undefined);
+    expect(log).toEqual([]);
   });
 });

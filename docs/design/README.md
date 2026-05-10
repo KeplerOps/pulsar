@@ -15,6 +15,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-f018-screenshot-mode-preflight.md](pul-f018-screenshot-mode-preflight.md) | Guardrails for implementing deterministic screenshot-mode capture. |
 | [pul-f020-presenter-controls-preflight.md](pul-f020-presenter-controls-preflight.md) | Guardrails for implementing presenter advance, hold, and skip commands. |
 | [pul-f021-pause-resume-preflight.md](pul-f021-pause-resume-preflight.md) | Guardrails for implementing presenter pause and resume commands. |
+| [pul-f022-timeline-orchestration-preflight.md](pul-f022-timeline-orchestration-preflight.md) | Guardrails for implementing GSAP-backed master timeline orchestration. |
 
 Design docs are mutable. Decisions are captured as ADRs (immutable once
 accepted).
