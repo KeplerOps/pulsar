@@ -218,7 +218,7 @@ export function parseSceneTimelineLabel(name: string): ParsedSceneTimelineLabel 
   if (!isKebabIdentifier(scene)) return null;
   // Occurrence 0 is the bare segment label (no `#` suffix), so a valid
   // suffix is a positive integer with no leading zero.
-  if (!/^[1-9][0-9]*$/.test(occurrenceText)) return null;
+  if (!/^[1-9]\d*$/.test(occurrenceText)) return null;
   return { scene, occurrence: Number(occurrenceText), label };
 }
 
