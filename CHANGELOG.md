@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Named timeline beats — PUL-F023 / ADR-026 — in `src/runtime/timeline.ts`:
+  a scene's GSAP timeline labels *are* its beats, and `assertSceneTimeline`
+  now validates every authored label is a kebab-case identifier (the same
+  `isKebabIdentifier` rule scenes, compositions, and assets obey — ADR-008
+  #1) sitting at a finite, non-negative time no later than the scene
+  timeline's duration, throwing the new `SceneTimelineLabelError` (a leaf
+  of the existing `TimelineError` hierarchy) naming the scene id, the
+  offending label, and (for a bad position) the time and the duration;
+  `composeMasterTimeline` runs this over every segment before it builds the
+  master, so a bad beat is rejected before any timeline is constructed —
+  killing every GSAP timeline the adapter was already handed so a
+  default-playing or repeating scene timeline cannot keep ticking after the
+  resolver unmounts the scenes — and surfaces through the composition
+  resolver's `composition timeline failed:` envelope with mandatory cleanup
+  (a scene-contract failure — distinct from ADR-015's non-fatal "unknown
+  URL beat" diagnostic). `MasterTimeline` is
+  now the canonical beat-query surface every runtime subsystem references
+  beats through: alongside `labels` / `hasLabel` / `seek` / `labelFor` it
+  gains `beats(): readonly MasterBeat[]` — the scene-authored beats in
+  playhead order (each `{ scene, occurrence, label, name, time }`; the
+  automatic segment-start anchors are transport anchors, not beats, and are
+  excluded), a fresh caller-owned array each call. New `parseSceneTimelineLabel`
+  is the single inverse of `sceneTimelineLabel` — decomposing a namespaced
+  master label into `{ scene, occurrence, label }` or `null` for a bare
+  anchor / malformed name — so no subsystem reparses the `:` / `#` namespace
+  grammar locally. URL `beat=` (PUL-F011 / ADR-015), presenter input
+  (PUL-F020 / ADR-023 / ADR-024), and scrub controls (PUL-F017 / ADR-020)
+  reference beats through this surface; they do not own beat parsing,
+  validation, or storage.
+- `docs/adrs/026-named-timeline-beats.md` — records the PUL-F023 decision:
+  beats are scene-local kebab GSAP labels (no `beats` field on `SceneModule`
+  — ADR-015); validated at compose time by `assertSceneTimeline`; namespaced
+  into the master per ADR-025; the canonical beat-query surface is
+  `MasterTimeline` (`labels` / `hasLabel` / `seek` / `labelFor` / `beats`)
+  plus `sceneTimelineLabel` / `parseSceneTimelineLabel`; URL / presenter /
+  scrub consumers reference beats through that surface rather than
+  re-implementing label handling. Indexed in `docs/adrs/README.md`.
 - `src/runtime/timeline.ts` — the GSAP timeline adapter (PUL-F022 /
   ADR-003 / ADR-025), the runtime's single GSAP boundary:
   `createTimelineEngine()` returns the `gsap` handle scenes receive as

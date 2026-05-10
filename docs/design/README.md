@@ -16,6 +16,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-f020-presenter-controls-preflight.md](pul-f020-presenter-controls-preflight.md) | Guardrails for implementing presenter advance, hold, and skip commands. |
 | [pul-f021-pause-resume-preflight.md](pul-f021-pause-resume-preflight.md) | Guardrails for implementing presenter pause and resume commands. |
 | [pul-f022-timeline-orchestration-preflight.md](pul-f022-timeline-orchestration-preflight.md) | Guardrails for implementing GSAP-backed master timeline orchestration. |
+| [pul-f023-named-timeline-beats-preflight.md](pul-f023-named-timeline-beats-preflight.md) | Guardrails for implementing named timeline beats. |
 
 Design docs are mutable. Decisions are captured as ADRs (immutable once
 accepted).

@@ -51,3 +51,4 @@ Each ADR includes:
 | [023](023-presenter-controls.md) | Presenter Controls — Per-Navigation Command Source at the Loader/Runner Seam | Accepted |
 | [024](024-presenter-pause-resume.md) | Presenter Pause/Resume — Runner-Owned Transport State on the Existing Presenter Command Seam | Accepted |
 | [025](025-timeline-adapter-boundary.md) | Timeline Adapter and Composition Master — Revising the Resolution Lifecycle | Accepted (supersedes ADR-002 §Resolution + ADR-011 ordering) |
+| [026](026-named-timeline-beats.md) | Named Timeline Beats — Scene-Local Kebab Labels, Validated at Compose Time, Referenced Through the Master | Accepted |
