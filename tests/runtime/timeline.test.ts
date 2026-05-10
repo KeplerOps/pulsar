@@ -328,15 +328,23 @@ describe('composeMasterTimeline', () => {
   });
 
   it('kills every scene timeline it was handed when compose rejects, leaking no live tickers', () => {
-    const good = sceneTl(1, { hook: 0.5 });
-    const bad = sceneTl(1, { 'Bad Label': 0.5 });
-    const goodKill = vi.spyOn(good, 'kill');
-    const badKill = vi.spyOn(bad, 'kill');
+    // Default-playing timelines (`gsap.timeline()`, not `{ paused: true }`)
+    // are children of the global timeline the moment they exist — i.e.
+    // already ticking. A rejected compose must detach (kill) every one it
+    // was handed so none keeps running after the resolver unmounts the scenes.
+    const liveChildren = () => gsap.globalTimeline.getChildren(false) as unknown[];
+    const live = gsap.timeline();
+    live.to({ v: 0 }, { v: 1, duration: 30 });
+    const bad = gsap.timeline();
+    bad.to({ v: 0 }, { v: 1, duration: 30 });
+    bad.addLabel('Bad Label', 0.5);
+    expect(liveChildren()).toContain(live);
+    expect(liveChildren()).toContain(bad);
     expect(() =>
-      composeMasterTimeline(engine, [segment('intro', good), segment('demo', bad)]),
+      composeMasterTimeline(engine, [segment('intro', live), segment('demo', bad)]),
     ).toThrow(SceneTimelineLabelError);
-    expect(goodKill).toHaveBeenCalled();
-    expect(badKill).toHaveBeenCalled();
+    expect(liveChildren()).not.toContain(live);
+    expect(liveChildren()).not.toContain(bad);
   });
 
   it('exposes a frozen labels snapshot that does not mutate the master', () => {
