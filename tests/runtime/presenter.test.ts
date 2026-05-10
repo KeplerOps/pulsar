@@ -1,4 +1,4 @@
-// Presenter controls — PUL-F020 / ADR-023.
+// Presenter controls — PUL-F020 / PUL-F021 / ADR-023 / ADR-024.
 //
 // Pure tests for the presenter command boundary: the discriminator
 // validator, the per-navigation controller's subscribe / unsubscribe
@@ -8,8 +8,16 @@
 // describe block.
 //
 // References:
-//  - PUL-F020 — runtime SHALL accept presenter input under mode=present.
+//  - PUL-F020 — runtime SHALL accept presenter input under mode=present
+//    (advance / hold / skip-forward / skip-backward).
+//  - PUL-F021 — runtime SHALL accept presenter input to pause the
+//    active timeline and resume from the same point. ADR-024 records
+//    that PUL-F021 extends this same command seam by adding the
+//    `pause` and `resume` kinds; "same point" playhead behavior is
+//    the future GSAP runner's contract, so PUL-F021 stays DRAFT until
+//    that runner lands.
 //  - ADR-023 — presenter command source / per-navigation controller.
+//  - ADR-024 — presenter pause/resume on the existing command seam.
 
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -41,12 +49,16 @@ const buildSource = (): {
 };
 
 describe('PRESENTER_COMMAND_KINDS', () => {
-  it('lists exactly the four kinds PUL-F020 names', () => {
+  it('lists exactly the six kinds PUL-F020 + PUL-F021 name', () => {
+    // PUL-F020: advance / hold / skip-forward / skip-backward.
+    // PUL-F021 (ADR-024): pause / resume extend the same allowlist.
     expect([...PRESENTER_COMMAND_KINDS]).toEqual([
       'advance',
       'hold',
       'skip-forward',
       'skip-backward',
+      'pause',
+      'resume',
     ]);
   });
 
@@ -55,17 +67,30 @@ describe('PRESENTER_COMMAND_KINDS', () => {
   });
 });
 
-describe('isPresenterCommand (PUL-F020 / ADR-023)', () => {
-  it('accepts every kind PUL-F020 names', () => {
+describe('isPresenterCommand (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
+  it('accepts every kind PUL-F020 + PUL-F021 name', () => {
     for (const kind of PRESENTER_COMMAND_KINDS) {
       expect(isPresenterCommand({ kind })).toBe(true);
     }
+  });
+
+  it('accepts the PUL-F021 pause and resume kinds explicitly', () => {
+    // Pin the PUL-F021 contract clause directly: the boundary admits
+    // `pause` (pause the active timeline) and `resume` (resume from
+    // the same point) so the workbench command source can deliver
+    // them to the runner. Independent of the loop above so a
+    // regression that dropped only these two kinds is caught.
+    expect(isPresenterCommand({ kind: 'pause' })).toBe(true);
+    expect(isPresenterCommand({ kind: 'resume' })).toBe(true);
   });
 
   it('rejects an unknown kind', () => {
     expect(isPresenterCommand({ kind: 'rewind' })).toBe(false);
     expect(isPresenterCommand({ kind: '' })).toBe(false);
     expect(isPresenterCommand({ kind: 'ADVANCE' })).toBe(false);
+    // `mode=paused` is a URL inspection mode (ADR-019), not a
+    // presenter command — its name must not be admitted as a kind.
+    expect(isPresenterCommand({ kind: 'paused' })).toBe(false);
   });
 
   it('rejects values that are not plain command objects', () => {
@@ -84,7 +109,7 @@ describe('isPresenterCommand (PUL-F020 / ADR-023)', () => {
   });
 });
 
-describe('createPresenterController (PUL-F020 / ADR-023)', () => {
+describe('createPresenterController (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
   it('forwards every valid command from the source to the subscribed handler', () => {
     const { source, emit } = buildSource();
     const controller = new AbortController();
@@ -94,7 +119,33 @@ describe('createPresenterController (PUL-F020 / ADR-023)', () => {
     for (const kind of PRESENTER_COMMAND_KINDS) {
       emit({ kind });
     }
-    expect(seen.map((c) => c.kind)).toEqual(['advance', 'hold', 'skip-forward', 'skip-backward']);
+    expect(seen.map((c) => c.kind)).toEqual([
+      'advance',
+      'hold',
+      'skip-forward',
+      'skip-backward',
+      'pause',
+      'resume',
+    ]);
+  });
+
+  it('forwards the PUL-F021 pause and resume commands to the runner (ADR-024)', () => {
+    // PUL-F021 contract clause at the seam: a workbench-supplied
+    // source emitting `pause` then `resume` reaches the runner's
+    // handler in order. How the runner translates them — native
+    // `pause()` / playhead-preserving `play()`, and how `pause` /
+    // `resume` compose with the beat-pacing kinds (ADR-024
+    // *Cross-command precedence*) — is the runner's contract, proved
+    // by the future GSAP runner's tests; the controller's job here is
+    // only to deliver the kinds, which is what this test pins.
+    const { source, emit } = buildSource();
+    const controller = new AbortController();
+    const ctl = createPresenterController(source, controller.signal);
+    const seen: PresenterCommand[] = [];
+    ctl.subscribe((cmd) => seen.push(cmd));
+    emit({ kind: 'pause' });
+    emit({ kind: 'resume' });
+    expect(seen.map((c) => c.kind)).toEqual(['pause', 'resume']);
   });
 
   it('returns an unsubscribe that detaches the handler from further emissions', () => {
