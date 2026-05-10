@@ -447,13 +447,19 @@ describe('resolveComposition — run phase', () => {
 
   it('preserves the original error as Error.cause when the adapter run rejects', async () => {
     const cause = new Error('master kaboom');
+    let caught: unknown;
     await run({
       scenes: [scene('a')],
       manifest: ['a'],
       timeline: recordingTimeline({ kind: 'reject', error: cause }).adapter,
-    }).catch((err: unknown) => {
-      expect((err as Error).cause).toBe(cause);
-    });
+    }).then(
+      () => expect.unreachable('resolveComposition should have rejected'),
+      (err: unknown) => {
+        caught = err;
+      },
+    );
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBe(cause);
   });
 
   it('tears every scene down then surfaces an aborted error when the navigation aborts during playback', async () => {
