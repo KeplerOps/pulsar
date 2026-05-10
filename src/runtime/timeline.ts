@@ -1,10 +1,22 @@
-// Timeline orchestration — PUL-F022. The GSAP timeline adapter.
+// Timeline orchestration — PUL-F022 / PUL-F023. The GSAP timeline adapter.
 //
-// This module is the GSAP boundary for the runtime (ADR-003, ADR-025):
+// This module is the GSAP boundary for the runtime (ADR-003, ADR-025)
+// and the canonical home of the named-beat grammar (ADR-008 #1, ADR-026):
 //
 //  - Scenes receive the GSAP instance as `ctx.gsap` (via
 //    `createTimelineEngine`) and construct their own timeline in
 //    `timeline(ctx)`; they do not import GSAP directly.
+//  - A scene's GSAP timeline labels ARE its beats (PUL-F023 / ADR-026):
+//    the agent-friendly time grammar from ADR-008. An authored beat must
+//    be a kebab-case identifier (the same rule scenes, compositions, and
+//    assets obey — ADR-008 #1; the kebab-only URL `beat=` grammar could
+//    never address anything else) at a finite, non-negative time no
+//    later than the scene timeline's duration (a beat outside the
+//    scene's content is not a usable moment). `assertSceneTimeline`
+//    enforces both when a scene timeline first enters the runtime, so a
+//    bad beat fails loudly instead of silently. There is no `beats`
+//    field on `SceneModule` — the labels in the returned timeline are
+//    the single source of truth (ADR-015).
 //  - `composeMasterTimeline` nests the scene timelines of an active
 //    composition slice into a single master GSAP timeline, copying each
 //    scene's labels into the master under a deterministic namespace so a
@@ -13,7 +25,13 @@
 //  - `MasterTimeline` is the transport surface PUL-F022 mandates: play,
 //    pause, seek (by time or named label), speed change (a validated
 //    positive multiplier — zero / negative / NaN / Infinity / non-number
-//    are rejected), named labels.
+//    are rejected), named labels. It is also the canonical beat-query
+//    surface PUL-F023 requires every runtime subsystem to reference
+//    beats through: `labels` (every master label), `hasLabel`, `seek`,
+//    `labelFor` (the master name for a scene-local beat), and `beats`
+//    (just the scene-authored beats, in playhead order). `labelFor` /
+//    `sceneTimelineLabel` build a master beat name; `parseSceneTimelineLabel`
+//    is the one inverse — no subsystem reparses namespaced label strings.
 //  - `createGsapCompositionTimeline` is the composition-level timeline
 //    adapter the workbench wires onto the composition resolver (ADR-011
 //    + ADR-025): the resolver mounts every scene in the slice, hands the
@@ -27,12 +45,18 @@
 // zero-duration segment rather than rejecting it.
 //
 // References:
-//  - ADR-003 — GSAP as the timeline engine; `ctx.gsap`.
+//  - ADR-003 — GSAP as the timeline engine; `ctx.gsap`; labels + seeking.
+//  - ADR-008 — agent-native authoring; #1 makes kebab-case binding on
+//    scenes, compositions, beats, and assets.
 //  - ADR-011 — composition resolver as a pure orchestrator with an
 //    injected timeline adapter; this module is that adapter.
 //  - ADR-025 — timeline adapter + composition master + the revised
 //    resolution lifecycle (mount-all → compose-master → play →
 //    cleanup-all) superseding ADR-002 §Resolution / ADR-011 ordering.
+//  - ADR-026 — named timeline beats: beats are scene-local kebab GSAP
+//    labels, validated at compose time, namespaced into the master, and
+//    referenced by URL / presenter / scrub through the `MasterTimeline`
+//    beat-query surface.
 //  - ADR-002 — the composition the master is built for.
 //  - ADR-015 / ADR-018 / ADR-019 / ADR-021 — the URL beat / loop /
 //    paused / screenshot head hints the adapter honors via the master's
@@ -44,6 +68,7 @@ import type {
   CompositionTimelineRunOptions,
   SceneTimelineSegment,
 } from './composition-resolver';
+import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 
 type GsapTimeline = InstanceType<typeof gsap.core.Timeline>;
 
@@ -68,6 +93,15 @@ export class TimelineError extends Error {}
 /** A scene's `timeline(ctx)` returned something that is not a GSAP timeline. */
 export class SceneTimelineTypeError extends TimelineError {}
 
+/**
+ * A scene timeline carries a label that is not a valid beat identifier.
+ * Beats share the kebab-case rule with every other Pulsar identifier
+ * (ADR-008 #1); a label that does not match it could never be addressed
+ * by the kebab-only URL `beat=` grammar, so it is a scene-contract
+ * violation rather than a silent dead end.
+ */
+export class SceneTimelineLabelError extends TimelineError {}
+
 /** A speed multiplier or repeat count handed to the master was out of range. */
 export class TimelineSpeedError extends TimelineError {}
 
@@ -78,11 +112,30 @@ const isGsapTimeline = (value: unknown): value is GsapTimeline =>
   value instanceof gsap.core.Timeline;
 
 /**
- * Validate the value a scene's `timeline(ctx)` returned. `null` /
- * `undefined` are accepted as "no timeline authored yet" (the
- * placeholder scene returns `null`); any other non-timeline value is a
- * scene-contract violation and throws {@link SceneTimelineTypeError}
- * with the scene id in the message.
+ * Validate the value a scene's `timeline(ctx)` returned, including its
+ * beats. `null` / `undefined` are accepted as "no timeline authored
+ * yet" (the placeholder scene returns `null`); any other non-timeline
+ * value is a scene-contract violation and throws
+ * {@link SceneTimelineTypeError} with the scene id in the message.
+ *
+ * When the value is a GSAP timeline, every label on it is treated as a
+ * named beat (PUL-F023 / ADR-026). Each must be:
+ *  - a kebab-case identifier — the same rule scenes, compositions, and
+ *    assets obey (ADR-008 #1, via `isKebabIdentifier`) — because the URL
+ *    `beat=` grammar is kebab-only and a name it cannot express could
+ *    never be addressed; and
+ *  - at a finite, non-negative time no later than the scene timeline's
+ *    duration — a beat past (or outside) the scene's content is not a
+ *    usable moment, and `seek` / `beats()` would otherwise expose a
+ *    clamped or out-of-range position as canonical.
+ *
+ * The first non-conforming label throws {@link SceneTimelineLabelError}
+ * naming the scene id and the offending label (PUL-Q006).
+ * `composeMasterTimeline` runs this over every segment before it builds
+ * the master, so a bad beat is rejected before any timeline is
+ * constructed; the resolver wraps the throw in its
+ * `composition timeline failed:` envelope and tears every mounted scene
+ * down (ADR-025).
  */
 export function assertSceneTimeline(
   value: unknown,
@@ -93,6 +146,19 @@ export function assertSceneTimeline(
     throw new SceneTimelineTypeError(
       `scene "${sceneId}" timeline is invalid: timeline(ctx) must return a GSAP timeline or null`,
     );
+  }
+  const duration = value.duration();
+  for (const [label, time] of Object.entries(value.labels)) {
+    if (!isKebabIdentifier(label)) {
+      throw new SceneTimelineLabelError(
+        `scene "${sceneId}" timeline label "${label}" is not a valid beat: beat labels must be lowercase kebab-case identifiers (${KEBAB_IDENTIFIER_FORM})`,
+      );
+    }
+    if (!Number.isFinite(time) || time < 0 || time > duration) {
+      throw new SceneTimelineLabelError(
+        `scene "${sceneId}" timeline beat "${label}" is at an invalid time ${time}: a beat time must be a finite number between 0 and the scene timeline duration (${duration}s)`,
+      );
+    }
   }
 }
 
@@ -118,10 +184,70 @@ export function sceneTimelineLabel(sceneId: string, localLabel: string, occurren
   return `${sceneSegmentLabel(sceneId, occurrence)}${SCENE_LABEL_SEPARATOR}${localLabel}`;
 }
 
+/** A namespaced master beat name decomposed into its parts. */
+export interface ParsedSceneTimelineLabel {
+  /** The scene id the beat belongs to. */
+  readonly scene: string;
+  /** Which occurrence of `scene` in the composition (0 = first / only). */
+  readonly occurrence: number;
+  /** The scene-local label name the scene author wrote. */
+  readonly label: string;
+}
+
 /**
- * The composed master timeline's transport surface (PUL-F022 C3). All
- * methods keep GSAP behind the boundary — callers never touch the
- * underlying timeline directly.
+ * The single inverse of {@link sceneTimelineLabel}: decompose a master
+ * label name into `{ scene, occurrence, label }`, or `null` when `name`
+ * is not a namespaced scene beat — a bare segment-start anchor
+ * (`scene-a`, `scene-a#1`), a malformed occurrence suffix, or anything
+ * whose scene / label parts are not kebab-case identifiers. Runtime
+ * subsystems that hold a master label name resolve it through here
+ * rather than reparsing the `:` / `#` grammar locally (ADR-026).
+ */
+export function parseSceneTimelineLabel(name: string): ParsedSceneTimelineLabel | null {
+  const sep = name.indexOf(SCENE_LABEL_SEPARATOR);
+  if (sep < 0) return null;
+  const segment = name.slice(0, sep);
+  const label = name.slice(sep + 1);
+  if (!isKebabIdentifier(label)) return null;
+  const hash = segment.indexOf('#');
+  if (hash < 0) {
+    return isKebabIdentifier(segment) ? { scene: segment, occurrence: 0, label } : null;
+  }
+  const scene = segment.slice(0, hash);
+  const occurrenceText = segment.slice(hash + 1);
+  if (!isKebabIdentifier(scene)) return null;
+  // Occurrence 0 is the bare segment label (no `#` suffix), so a valid
+  // suffix is a positive integer with no leading zero.
+  if (!/^[1-9][0-9]*$/.test(occurrenceText)) return null;
+  return { scene, occurrence: Number(occurrenceText), label };
+}
+
+/**
+ * One scene-authored beat on the composed master timeline (PUL-F023 /
+ * ADR-026): the scene-local label, the scene segment it belongs to and
+ * which occurrence of that scene, the namespaced master label name to
+ * `seek` to, and the beat's time on the master in seconds. The
+ * automatic segment-start anchors (`scene-a`, `scene-a#1`) are
+ * transport anchors, not authored beats, and are not represented here.
+ */
+export interface MasterBeat {
+  /** The scene segment this beat belongs to. */
+  readonly scene: string;
+  /** Which occurrence of `scene` in the composition (0 = first / only). */
+  readonly occurrence: number;
+  /** The scene-local label name the scene author wrote. */
+  readonly label: string;
+  /** The namespaced master label name (`<scene>:<label>` / `<scene>#<n>:<label>`). */
+  readonly name: string;
+  /** The beat's time on the master timeline, in seconds. */
+  readonly time: number;
+}
+
+/**
+ * The composed master timeline's transport surface (PUL-F022 C3) and
+ * the canonical beat-query surface (PUL-F023 / ADR-026). All methods
+ * keep GSAP behind the boundary — callers never touch the underlying
+ * timeline directly.
  */
 export interface MasterTimeline {
   /** Resume (or start) playback from the current playhead. */
@@ -160,6 +286,13 @@ export interface MasterTimeline {
   hasLabel(name: string): boolean;
   /** The master label name for a scene-local label (see {@link sceneTimelineLabel}). */
   labelFor(sceneId: string, localLabel: string, occurrence?: number): string;
+  /**
+   * The scene-authored beats on this master, in playhead order (ties
+   * broken by master label name for determinism). Excludes the
+   * automatic segment-start anchors — see {@link MasterBeat}. A fresh
+   * array each call; mutating it does not affect the master.
+   */
+  beats(): readonly MasterBeat[];
   /**
    * Register a handler invoked whenever the master reaches its end.
    * A master with `repeat(-1)` never reaches its end, and a paused /
@@ -253,6 +386,24 @@ class GsapMasterTimeline implements MasterTimeline {
     return sceneTimelineLabel(sceneId, localLabel, occurrence);
   }
 
+  beats(): readonly MasterBeat[] {
+    const beats: MasterBeat[] = [];
+    for (const [name, time] of Object.entries(this.#tl.labels)) {
+      const parsed = parseSceneTimelineLabel(name);
+      if (parsed === null) continue;
+      beats.push({ ...parsed, name, time });
+    }
+    beats.sort((a, b) => {
+      if (a.time !== b.time) return a.time - b.time;
+      // Tie-break on the (unique) master label name so the order is
+      // deterministic for beats that land at the same time.
+      if (a.name < b.name) return -1;
+      if (a.name > b.name) return 1;
+      return 0;
+    });
+    return beats;
+  }
+
   onComplete(handler: () => void): void {
     this.#tl.eventCallback('onComplete', handler);
   }
@@ -276,44 +427,62 @@ class GsapMasterTimeline implements MasterTimeline {
  * master drives it; the master itself stays paused at time 0 —
  * positioning and playback are the caller's (the adapter's) job.
  *
- * Throws {@link SceneTimelineTypeError} (before any timeline is built)
- * if a segment's timeline value is not a GSAP timeline or `null` /
- * `undefined`.
+ * Throws {@link SceneTimelineTypeError} (a non-GSAP-timeline segment
+ * value) or {@link SceneTimelineLabelError} (a malformed beat) — in
+ * both cases before any timeline is nested. The resolver has already
+ * called every scene's `timeline(ctx)` by the time this runs, so on
+ * rejection this kills every GSAP timeline it was handed: a scene that
+ * returned a default-playing or repeating timeline must not keep
+ * ticking on the GSAP root after the resolver unmounts the scenes.
+ * (A timeline already nested into a partial master is killed redundantly
+ * — GSAP's `kill()` is idempotent.)
  */
 export function composeMasterTimeline(
   engine: TimelineEngine,
   segments: readonly SceneTimelineSegment[],
 ): MasterTimeline {
-  for (const segment of segments) {
-    assertSceneTimeline(segment.timeline, segment.id);
-  }
-  const master = engine.gsap.timeline({ paused: true });
-  const occurrences = new Map<string, number>();
-  for (const segment of segments) {
-    const occurrence = occurrences.get(segment.id) ?? 0;
-    occurrences.set(segment.id, occurrence + 1);
-    // `master.duration()` before the add is the position the segment
-    // lands at (`'>'` appends at the current end) and the offset for
-    // the segment's labels in master coordinates.
-    const start = master.duration();
-    master.addLabel(sceneSegmentLabel(segment.id, occurrence), start);
-    const child = segment.timeline;
-    if (isGsapTimeline(child)) {
-      // Normalize the scene's timeline before nesting: pause it (a scene
-      // that returned a default-playing `gsap.timeline()` has already
-      // started ticking on the root) and reset its playhead to 0, then
-      // nest it and let the master drive it. After this the master owns
-      // all playback — no scene timeline runs outside it.
-      child.pause();
-      child.seek(0);
-      master.add(child, '>');
-      child.paused(false);
-      for (const [localLabel, localTime] of Object.entries(child.labels)) {
-        master.addLabel(sceneTimelineLabel(segment.id, localLabel, occurrence), start + localTime);
+  let master: GsapTimeline | undefined;
+  try {
+    for (const segment of segments) {
+      assertSceneTimeline(segment.timeline, segment.id);
+    }
+    master = engine.gsap.timeline({ paused: true });
+    const occurrences = new Map<string, number>();
+    for (const segment of segments) {
+      const occurrence = occurrences.get(segment.id) ?? 0;
+      occurrences.set(segment.id, occurrence + 1);
+      // `master.duration()` before the add is the position the segment
+      // lands at (`'>'` appends at the current end) and the offset for
+      // the segment's labels in master coordinates.
+      const start = master.duration();
+      master.addLabel(sceneSegmentLabel(segment.id, occurrence), start);
+      const child = segment.timeline;
+      if (isGsapTimeline(child)) {
+        // Normalize the scene's timeline before nesting: pause it (a scene
+        // that returned a default-playing `gsap.timeline()` has already
+        // started ticking on the root) and reset its playhead to 0, then
+        // nest it and let the master drive it. After this the master owns
+        // all playback — no scene timeline runs outside it.
+        child.pause();
+        child.seek(0);
+        master.add(child, '>');
+        child.paused(false);
+        for (const [localLabel, localTime] of Object.entries(child.labels)) {
+          master.addLabel(
+            sceneTimelineLabel(segment.id, localLabel, occurrence),
+            start + localTime,
+          );
+        }
       }
     }
+    return new GsapMasterTimeline(master);
+  } catch (err) {
+    master?.kill();
+    for (const segment of segments) {
+      if (isGsapTimeline(segment.timeline)) segment.timeline.kill();
+    }
+    throw err;
   }
-  return new GsapMasterTimeline(master);
 }
 
 /** Construction options for {@link createGsapCompositionTimeline}. */
@@ -417,7 +586,12 @@ function positionMaster(
  *  - `'play'`: play and resolve on natural completion, regardless of
  *    whether a cancellation signal is wired (a caller without a signal
  *    still gets playback and completion — the export pipeline before it
- *    owns abort, a test harness).
+ *    owns abort, a test harness). If positioning already left the master
+ *    at (or past) its finite end — e.g. `headBeat` seeked to a beat the
+ *    scene authored at its own end and that scene is the composition's
+ *    tail — `play()` would not re-fire `onComplete`, so resolve right
+ *    away instead of parking the resolver until an abort that may never
+ *    come.
  *  - `'loop'`: start (infinite) playback; only abort resolves it. With
  *    no signal there is nothing to wait for, so resolve immediately —
  *    a loop cannot be observed without cancellation.
@@ -446,6 +620,13 @@ function runMasterUntilDone(
       signal.addEventListener('abort', finish, { once: true });
     }
     if (mode === 'play') {
+      const duration = master.duration();
+      if (Number.isFinite(duration) && duration > 0 && master.time() >= duration) {
+        // Already at the end after positioning — playing from progress 1
+        // does not re-fire `onComplete` in GSAP. Treat it as completed.
+        finish();
+        return;
+      }
       // Arm the completion handler BEFORE play() so a very short master
       // cannot complete before the waiter is installed.
       master.onComplete(finish);
