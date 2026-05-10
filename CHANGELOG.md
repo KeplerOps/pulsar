@@ -9,6 +9,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/adrs/024-presenter-pause-resume.md` — records the PUL-F021
+  contract decision: presenter pause/resume extends the existing
+  ADR-023 presenter command seam rather than adding a new URL mode,
+  command source, controller, event bus, cleanup path, or pause-
+  specific schema. `pause` and `resume` join the existing
+  `PRESENTER_COMMAND_KINDS` allowlist; `isPresenterCommand` stays
+  the only command-boundary validator; loader mode-scoping is
+  unchanged (presenter input is `mode=present` only). Pause/resume
+  is runner-owned transport state: a conforming GSAP runner maps
+  `pause` to the active timeline's native pause (preserving the
+  current playhead — the "same point") and `resume` to playback
+  from that playhead, and pause/resume MUST NOT abort the
+  navigation, call `cleanup(ctx)`, remount the scene, rewrite
+  URL/history, or persist the playhead. Duplicate pause-while-paused
+  and resume-while-playing are idempotent no-ops at the runner.
+  ADR-024 also pins the cross-command precedence the runner must
+  honor: `pause` / `resume` are a transport-freeze gate orthogonal to
+  the PUL-F020 beat-pacing kinds (`hold` / `advance` / `skip-*`) —
+  `pause` snapshots beat-pacing state, `resume` restores it without
+  clearing a prior `hold`, and only `resume` unfreezes transport, so
+  seam-test-passing runners cannot diverge on hold vs. pause
+  semantics. PUL-F021 stays DRAFT until a real presenter UI source
+  and the GSAP runner land with end-to-end tests proving the
+  same-point behavior. Indexed in `docs/adrs/README.md`.
+- `docs/design/pul-f021-pause-resume-preflight.md` — codex
+  architecture preflight design context for PUL-F021: the boundary
+  (URL grammar / mode gate / command shape gate / lifecycle), the
+  required reuse of the ADR-023 incumbents, the cross-cutting layer
+  table, guardrails, the `PresenterCommand.kind` extensibility
+  point, non-goals, and anti-patterns. Indexed in
+  `docs/design/README.md`.
+- `src/runtime/presenter.ts` — `PRESENTER_COMMAND_KINDS` extended
+  with `pause` and `resume` (PUL-F021 / ADR-024). `PresenterCommand`,
+  `PresenterCommandKind`, `isPresenterCommand`, `PresenterCommandSource`,
+  `PresenterController`, and `createPresenterController` are unchanged
+  in shape — the new kinds flow through the existing validate-and-
+  forward boundary, frozen-defensive-copy semantics, per-handler
+  exception isolation, and abort-tied auto-cleanup. The runner (not
+  this module) translates `pause` / `resume` into GSAP transport
+  calls; the placeholder runner ignores them as it does the other
+  four kinds. The cross-command precedence — `pause` / `resume` as a
+  transport-freeze gate orthogonal to the beat-pacing kinds, only
+  `resume` unfreezing transport — is ADR-024's runner contract, not
+  enforced by the command seam. Module docstring updated to record
+  the PUL-F021 / ADR-024 contract, the cross-command precedence, and
+  the DRAFT-until-runner gate.
+- `src/runtime/composition-resolver.ts` — `SceneTimelineRunInput.presenter`
+  JSDoc updated: the command → timeline-operation mapping now lists
+  `pause → native pause at the current playhead` and `resume → resume
+  playback from that preserved playhead` (PUL-F021 "same point",
+  ADR-024); it records that `pause` / `resume` are a transport-freeze
+  gate orthogonal to the beat-pacing kinds (only `resume` unfreezes;
+  `pause` snapshots and `resume` restores beat-pacing state without
+  clearing a prior `hold`), points at ADR-024 *Cross-command
+  precedence* as the binding rule, and notes that duplicate
+  pause-while-paused / resume-while-playing are idempotent no-ops at
+  the runner. No behavior change — `pause` / `resume` ride the same
+  per-scene presenter wrapper as the PUL-F020 kinds.
+- `src/runtime/scene-loader.ts` / `src/runtime/scene-navigation.ts`
+  / `src/main.ts` — presenter-seam comments cross-reference PUL-F021
+  / ADR-024 (the command set grew by `pause` / `resume`; the loader
+  dispatch and bridge forwarding are unchanged). `src/main.ts` still
+  omits `presenterCommands`, so the seam stays structurally inert
+  until a presenter UI surface lands.
+- `tests/runtime/presenter.test.ts` — `PRESENTER_COMMAND_KINDS` now
+  pins the six-kind list; new assertions cover `isPresenterCommand`
+  admitting `pause` / `resume` (and rejecting `paused` — the URL
+  inspection mode is not a command); a new `createPresenterController`
+  case pins `pause` then `resume` reaching the runner in order.
+- `tests/runtime/scene-loader.test.ts` — the presenter-controls
+  dispatch every-kind delivery test now emits and asserts `pause` /
+  `resume` alongside the PUL-F020 four; the describe block documents
+  the PUL-F021 / ADR-024 extension.
+- `tests/runtime/composition-resolver.test.ts` — new case in the
+  present-mode presenter forwarding block pins `pause` / `resume`
+  reaching the per-scene wrapper subscriber of whichever scene's
+  runner is active; describe comment documents the PUL-F021 / ADR-024
+  extension.
 - `docs/adrs/023-presenter-controls.md` — records the PUL-F020
   contract layer for presenter input under `mode=present`. Defines
   the workbench-supplied long-lived `PresenterCommandSource`, the

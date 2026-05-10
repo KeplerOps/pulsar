@@ -2137,11 +2137,21 @@ describe('createSceneLoader (PUL-F008)', () => {
     });
   });
 
-  describe('presenter-controls dispatch (PUL-F020 / ADR-023)', () => {
+  describe('presenter-controls dispatch (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
     // PUL-F020 statement: in `mode=present`, the runtime SHALL accept
     // presenter input to advance to the next beat, hold the current
     // beat, skip forward, and skip backward. Beat progression SHALL
     // be interruptible without breaking timeline state.
+    //
+    // PUL-F021 statement: the runtime SHALL accept presenter input to
+    // pause the active timeline and SHALL accept input to resume from
+    // the same point. ADR-024 records that PUL-F021 extends THIS seam
+    // (not a new mode/source/controller/schema) by adding the `pause`
+    // and `resume` command kinds; the loader-side dispatch — mode
+    // scoping, controller construction, abort-tied auto-cleanup — is
+    // unchanged. "Same point" playhead behavior is the runner's
+    // contract, so PUL-F021, like PUL-F020, stays DRAFT until a real
+    // presenter UI and a GSAP runner land with end-to-end tests.
     //
     // This block pins the loader-side dispatch — the seam by which a
     // workbench-supplied `PresenterCommandSource` reaches the
@@ -2166,8 +2176,8 @@ describe('createSceneLoader (PUL-F008)', () => {
     //   - `input.presenter` is omitted under every non-present mode.
     //   - `input.presenter` is omitted when the workbench does not
     //     supply `presenterCommands` (graceful degradation).
-    //   - Commands flow through every kind PUL-F020 names (advance,
-    //     hold, skip-forward, skip-backward).
+    //   - Commands flow through every kind PUL-F020 + PUL-F021 name
+    //     (advance, hold, skip-forward, skip-backward, pause, resume).
     //   - Aborting the navigation tears down the runner's
     //     subscription so emissions after abort do not reach it
     //     (auto-cleanup on the per-navigation AbortSignal).
@@ -2345,7 +2355,7 @@ describe('createSceneLoader (PUL-F008)', () => {
       expect(seen).toEqual([{ presenterPresent: false }]);
     });
 
-    it('delivers every command kind PUL-F020 names (advance, hold, skip-forward, skip-backward) to the runner', async () => {
+    it('delivers every command kind PUL-F020 + PUL-F021 name (advance, hold, skip-forward, skip-backward, pause, resume) to the runner', async () => {
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
       const fake = buildFakeSource();
@@ -2383,11 +2393,21 @@ describe('createSceneLoader (PUL-F008)', () => {
       fake.emit({ kind: 'hold' });
       fake.emit({ kind: 'skip-forward' });
       fake.emit({ kind: 'skip-backward' });
+      // PUL-F021 (ADR-024): pause/resume ride the same dispatch path.
+      fake.emit({ kind: 'pause' });
+      fake.emit({ kind: 'resume' });
 
       loader.dispose();
       await loader.idle();
 
-      expect(received).toEqual(['advance', 'hold', 'skip-forward', 'skip-backward']);
+      expect(received).toEqual([
+        'advance',
+        'hold',
+        'skip-forward',
+        'skip-backward',
+        'pause',
+        'resume',
+      ]);
     });
 
     it('aborting the navigation detaches the runner subscription so post-abort emissions do not reach it', async () => {

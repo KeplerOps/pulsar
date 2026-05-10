@@ -1,4 +1,4 @@
-// Presenter controls — PUL-F020 / ADR-023.
+// Presenter controls — PUL-F020 / PUL-F021 / ADR-023 / ADR-024.
 //
 // Defines the runtime-side contract layer for accepting presenter
 // commands under `mode=present`. The runtime does not own the input
@@ -10,36 +10,63 @@
 //
 // The runner — not this module — translates a command into a timeline
 // operation (ADR-003: GSAP `play()` / `pause()` / `seek()` /
-// `tweenTo()`). PUL-F020 stays DRAFT until a real presenter UI lands
-// AND end-to-end tests confirm advance / hold / skip-forward /
-// skip-backward actually move beat state without breaking the
-// timeline.
+// `tweenTo()`). For PUL-F021, `pause` maps to the active timeline's
+// native pause (preserving the current playhead) and `resume` maps to
+// native playback from that preserved position — the "same point"
+// semantics. `pause` / `resume` form a transport-freeze gate that is
+// orthogonal to the PUL-F020 beat-pacing commands (`hold` / `advance`
+// / `skip-forward` / `skip-backward`): `pause` snapshots beat-pacing
+// state and `resume` restores it without clearing a prior `hold`, and
+// only `resume` unfreezes transport — a beat-pacing command received
+// while paused never implicitly resumes. ADR-024 *Cross-command
+// precedence* is the binding runner contract for this composition;
+// the seam below only delivers the kinds, it does not enforce it.
+// Duplicate `pause` while already paused and duplicate `resume` while
+// already playing are idempotent no-ops at the runner. Pause/resume
+// MUST NOT abort the navigation, call `cleanup(ctx)`, remount the
+// scene, rewrite URL/history, or persist the playhead; they are
+// runner-owned transport state on the same command seam, not a new
+// mode or lifecycle path (ADR-024). PUL-F020 and PUL-F021 both stay
+// DRAFT until a real presenter UI lands AND a GSAP runner proves the
+// command-to-transport behavior end to end.
 //
 // References:
 //  - PUL-F020 — runtime SHALL accept presenter input under
 //    `mode=present` for advance / hold / skip-forward / skip-backward;
 //    beat progression SHALL be interruptible without breaking
 //    timeline state.
+//  - PUL-F021 — runtime SHALL accept presenter input to pause the
+//    active timeline and SHALL accept input to resume from the same
+//    point. Extends this seam with the `pause` / `resume` command
+//    kinds; transport behavior is the runner's contract (ADR-024).
 //  - ADR-023 — workbench presenter controls: command source +
 //    per-navigation controller seam.
+//  - ADR-024 — presenter pause/resume: runner-owned transport state
+//    on the existing presenter command seam (no new mode/source/
+//    controller/schema; `pause` / `resume` join `PRESENTER_COMMAND_KINDS`).
 //  - ADR-003 — GSAP timeline engine. The runner consumes
 //    {@link PresenterCommand} and dispatches via GSAP's transport API.
 //  - ADR-007 — workbench mode dispatch; presenter input is scoped to
 //    `mode=present`.
-//  - ADR-016 — ADR-016 names PUL-F020 as one of the four facets that
-//    gates PUL-F013 ACTIVE.
+//  - ADR-016 — names PUL-F020 / PUL-F021 / PUL-F025 as the presenter
+//    facets of `mode=present` that gate PUL-F013 ACTIVE.
 
 /**
- * The four command kinds PUL-F020 names. Centralized as a single
- * source of truth so the validator and the discriminated-union type
- * cannot drift. Frozen so a misbehaving caller cannot mutate the
- * allowlist at runtime.
+ * The presenter command kinds the runtime accepts under
+ * `mode=present`. The first four are PUL-F020 (advance / hold /
+ * skip-forward / skip-backward); `pause` and `resume` are PUL-F021
+ * (ADR-024), added to this same allowlist rather than to a separate
+ * pause-specific schema. Centralized as a single source of truth so
+ * the validator and the discriminated-union type cannot drift. Frozen
+ * so a misbehaving caller cannot mutate the allowlist at runtime.
  */
 export const PRESENTER_COMMAND_KINDS = Object.freeze([
   'advance',
   'hold',
   'skip-forward',
   'skip-backward',
+  'pause',
+  'resume',
 ] as const);
 
 /** Element type of {@link PRESENTER_COMMAND_KINDS}. */
@@ -48,7 +75,11 @@ export type PresenterCommandKind = (typeof PRESENTER_COMMAND_KINDS)[number];
 /**
  * One presenter command. Discriminated by `kind` so future extensions
  * (e.g., timed advance with duration) can add fields per-kind without
- * breaking the existing four-shape contract.
+ * breaking the existing flat-shape contract. The extension point is
+ * `kind`: a future command that needs data extends this interface
+ * into a discriminated union with kind-specific fields and updates
+ * {@link isPresenterCommand} in the same module — not a second
+ * command schema (ADR-024).
  */
 export interface PresenterCommand {
   readonly kind: PresenterCommandKind;

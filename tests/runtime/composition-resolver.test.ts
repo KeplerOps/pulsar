@@ -1787,21 +1787,25 @@ describe('URL screenshot-mode runner capture-hint forwarding (PUL-F018)', () => 
   });
 });
 
-describe('URL present-mode runner presenter forwarding (PUL-F020)', () => {
+describe('URL present-mode runner presenter forwarding (PUL-F020 / PUL-F021)', () => {
   // PUL-F020: in `mode=present`, the runtime SHALL accept presenter
   // input (advance, hold, skip-forward, skip-backward); beat
   // progression SHALL be interruptible without breaking timeline
-  // state. ADR-023 places mode dispatch at the loader and the
-  // command-translation semantics (a kind → GSAP transport call) at
-  // the timeline-runner adapter. Unlike the head-only forwardings
-  // (`headBeat` / `headRepeat` / `headHold` / `headCueGate` /
-  // `headScreenshot`), `presenter` is forwarded to EVERY scene's
-  // run input because mode=present runs the FULL composition slice
-  // (no truncation) and presenter commands act on whichever scene
-  // is currently active. The shape is analogous to `signal`, not to
-  // the head-only hints. The resolver does NOT interpret the
-  // controller itself; subscribing and translating commands is the
-  // runner's contract.
+  // state. PUL-F021 (ADR-024): the runtime SHALL also accept `pause`
+  // / `resume` presenter input on this same seam — pause/resume is
+  // not a new mode, source, controller, or schema, just two more
+  // command kinds the resolver forwards to whichever scene's runner
+  // is currently active. ADR-023 places mode dispatch at the loader
+  // and the command-translation semantics (a kind → GSAP transport
+  // call) at the timeline-runner adapter. Unlike the head-only
+  // forwardings (`headBeat` / `headRepeat` / `headHold` /
+  // `headCueGate` / `headScreenshot`), `presenter` is forwarded to
+  // EVERY scene's run input because mode=present runs the FULL
+  // composition slice (no truncation) and presenter commands act on
+  // whichever scene is currently active. The shape is analogous to
+  // `signal`, not to the head-only hints. The resolver does NOT
+  // interpret the controller itself; subscribing and translating
+  // commands is the runner's contract.
 
   it('forwards a `presenter` controller to EVERY scene in a multi-scene plan (NOT head-only) — commands delegate from the navigation controller', async () => {
     // The resolver wraps the navigation-level controller in a
@@ -1845,6 +1849,50 @@ describe('URL present-mode runner presenter forwarding (PUL-F020)', () => {
       { sceneId: 'scene-a', kinds: ['advance'] },
       { sceneId: 'scene-b', kinds: ['advance'] },
       { sceneId: 'scene-c', kinds: ['advance'] },
+    ]);
+  });
+
+  it('forwards the PUL-F021 pause and resume command kinds to the active scene runner (ADR-024)', async () => {
+    // PUL-F021 (ADR-024): `pause` / `resume` flow through the same
+    // per-scene presenter wrapper as the PUL-F020 kinds. The resolver
+    // does not interpret them — translating `pause` into a GSAP
+    // `pause()`, `resume` into playhead-preserving `play()`, and how
+    // those compose with the beat-pacing kinds (ADR-024
+    // *Cross-command precedence*) is the runner's job — but it must
+    // deliver them to the run input of the scene whose timeline is
+    // currently active, which is what this test pins.
+    const sourceHandlers = new Set<
+      (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
+    >();
+    const source = {
+      subscribe(handler: (cmd: import('../../src/runtime/presenter').PresenterCommand) => void) {
+        sourceHandlers.add(handler);
+        return () => {
+          sourceHandlers.delete(handler);
+        };
+      },
+    };
+    const ac = new AbortController();
+    const presenter = createPresenterController(source, ac.signal);
+
+    const runReceivedKinds: { sceneId: string; kinds: string[] }[] = [];
+    const { options } = buildHarness({
+      scenes: [{ id: 'scene-a' }, { id: 'scene-b' }],
+      manifest: ['scene-a', 'scene-b'],
+      runTimeline: (input) => {
+        const kinds: string[] = [];
+        input.presenter?.subscribe((cmd) => kinds.push(cmd.kind));
+        // Emit a pause then a resume while this scene's wrapper
+        // subscription is live.
+        for (const h of sourceHandlers) h({ kind: 'pause' });
+        for (const h of sourceHandlers) h({ kind: 'resume' });
+        runReceivedKinds.push({ sceneId: input.scene.id, kinds });
+      },
+    });
+    await resolveComposition({ ...options, presenter });
+    expect(runReceivedKinds).toEqual([
+      { sceneId: 'scene-a', kinds: ['pause', 'resume'] },
+      { sceneId: 'scene-b', kinds: ['pause', 'resume'] },
     ]);
   });
 

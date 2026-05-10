@@ -171,7 +171,9 @@ export interface SceneLoaderOptions {
    */
   readonly renderPrompter?: PrompterRenderer;
   /**
-   * Workbench-supplied presenter command source (PUL-F020 / ADR-023).
+   * Workbench-supplied presenter command source (PUL-F020 / ADR-023;
+   * the command set is extended by PUL-F021 / ADR-024 with the
+   * `pause` / `resume` kinds — the loader-side dispatch is unchanged).
    * Lives across navigations; the loader does not own or construct
    * it. When supplied AND the per-navigation `effectiveMode(target)`
    * is `'present'`, the loader wraps it in a per-navigation

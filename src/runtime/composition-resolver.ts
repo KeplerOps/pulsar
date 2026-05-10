@@ -289,13 +289,14 @@ export interface SceneTimelineRunInput {
    */
   readonly screenshot?: 'capture';
   /**
-   * Presenter command controller (PUL-F020 / ADR-023). Forwarded to
-   * EVERY scene's run input under `mode=present` (NOT a head-only
-   * field): mode=present runs the FULL composition slice, and
-   * presenter commands act on whichever scene is currently active.
-   * Analogous to {@link signal} in shape, not to the head-only
-   * runner-input hints (`repeat` / `hold` / `cueGate` / `screenshot`
-   * — those modes are single-scene by construction).
+   * Presenter command controller (PUL-F020 / PUL-F021 / ADR-023 /
+   * ADR-024). Forwarded to EVERY scene's run input under
+   * `mode=present` (NOT a head-only field): mode=present runs the
+   * FULL composition slice, and presenter commands act on whichever
+   * scene is currently active. Analogous to {@link signal} in shape,
+   * not to the head-only runner-input hints (`repeat` / `hold` /
+   * `cueGate` / `screenshot` — those modes are single-scene by
+   * construction).
    *
    * The runner subscribes via `presenter.subscribe(handler)` to
    * receive {@link import('./presenter').PresenterCommand}s. The
@@ -306,12 +307,21 @@ export interface SceneTimelineRunInput {
    * dropped before reaching the runner).
    *
    * Translation of each command into a timeline operation
-   * (advance → play to next beat, hold → pause at current beat,
-   * skip-forward / skip-backward → seek to next/prev beat) is the
-   * runner's contract per ADR-003 (GSAP transport API). A runner
-   * that ignores `input.presenter` gracefully degrades — the
-   * placeholder runner does this today because it has no real
-   * timeline to drive.
+   * (advance → play to next beat, hold → hold at the current beat,
+   * skip-forward / skip-backward → seek to next/prev beat,
+   * pause → native pause at the current playhead, resume → resume
+   * playback from that preserved playhead — the PUL-F021 "same
+   * point" semantics, ADR-024) is the runner's contract per ADR-003
+   * (GSAP transport API). `pause` / `resume` are a transport-freeze
+   * gate orthogonal to the beat-pacing kinds (`hold` / `advance` /
+   * `skip-*`): `pause` snapshots beat-pacing state and `resume`
+   * restores it without clearing a prior `hold`, and only `resume`
+   * unfreezes transport. Duplicate pause-while-paused and
+   * resume-while-playing are idempotent no-ops at the runner. ADR-024
+   * *Cross-command precedence* is the binding rule for how the kinds
+   * compose; this seam only delivers them. A runner that ignores
+   * `input.presenter` gracefully degrades — the placeholder runner
+   * does this today because it has no real timeline to drive.
    *
    * Absent for every mode other than `present` (the loader scopes
    * delivery; the resolver does not enforce mode coherence because

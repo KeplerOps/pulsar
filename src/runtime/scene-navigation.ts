@@ -195,7 +195,9 @@ export interface LoadSceneNavigationTargetOptions {
    */
   readonly screenshot?: 'capture';
   /**
-   * URL present-mode presenter controller (PUL-F020 / ADR-023). The
+   * URL present-mode presenter controller (PUL-F020 / ADR-023; the
+   * command set is extended by PUL-F021 / ADR-024 with the `pause` /
+   * `resume` kinds — the bridge forwarding is unchanged). The
    * loader builds a per-navigation
    * {@link import('./presenter').PresenterController} bound to its
    * `AbortController.signal` when `effectiveMode(target) === 'present'`
