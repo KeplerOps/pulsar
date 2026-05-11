@@ -234,6 +234,13 @@ export interface LoadSceneNavigationTargetOptions {
    * Absent: the per-scene wrapper drops diagnostics silently.
    */
   readonly onPresenterError?: (err: unknown) => void;
+  /**
+   * Per-scene post-cleanup hook (PUL-F024 / ADR-004). Forwarded to
+   * {@link resolveComposition} as `onSceneCleaned`; the loader wires it
+   * to stop the audio group a scene scoped to itself when that scene's
+   * `cleanup(ctx)` runs. Absent for callers that do not need it.
+   */
+  readonly onSceneCleaned?: (sceneId: string) => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -645,5 +652,9 @@ export async function loadSceneNavigationTarget(
     ...(options.presenter === undefined || options.onPresenterError === undefined
       ? {}
       : { onPresenterError: options.onPresenterError }),
+    // `onSceneCleaned` (PUL-F024 / ADR-004 — the audio group teardown
+    // hook) is forwarded as-is; the loader supplies it on every
+    // navigation that runs the resolver lifecycle.
+    ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),
   });
 }

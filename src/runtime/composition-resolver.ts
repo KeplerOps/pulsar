@@ -140,8 +140,11 @@ export interface CompositionTimelineRunOptions {
    */
   readonly headHold?: 'first-frame';
   /**
-   * URL scrub hint (PUL-F017 / ADR-020): no effect until the audio
-   * engine lands (PUL-F024) — there are no cues to gate yet.
+   * URL scrub hint (PUL-F017 / ADR-020): forwarded, but the timeline
+   * adapter does not yet gate audio cues against it — the PUL-F024 audio
+   * service exists, but timeline-callback cue gating is a follow-up;
+   * scenes fire their own `ctx.audio` cues from their timeline callbacks
+   * today.
    */
   readonly headCueGate?: 'monotonic-forward';
   /**
@@ -216,6 +219,17 @@ export interface ResolveCompositionOptions {
   readonly presenter?: PresenterController;
   /** Diagnostic sink paired with {@link presenter}. */
   readonly onPresenterError?: (err: unknown) => void;
+  /**
+   * Per-scene post-cleanup hook (PUL-F024 / ADR-004). Invoked after each
+   * scene's `cleanup(ctx)` completes during the cleanup phase, in the
+   * same reverse-mount order. The scene loader wires this so the runtime
+   * stops the audio group a scene scoped to itself (`group: <sceneId>`)
+   * when that scene's `cleanup` runs — runtime-guaranteed per-scene
+   * audio teardown rather than author discipline. The resolver itself
+   * does not interpret the id; it just forwards it. A throw from the
+   * hook is treated like a cleanup failure (collected, not swallowed).
+   */
+  readonly onSceneCleaned?: (sceneId: string) => void;
 }
 
 /**
@@ -363,9 +377,15 @@ function composeSegments(mounted: readonly PlanStep[], ctx: unknown): SceneTimel
  * order (last in, first out — symmetric with the mount phase). Each
  * scene's cleanup runs even if a previous one threw; the wrapped thrown
  * values are collected and returned (the caller decides whether to
- * re-raise them). Never throws.
+ * re-raise them). `onSceneCleaned` (PUL-F024 / ADR-004 — the audio
+ * group teardown hook) runs after each scene's `cleanup(ctx)`; a throw
+ * from it is collected like a cleanup failure. Never throws.
  */
-async function cleanupAll(mounted: readonly PlanStep[], ctx: unknown): Promise<readonly unknown[]> {
+async function cleanupAll(
+  mounted: readonly PlanStep[],
+  ctx: unknown,
+  onSceneCleaned?: (sceneId: string) => void,
+): Promise<readonly unknown[]> {
   const errors: unknown[] = [];
   for (const step of [...mounted].reverse()) {
     try {
@@ -373,6 +393,13 @@ async function cleanupAll(mounted: readonly PlanStep[], ctx: unknown): Promise<r
     } catch (err) {
       errors.push(
         fail(`scene ${quoteId(step.scene.id)} cleanup threw: ${describeError(err)}`, err),
+      );
+    }
+    try {
+      onSceneCleaned?.(step.scene.id);
+    } catch (err) {
+      errors.push(
+        fail(`scene ${quoteId(step.scene.id)} onSceneCleaned threw: ${describeError(err)}`, err),
       );
     }
   }
@@ -483,7 +510,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   } catch (phaseError) {
     // Mandatory cleanup: tear down every mounted scene (reverse order),
     // then re-raise — aggregating cleanup errors if any.
-    const cleanupErrors = await cleanupAll(mounted, ctx);
+    const cleanupErrors = await cleanupAll(mounted, ctx, options.onSceneCleaned);
     if (cleanupErrors.length > 0) {
       throw failAggregate(
         `composition aborted with ${cleanupErrors.length} cleanup failure(s) after: ${describeError(phaseError)}`,
@@ -497,7 +524,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // adapter resolved without throwing). Tear every scene down, then
   // surface an abort error if the signal fired (so the loader's
   // pure-abort suppression applies) or aggregate any cleanup failures.
-  const cleanupErrors = await cleanupAll(mounted, ctx);
+  const cleanupErrors = await cleanupAll(mounted, ctx, options.onSceneCleaned);
   if (signal?.aborted === true) {
     if (cleanupErrors.length > 0) {
       throw failAggregate(

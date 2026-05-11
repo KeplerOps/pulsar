@@ -120,6 +120,7 @@ interface ResolveArgs {
   readonly headHold?: 'first-frame';
   readonly headCueGate?: 'monotonic-forward';
   readonly headScreenshot?: 'capture';
+  readonly onSceneCleaned?: (sceneId: string) => void;
 }
 
 const run = (args: ResolveArgs): Promise<void> =>
@@ -136,6 +137,7 @@ const run = (args: ResolveArgs): Promise<void> =>
     ...(args.headHold === undefined ? {} : { headHold: args.headHold }),
     ...(args.headCueGate === undefined ? {} : { headCueGate: args.headCueGate }),
     ...(args.headScreenshot === undefined ? {} : { headScreenshot: args.headScreenshot }),
+    ...(args.onSceneCleaned === undefined ? {} : { onSceneCleaned: args.onSceneCleaned }),
   });
 
 const aborted = (reason?: unknown): AbortSignal => {
@@ -600,5 +602,58 @@ describe('resolveComposition — cleanup phase', () => {
       signal: aborted(),
     }).catch(() => undefined);
     expect(log).toEqual([]);
+  });
+
+  it('invokes onSceneCleaned after each scene cleanup, in reverse mount order (PUL-F024)', async () => {
+    const log: string[] = [];
+    const recordCleaned = (id: string): void => {
+      log.push(`cleaned:${id}`);
+    };
+    await run({
+      scenes: [recordingScene('a', log), recordingScene('b', log), recordingScene('c', log)],
+      manifest: ['a', 'b', 'c'],
+      onSceneCleaned: recordCleaned,
+    });
+    expect(log.slice(-6)).toEqual([
+      'cleanup:c',
+      'cleaned:c',
+      'cleanup:b',
+      'cleaned:b',
+      'cleanup:a',
+      'cleaned:a',
+    ]);
+  });
+
+  it('still invokes onSceneCleaned for a scene whose cleanup threw, and aggregates an onSceneCleaned throw', async () => {
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          cleanup: () => {
+            log.push('cleanup:b');
+            throw new Error('cleanup-b kaboom');
+          },
+        }),
+      ],
+      manifest: ['a', 'b'],
+      onSceneCleaned: (id) => {
+        log.push(`cleaned:${id}`);
+        if (id === 'a') throw new Error('hook-a kaboom');
+      },
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    // b cleaned (threw) → hook(b) → a cleaned → hook(a) (threw).
+    expect(log.slice(-4)).toEqual(['cleanup:b', 'cleaned:b', 'cleanup:a', 'cleaned:a']);
+    expect(caught).toBeInstanceOf(AggregateError);
+    const messages = (caught as AggregateError).errors.map((e) => (e as Error).message);
+    expect(messages).toContain(
+      'composition resolution failed: scene "b" cleanup threw: cleanup-b kaboom',
+    );
+    expect(messages).toContain(
+      'composition resolution failed: scene "a" onSceneCleaned threw: hook-a kaboom',
+    );
   });
 });

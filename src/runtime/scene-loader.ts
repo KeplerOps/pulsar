@@ -29,6 +29,7 @@
 //  - ADR-007 — runtime parses URL parameters at startup AND popstate.
 //  - ADR-013 — URL navigation grammar boundary; F007 owns parsing.
 
+import { type AudioEngine, type AudioService, createAudioService, noopAudioEngine } from './audio';
 import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, CompositionTimelineAdapter } from './composition-resolver';
 import { describeError } from './error';
@@ -77,8 +78,8 @@ export interface StageElement {
  * mode detection. Per ADR-007 the runtime core is the dispatch
  * point; the field is set per navigation by {@link createSceneLoader}.
  *
- * Per ADR-003 the timeline engine (`gsap`) arrives here; the audio
- * engine (`audio`) will follow per ADR-004. The runtime resolver
+ * Per ADR-003 the timeline engine (`gsap`) arrives here; per ADR-004
+ * the audio service (`audio`) does too (PUL-F024). The runtime resolver
  * itself never inspects ctx — it is purely a scene-to-environment
  * carrier.
  */
@@ -101,6 +102,33 @@ export interface WorkbenchSceneCtx {
    * {@link import('./timeline').composeMasterTimeline}).
    */
   readonly gsap: TimelineEngine['gsap'];
+  /**
+   * The per-navigation audio service (PUL-F024 / ADR-004). Scenes call
+   * `ctx.audio.load(...)` / `play(...)` / `fade(...)` / `stop(...)` /
+   * `stopGroup(...)` (and `mute(...)` for master mute) rather than
+   * importing Howler or constructing `<audio>`, so the audio engine
+   * stays a single swappable runtime dependency and every sound is
+   * stopped + unloaded on navigation end. Built by the loader from
+   * {@link SceneLoaderOptions.audioEngine}, bound to the navigation's
+   * `AbortSignal`, and `silent` under `mode=screenshot` / `mode=paused`
+   * (audible playback suppressed — ADR-019 / ADR-021).
+   *
+   * One service per navigation: under single-scene modes that is the
+   * one scene; under `mode=present` it is shared across the whole
+   * composition slice (the resolver mounts the slice with one ctx and
+   * forbids it repeating a scene id). The sound-id namespace and the
+   * source allowlist (the slice's declared `scene.assets`) are therefore
+   * slice-scoped — multi-scene compositions pick distinct sound ids, the
+   * same stable-identity discipline scene ids obey (ADR-008 #1), and
+   * registering an id twice with the same definition is idempotent. A
+   * scene scopes a sound to itself with `play(id, { group: <its-scene-id> })`;
+   * the loader wires the resolver's per-scene post-`cleanup(ctx)` hook
+   * to `stopGroup(sceneId)`, so the runtime (not the author) stops a
+   * scene's group when that scene's `cleanup` runs. True per-scene
+   * activation contexts (one `ctx.audio` facade per scene entry) are a
+   * documented resolver follow-up.
+   */
+  readonly audio: AudioService;
 }
 
 /**
@@ -118,27 +146,45 @@ export interface SceneLoaderOptions {
    * Per-navigation scene context builder. The loader calls this once
    * per navigation that produces a runnable target, passing the
    * effective workbench mode derived from the URL via
-   * {@link effectiveMode} (PUL-F012 / ADR-007). The returned value is
-   * forwarded opaquely to every lifecycle hook (`create` / `timeline`
-   * / `cleanup`); the resolver never inspects it.
+   * {@link effectiveMode} (PUL-F012 / ADR-007) and the per-navigation
+   * audio service (PUL-F024 / ADR-004) the loader built from
+   * {@link audioEngine}. The returned value is forwarded opaquely to
+   * every lifecycle hook (`create` / `timeline` / `cleanup`); the
+   * resolver never inspects it.
    *
    * Returns {@link WorkbenchSceneCtx} so the production contract
-   * "scenes receive `ctx.mode`" is enforced at this boundary rather
-   * than relying on a single workbench bootstrap annotation. Mode
-   * dispatch lives at this seam per ADR-007 ("Mode is dispatched in
-   * the runtime core, not per scene"): the workbench supplies the
-   * stage and any other long-lived ctx members through a closure, the
-   * loader contributes the per-navigation `mode`, and the combined
-   * value is what scenes see as `ctx`. Constructing a fresh ctx per
-   * navigation also blocks any "previous mode leaks into a `mode`-less
-   * URL" regression — every navigation re-derives mode from its own
-   * target.
+   * "scenes receive `ctx.mode` / `ctx.audio`" is enforced at this
+   * boundary rather than relying on a single workbench bootstrap
+   * annotation. Mode dispatch lives at this seam per ADR-007 ("Mode is
+   * dispatched in the runtime core, not per scene"): the workbench
+   * supplies the stage and any other long-lived ctx members through a
+   * closure, the loader contributes the per-navigation `mode` and
+   * `audio`, and the combined value is what scenes see as `ctx`.
+   * Constructing a fresh ctx per navigation also blocks any "previous
+   * mode leaks into a `mode`-less URL" regression — every navigation
+   * re-derives mode from its own target — and a fresh audio service
+   * per navigation makes "audio survives the scene that started it"
+   * structurally impossible.
    *
    * Not invoked when the locator is `kind: 'none'` (no scene mounts)
    * or when the navigation event is a parse-error event, because
    * those paths run no lifecycle.
    */
-  readonly buildCtx: (mode: NavigationMode) => WorkbenchSceneCtx;
+  readonly buildCtx: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
+  /**
+   * The audio engine (PUL-F024 / ADR-004) — a process singleton, like
+   * the timeline engine (ADR-003). The loader builds a fresh
+   * `createAudioService(audioEngine, ...)` per navigation, scoped to
+   * that navigation's `AbortSignal` and threaded into `ctx.audio`, so
+   * per-scene audio is stopped + unloaded on supersession / dispose /
+   * completion. Optional: a workbench bootstrap that has not wired a
+   * real audio backend yet omits it and the loader falls back to
+   * {@link import('./audio').noopAudioEngine} (a silent engine —
+   * `ctx.audio` still works, it just makes no sound), the same
+   * inert-seam pattern {@link renderPrompter} / {@link presenterCommands}
+   * follow.
+   */
+  readonly audioEngine?: AudioEngine;
   /**
    * Build a per-navigation asset preloader bound to that
    * navigation's abort signal. The loader calls this once per
@@ -271,16 +317,38 @@ function isPureAbort(err: unknown, signal: AbortSignal): boolean {
 }
 
 /**
+ * The audio source URLs the resolved (possibly head-truncated) slice
+ * declared — every scene's `assets` in the slice (just the head scene's
+ * for a bare `kind: 'scene'` target, the full composition slice's for
+ * `mode=present`). The per-navigation audio service uses this so
+ * `ctx.audio.load()` can only register a URL the preloader (PUL-F005)
+ * already warmed — ADR-008 #5: the only audio inventory is
+ * `scene.assets`. Pure function (no closure captures), hoisted to
+ * module scope so the loader factory does not recreate it per instance.
+ */
+function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
+  return target.composition === undefined
+    ? target.scene.assets
+    : target.composition.sceneSlice.flatMap((scene) => scene.assets);
+}
+
+/**
  * One in-flight load: the abort signal that cancels it, the promise
- * that settles when the lifecycle ends (or rejects on abort), and the
+ * that settles when the lifecycle ends (or rejects on abort), the
  * abort-detection flag used to suppress the "rejection is an error"
- * branch when the rejection was an intentional abort.
+ * branch when the rejection was an intentional abort, and the
+ * navigation's audio service (PUL-F024) so the loader can `stopAll()`
+ * it once the lifecycle settles — the signal binding already covers
+ * supersession / dispose; this covers happy-path completion. `null`
+ * for a `mode=prompter` load (no resolver lifecycle, no `ctx.audio`).
  */
 interface InFlightLoad {
   readonly controller: AbortController;
   readonly settled: Promise<void>;
   /** Set when `dispose()` aborted the load — suppresses error UI on dispose. */
   silent: boolean;
+  /** The navigation's audio service, or `null` for a prompter load. */
+  readonly audio: AudioService | null;
 }
 
 /**
@@ -298,6 +366,11 @@ type NavigationEvent =
 export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   const { stage } = options;
   const onError = options.onError ?? ((err) => console.error(err));
+  // PUL-F024 / ADR-004: the audio engine. A workbench that has not
+  // wired a real backend gets the silent no-op engine so `ctx.audio`
+  // still works (just makes no sound) — the inert-seam pattern the
+  // prompter / presenter options also use.
+  const audioEngine = options.audioEngine ?? noopAudioEngine;
   let inFlight: InFlightLoad | null = null;
   let disposed = false;
   // Latest-event generation. Every enqueue bumps this counter; queued
@@ -465,6 +538,15 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     target: NavigationTarget,
   ): InFlightLoad | null => {
     const controller = new AbortController();
+    // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core seam.
+    // The loader derives the effective mode from the parsed target via
+    // `effectiveMode` (URL-only — no localStorage, sessionStorage,
+    // cookies, history.state, or cached state); every navigation
+    // re-derives from its own target, so a previous non-`present` mode
+    // cannot leak into a subsequent `mode`-less URL. The mode also
+    // selects whether the audio service is `silent` (screenshot /
+    // paused suppress audible playback — ADR-019 / ADR-021).
+    const mode = effectiveMode(target);
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);
@@ -478,29 +560,33 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       surfaceError(err);
       return null;
     }
-    // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core
-    // seam. The loader derives the effective mode from the parsed
-    // target via `effectiveMode` (URL-only — no localStorage,
-    // sessionStorage, cookies, history.state, or cached state) and
-    // hands the workbench's `buildCtx` that mode so the per-navigation
-    // ctx carries `mode`. Every navigation re-derives from its own
-    // target, so a previous non-`present` mode cannot leak into a
-    // subsequent `mode`-less URL.
-    //
-    // Built AFTER the preloader so a preloader-factory failure does
-    // not waste any builder-side allocations, and wrapped in the same
-    // rollback-then-surfaceError pattern so a throwing builder does
-    // not leave stale stage attrs or skip the queue's error sink.
+    // PUL-F024 / ADR-004: the per-navigation audio service. Built over
+    // `audioEngine`, scoped to `controller.signal` (abort ⇒ every sound
+    // stopped + unloaded), restricted to the URLs the slice declared in
+    // `scene.assets` (ADR-008 #5 — the preloader warmed them), and
+    // `silent` under screenshot / paused. Threaded into `ctx.audio` via
+    // `buildCtx`, alongside `mode` (PUL-F012). Built AFTER the preloader
+    // so a preloader-factory failure does not waste allocations, and
+    // wrapped in the same rollback-then-surfaceError pattern so a
+    // throwing builder does not leave stale stage attrs or skip the
+    // queue's error sink.
     let ctx: unknown;
+    let audio: AudioService;
     try {
-      ctx = options.buildCtx(effectiveMode(target));
+      audio = createAudioService(audioEngine, {
+        signal: controller.signal,
+        silent: mode === 'screenshot' || mode === 'paused',
+        allowedSources: collectAudioSources(resolved),
+        onError,
+      });
+      ctx = options.buildCtx(mode, audio);
     } catch (err) {
       // Abort the freshly-created controller before bailing so any
-      // signal-tied resource the preloader factory may have wired
-      // (e.g. a fetch listener registered on `controller.signal`)
-      // observes cancellation and releases. Without this, the signal
-      // is GC'd in the never-aborted state and any abort-keyed
-      // listener runs at GC time (or never).
+      // signal-tied resource (the preloader factory's fetch listener,
+      // the audio service's stop-on-abort hook) observes cancellation
+      // and releases. Without this, the signal is GC'd in the
+      // never-aborted state and any abort-keyed listener runs at GC
+      // time (or never).
       controller.abort();
       resetStageAttrs();
       surfaceError(err);
@@ -518,7 +604,6 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // head's timeline never naturally completes. Use a literal
     // `undefined` sentinel so the spread below cleanly omits the key
     // for non-loop modes (parity with the `beat` plumbing).
-    const mode = effectiveMode(target);
     const repeat: 'until-aborted' | undefined = mode === 'loop' ? 'until-aborted' : undefined;
     // PUL-F016 / ADR-019: under `mode=paused` the runner mounts the
     // addressed scene and holds its timeline at the first frame.
@@ -605,8 +690,15 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         // through the same diagnostic channel as every other
         // navigation-level error (codex review, cycle 2).
         ...(presenter === undefined ? {} : { presenter, onPresenterError: onError }),
+        // PUL-F024 / ADR-004: the runtime stops the audio group a scene
+        // scoped to itself (`group: <its-scene-id>`) when that scene's
+        // `cleanup(ctx)` runs — runtime-guaranteed per-scene teardown,
+        // not author discipline. (`stopGroup` is a no-op when the group
+        // is empty or the service is already disposed.)
+        onSceneCleaned: (sceneId) => audio.stopGroup(sceneId),
       }),
       silent: false,
+      audio,
     };
   };
 
@@ -764,14 +856,18 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   const buildPrompterLoad = (resolved: SceneNavigationTarget): InFlightLoad => {
     const controller = new AbortController();
     const renderer = options.renderPrompter;
+    // `mode=prompter` bypasses the resolver lifecycle entirely — no
+    // scene mounts, so there is no `ctx.audio` consumer and no audio
+    // service to build (`audio: null`).
     if (renderer === undefined) {
-      return { controller, settled: Promise.resolve(), silent: false };
+      return { controller, settled: Promise.resolve(), silent: false, audio: null };
     }
     const script = buildPrompterScript(resolved);
     return {
       controller,
       settled: dispatchPrompter(renderer, script, controller.signal),
       silent: false,
+      audio: null,
     };
   };
 
@@ -836,6 +932,13 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         surfaceError(err);
       }
     } finally {
+      // PUL-F024 / ADR-004: the navigation is over — stop + unload
+      // every sound it created. On supersession / dispose the signal
+      // binding already disposed the service, so this is the
+      // happy-path-completion path (the resolver ran every scene's
+      // `cleanup(ctx)`, then `load.settled` resolved); `stopAll()` is
+      // idempotent so the double-call on the abort paths is harmless.
+      load.audio?.stopAll();
       if (inFlight === load) inFlight = null;
     }
   };

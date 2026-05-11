@@ -547,7 +547,9 @@ type MasterRunMode = 'hold' | 'loop' | 'play';
  *  - `headRepeat: 'until-aborted'` (PUL-F015 / ADR-018): loop the master
  *    forever. → `'loop'`.
  *  - `headCueGate: 'monotonic-forward'` (PUL-F017 / ADR-020): no effect
- *    here — no audio engine to gate cues against yet (PUL-F024).
+ *    here yet — the PUL-F024 audio service exists (`ctx.audio`), but
+ *    timeline-callback cue gating is a separate follow-up; scenes fire
+ *    their own `ctx.audio` cues from their timeline callbacks today.
  *  - default: → `'play'`.
  */
 function positionMaster(
