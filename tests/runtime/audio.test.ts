@@ -20,6 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type AudioEngine,
+  AudioError,
   AudioGroupError,
   AudioRangeError,
   type AudioSoundConfig,
@@ -502,9 +503,9 @@ describe('createAudioService — master mute (ADR-004)', () => {
   it('rejects a non-boolean mute argument at the runtime boundary', () => {
     const { service } = buildService();
     const muteUnchecked = service.mute as (value: unknown) => void;
-    expect(() => muteUnchecked('on')).toThrow();
-    expect(() => muteUnchecked(1)).toThrow();
-    expect(() => muteUnchecked(undefined)).toThrow();
+    expect(() => muteUnchecked('on')).toThrow(AudioError);
+    expect(() => muteUnchecked(1)).toThrow(AudioError);
+    expect(() => muteUnchecked(undefined)).toThrow(AudioError);
   });
 
   it('persists master mute across services backed by the same engine', () => {
