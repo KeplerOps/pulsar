@@ -1735,11 +1735,14 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       // that let the throw escape `buildLoad` would either reject
       // the handle promise or leave stale stage attrs (the latter
       // detectable by additional tests; the former by this `await`
-      // throwing).
+      // throwing). The exact count of 1 also pins that the
+      // controller does NOT retry the source's subscribe (a
+      // regression that mistakenly looped on transient failure
+      // would surface here).
       const subscribeFailures = errors.filter(
         (e) => e instanceof Error && /subscribe failed/i.test(e.message),
       );
-      expect(subscribeFailures.length).toBeGreaterThanOrEqual(1);
+      expect(subscribeFailures).toHaveLength(1);
     });
 
     it('drops misspelled mute kinds (`mute`, `master-mute`, `unmute`) at the controller boundary — audio is never toggled', async () => {
@@ -1783,7 +1786,15 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       fake.emit({ kind: 'master-mute' });
       fake.emit({ kind: 'unmute' });
       expect(engine.isMasterMuted()).toBe(false);
-      expect(errors.length).toBeGreaterThanOrEqual(3);
+      // Centralized validation surfaces exactly one diagnostic per
+      // rejected emission, regardless of subscriber count — so 3
+      // misspelled kinds yield 3 errors. A regression to per-
+      // subscriber validation would emit 3 × subscribers and fail
+      // this exact-count assertion.
+      const rejects = errors.filter(
+        (e) => e instanceof Error && /presenter/i.test(e.message),
+      );
+      expect(rejects).toHaveLength(3);
       loader.dispose();
       await loader.idle();
     });
