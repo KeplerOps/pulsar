@@ -678,13 +678,22 @@ export function createAudioService(
   // `??`). The allowlist is the same frozen tuple
   // {@link AUDIO_OUTPUT_POLICIES} the type derives from, so the type
   // and the runtime check cannot drift.
-  const rawPolicy = options.outputPolicy === undefined ? 'audible' : options.outputPolicy;
-  if (!(AUDIO_OUTPUT_POLICIES as readonly unknown[]).includes(rawPolicy)) {
+  // Validate the supplied value (if any) against the allowlist FIRST,
+  // then default `undefined` to `'audible'`. Doing the default with
+  // `??` BEFORE validation would coalesce `null` to `'audible'` and
+  // skip the boundary check; explicit `=== undefined` keeps the two
+  // concerns ordered correctly.
+  const policyArg: unknown = options.outputPolicy;
+  if (
+    policyArg !== undefined &&
+    !(AUDIO_OUTPUT_POLICIES as readonly unknown[]).includes(policyArg)
+  ) {
+    const quotedPolicies = AUDIO_OUTPUT_POLICIES.map((p) => `'${p}'`).join(' / ');
     throw new AudioError(
-      `audio outputPolicy must be one of ${AUDIO_OUTPUT_POLICIES.map((p) => `'${p}'`).join(' / ')}; got ${describeRawOption(rawPolicy)}`,
+      `audio outputPolicy must be one of ${quotedPolicies}; got ${describeRawOption(policyArg)}`,
     );
   }
-  const outputPolicy: AudioOutputPolicy = rawPolicy;
+  const outputPolicy: AudioOutputPolicy = (policyArg ?? 'audible') as AudioOutputPolicy;
   // Same boundary discipline (codex review, cycle 2): `onCue` is a
   // workbench-supplied function (kept across navigations in
   // `SceneLoaderOptions.onAudioCue`), so a JS caller / a test
@@ -748,7 +757,7 @@ export function createAudioService(
     // consumer could mutate `cue.fade.to` after receiving the entry.
     // `deepFreeze` walks every plain object/array reachable from the
     // entry.
-    const frozen = deepFreeze({ sequence: cueSequence, ...entry } as AudioCueLogEntry);
+    const frozen = deepFreeze({ sequence: cueSequence, ...entry });
     try {
       onCue(frozen);
     } catch {

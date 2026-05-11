@@ -354,6 +354,24 @@ function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
 }
 
 /**
+ * Map the effective workbench mode to the per-navigation
+ * {@link AudioOutputPolicy} (PUL-F024 / PUL-F026 / ADR-004):
+ *
+ *  - `'rehearsal'`                       → `'log-cues'`
+ *  - `'screenshot'` / `'paused'`         → `'silent'`
+ *  - every other lifecycle-running mode  → `'audible'`
+ *
+ * Pure function (no closure captures), hoisted to module scope so the
+ * loader's `buildLoad` stays within Sonar's cognitive-complexity
+ * budget and the mode→policy table lives in one place.
+ */
+function audioOutputPolicyFor(mode: NavigationMode): AudioOutputPolicy {
+  if (mode === 'rehearsal') return 'log-cues';
+  if (mode === 'screenshot' || mode === 'paused') return 'silent';
+  return 'audible';
+}
+
+/**
  * One in-flight load: the abort signal that cancels it, the promise
  * that settles when the lifecycle ends (or rejects on abort), the
  * abort-detection flag used to suppress the "rejection is an error"
@@ -690,12 +708,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // failure does not waste allocations, and wrapped in the same
     // rollback-then-surfaceError pattern so a throwing builder does
     // not leave stale stage attrs or skip the queue's error sink.
-    const outputPolicy: AudioOutputPolicy =
-      mode === 'rehearsal'
-        ? 'log-cues'
-        : mode === 'screenshot' || mode === 'paused'
-          ? 'silent'
-          : 'audible';
+    const outputPolicy = audioOutputPolicyFor(mode);
     let ctx: unknown;
     let audio: AudioService;
     try {
