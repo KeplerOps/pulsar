@@ -169,152 +169,222 @@ export interface ValidationInput {
  * findings. Within each category, findings appear in iteration order
  * of the underlying input.
  */
+/**
+ * Per-record metadata extracted by phase 1 for phases 2 (duplicate-id)
+ * and 4 (asset). Fields are `null` when not locally valid; each
+ * downstream phase iterates the array and skips records that don't
+ * carry the field it needs.
+ */
+interface Inspected {
+  readonly id: string | null;
+  readonly assets: readonly string[] | null;
+}
+
 export function validateRuntime(input: ValidationInput): readonly Finding[] {
   const findings: Finding[] = [];
+  const inspected = runSceneShapePhase(input.scenes, findings);
+  const validIds = runDuplicateIdPhase(inspected, findings);
+  runCompositionPhase(input.compositions, validIds, findings);
+  runAssetPhase(inspected, input.assets, findings);
+  return Object.freeze(findings);
+}
 
-  // ── Phase 1: per-record inspection. ──────────────────────────────
-  //
-  // The four clauses of PUL-F028 are INDEPENDENT classes of breakage.
-  // A scene that fails the full PUL-F001 schema gate (e.g. missing
-  // `cleanup`) may still carry a locally-valid `id` or `assets` array
-  // — and a duplicate of that id, or a bad asset URL it declares, are
-  // their own findings the author needs to see. Gating phases 2–4 on
-  // the full schema check would suppress those independent findings
-  // (codex review cycle 2, class finding).
-  //
-  // So we walk every record once: run `assertSceneModule` to surface
-  // the schema finding when applicable, AND independently extract the
-  // minimal locally-valid fields needed by phases 2 / 4. The id check
-  // reuses `isKebabIdentifier` — the shared identifier rule the scene
-  // schema, registry, composition manifest, and URL parser already
-  // share. The assets check is the same `Array<string>` predicate
-  // `assertSceneModule` applies. No second schema, no parallel
-  // contract — just minimal field extraction next to the canonical
-  // gate.
-  interface Inspected {
-    readonly id: string | null;
-    readonly assets: readonly string[] | null;
-  }
+/**
+ * Phase 1 — per-record inspection (clause d falls out here).
+ *
+ * The four clauses of PUL-F028 are INDEPENDENT classes of breakage.
+ * A scene that fails the full PUL-F001 schema gate (e.g. missing
+ * `cleanup`) may still carry a locally-valid `id` or `assets` array
+ * — and a duplicate of that id, or a bad asset URL it declares, are
+ * their own findings the author needs to see. Gating phases 2–4 on
+ * the full schema check would suppress those independent findings
+ * (codex review cycle 2, class finding).
+ *
+ * So we walk every record once: run `assertSceneModule` to surface
+ * the schema finding when applicable, AND independently extract the
+ * minimal locally-valid fields needed by phases 2 / 4. The id check
+ * reuses `isKebabIdentifier` — the shared identifier rule the scene
+ * schema, registry, composition manifest, and URL parser already
+ * share. The assets check is the same `Array<string>` predicate
+ * `assertSceneModule` applies. No second schema, no parallel
+ * contract — just minimal field extraction next to the canonical
+ * gate.
+ */
+function runSceneShapePhase(scenes: Iterable<unknown>, findings: Finding[]): readonly Inspected[] {
   const inspected: Inspected[] = [];
-  for (const scene of input.scenes) {
+  for (const scene of scenes) {
     const shapeFinding = checkSceneShape(scene);
     if (shapeFinding !== null) findings.push(shapeFinding);
     inspected.push(inspectScene(scene));
   }
+  return inspected;
+}
 
-  // ── Phase 2: duplicate scene ids (clause c). ─────────────────────
-  //
-  // Reuses the same `createIdRegistry` path that builds the scene
-  // registry at runtime boot, with the new `onDuplicate` collector
-  // hook that accumulates rather than throws. Single source of truth
-  // for uniqueness semantics and the `<label>: duplicate id "<id>"`
-  // error grammar. First occurrence remains canonical (the registry
-  // does not register the duplicating entry — `ids()` mirrors what a
-  // boot-time registry would have held). Iterates over every record
-  // with a locally-valid id, regardless of full-schema status, so a
-  // duplicate id on a cleanup-less scene still surfaces.
-  const sceneIdRegistry = createIdRegistry<null>(
-    (function* idEntries() {
-      for (const item of inspected) {
-        if (item.id !== null) yield { id: item.id, value: null };
-      }
-    })(),
-    {
-      label: 'scene registry',
-      subject: 'scene',
-      // `isKebabIdentifier` already accepted the id during phase 1
-      // extraction; the id-registry's id-shape check would be
-      // redundant here. Matches `createSceneRegistry`'s wiring.
-      validateId: () => undefined,
-      onDuplicate: (entry) => {
-        findings.push({
-          code: 'duplicate-scene-id',
-          message: `scene registry: duplicate id "${entry.id}"`,
-          sceneId: entry.id,
-        });
-      },
+/**
+ * Phase 2 — duplicate scene ids (clause c).
+ *
+ * Reuses the same `createIdRegistry` path that builds the scene
+ * registry at runtime boot, with the `onDuplicate` collector hook
+ * that accumulates rather than throws. Single source of truth for
+ * uniqueness semantics and the `<label>: duplicate id "<id>"` error
+ * grammar. First occurrence remains canonical (the registry does not
+ * register the duplicating entry — `ids()` mirrors what a boot-time
+ * registry would have held). Iterates over every record with a
+ * locally-valid id, regardless of full-schema status, so a duplicate
+ * id on a cleanup-less scene still surfaces.
+ *
+ * Returns the set of unique scene ids the composition phase uses to
+ * resolve manifest references against.
+ */
+function runDuplicateIdPhase(
+  inspected: readonly Inspected[],
+  findings: Finding[],
+): ReadonlySet<string> {
+  const sceneIdRegistry = createIdRegistry<null>(idEntries(inspected), {
+    label: 'scene registry',
+    subject: 'scene',
+    // `isKebabIdentifier` already accepted the id during phase 1
+    // extraction; the id-registry's id-shape check would be
+    // redundant here. Matches `createSceneRegistry`'s wiring.
+    validateId: () => undefined,
+    onDuplicate: (entry) => {
+      findings.push({
+        code: 'duplicate-scene-id',
+        message: `scene registry: duplicate id "${entry.id}"`,
+        sceneId: entry.id,
+      });
     },
-  );
-  const validIds = new Set<string>(sceneIdRegistry.ids());
+  });
+  return new Set<string>(sceneIdRegistry.ids());
+}
 
-  // ── Phase 3: composition references (clause a + manifest shape). ─
-  //
-  // A composition with a malformed manifest emits one
-  // `composition-manifest-invalid` finding and is skipped for the
-  // reference check — walking a bad shape would produce misleading
-  // "missing scene" misses (preflight anti-pattern). `manifest` is
-  // typed `unknown` on the input; `checkCompositionShape` narrows
-  // through `assertCompositionManifest`.
-  if (input.compositions !== undefined) {
-    for (const composition of input.compositions) {
-      const manifestFinding = checkCompositionShape(composition);
-      if (manifestFinding !== null) {
-        findings.push(manifestFinding);
-        continue;
-      }
-      // After `assertCompositionManifest` has accepted the value,
-      // `findUnregisteredEntries` walks every entry through `entryId`
-      // and aggregates the misses in declaration order — the same
-      // helper the resolver uses for its preflight pass (single
-      // source of truth for the iteration shape).
-      const validManifest = composition.manifest as Parameters<typeof findUnregisteredEntries>[0];
-      const misses = findUnregisteredEntries(validManifest, (id) => validIds.has(id));
-      for (const miss of misses) {
-        findings.push({
-          code: 'unknown-scene-reference',
-          message: `composition "${composition.id}" entry [${miss.index}] references unknown scene id "${miss.id}"`,
-          compositionId: composition.id,
-          entryIndex: miss.index,
-          sceneId: miss.id,
-        });
-      }
-    }
+/** Yield `{id, value: null}` for every inspected record that has a kebab id. */
+function* idEntries(inspected: readonly Inspected[]): Iterable<{ id: string; value: null }> {
+  for (const item of inspected) {
+    if (item.id === null) continue;
+    yield { id: item.id, value: null };
   }
+}
 
-  // ── Phase 4: asset resolvability (clause b). ─────────────────────
-  //
-  // Iterates EVERY record with a locally-valid `assets` array,
-  // regardless of full-schema status. A scene missing `cleanup` may
-  // still declare an asset that fails resolution — reporting the
-  // schema fault and the asset fault are independent concerns. Also
-  // covers duplicate-id occurrences past the first: a duplicate
-  // scene's `.assets` may differ from the canonical one, and clause
-  // (b) covers "assets referenced in scene metadata".
-  //
-  // `resolveAssetUrl` is the canonical scheme + URL gate the preloader
-  // and audio service already share. We reuse it verbatim — there is
-  // ONE asset-policy rule for the runtime, parameterised by `baseUrl`
-  // and `allowedSchemes`, defaulting to `DEFAULT_ALLOWED_SCHEMES`. A
-  // future tightening of the preloader's allowlist flows here
-  // automatically.
-  const assetPolicy = input.assets;
-  const baseUrl = assetPolicy?.baseUrl;
-  const allowedSchemes = assetPolicy?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
+/**
+ * Phase 3 — composition references (clause a + manifest shape).
+ *
+ * A composition with a malformed manifest emits one
+ * `composition-manifest-invalid` finding and is skipped for the
+ * reference check — walking a bad shape would produce misleading
+ * "missing scene" misses (preflight anti-pattern). After
+ * `assertCompositionManifest` has accepted the value,
+ * `findUnregisteredEntries` walks every entry through `entryId` and
+ * aggregates the misses in declaration order — the same helper the
+ * resolver uses for its preflight pass (single source of truth for
+ * the iteration shape).
+ */
+function runCompositionPhase(
+  compositions: Iterable<ValidationCompositionInput> | undefined,
+  validIds: ReadonlySet<string>,
+  findings: Finding[],
+): void {
+  if (compositions === undefined) return;
+  for (const composition of compositions) {
+    const manifestFinding = checkCompositionShape(composition);
+    if (manifestFinding !== null) {
+      findings.push(manifestFinding);
+      continue;
+    }
+    appendCompositionReferenceFindings(composition, validIds, findings);
+  }
+}
+
+/**
+ * After the composition's manifest has cleared shape validation, walk
+ * its entries through `findUnregisteredEntries` and emit one
+ * `unknown-scene-reference` finding per missing reference (clause a).
+ */
+function appendCompositionReferenceFindings(
+  composition: ValidationCompositionInput,
+  validIds: ReadonlySet<string>,
+  findings: Finding[],
+): void {
+  const validManifest = composition.manifest as Parameters<typeof findUnregisteredEntries>[0];
+  const misses = findUnregisteredEntries(validManifest, (id) => validIds.has(id));
+  for (const miss of misses) {
+    findings.push({
+      code: 'unknown-scene-reference',
+      message: `composition "${composition.id}" entry [${miss.index}] references unknown scene id "${miss.id}"`,
+      compositionId: composition.id,
+      entryIndex: miss.index,
+      sceneId: miss.id,
+    });
+  }
+}
+
+/**
+ * Phase 4 — asset resolvability (clause b).
+ *
+ * Iterates EVERY record with a locally-valid `assets` array,
+ * regardless of full-schema status. A scene missing `cleanup` may
+ * still declare an asset that fails resolution — reporting the
+ * schema fault and the asset fault are independent concerns. Also
+ * covers duplicate-id occurrences past the first: a duplicate
+ * scene's `.assets` may differ from the canonical one, and clause
+ * (b) covers "assets referenced in scene metadata".
+ *
+ * `resolveAssetUrl` is the canonical scheme + URL gate the preloader
+ * and audio service already share. We reuse it verbatim — there is
+ * ONE asset-policy rule for the runtime, parameterised by `baseUrl`
+ * and `allowedSchemes`, defaulting to `DEFAULT_ALLOWED_SCHEMES`. A
+ * future tightening of the preloader's allowlist flows here
+ * automatically.
+ */
+function runAssetPhase(
+  inspected: readonly Inspected[],
+  policy: ValidationInput['assets'],
+  findings: Finding[],
+): void {
+  const baseUrl = policy?.baseUrl;
+  const allowedSchemes = policy?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
   for (const item of inspected) {
     if (item.assets === null) continue;
     for (const asset of item.assets) {
-      try {
-        resolveAssetUrl(asset, baseUrl, allowedSchemes);
-      } catch (cause) {
-        // Self-contained message: prepend the scene id when known so
-        // the AggregateError thrown by `assertNoValidationFindings` and
-        // the workbench's per-line `console.error` both identify which
-        // declaration to edit. Multiple scenes pointing at the same
-        // asset URL would otherwise produce indistinguishable lines
-        // (codex review cycle 3).
-        const detail = describeError(cause);
-        const message = item.id !== null ? `scene "${item.id}": ${detail}` : detail;
-        findings.push({
-          code: 'asset-unresolvable',
-          message,
-          ...(item.id !== null ? { sceneId: item.id } : {}),
-          asset,
-        });
-      }
+      const finding = checkAssetResolvable(item, asset, baseUrl, allowedSchemes);
+      if (finding !== null) findings.push(finding);
     }
   }
+}
 
-  return Object.freeze(findings);
+/**
+ * Resolve one asset URL and return either the `asset-unresolvable`
+ * finding for a rejection or `null` when the asset is well-formed.
+ *
+ * Self-contained message: prepends the scene id when known so the
+ * AggregateError thrown by `assertNoValidationFindings` and the
+ * workbench's per-line `console.error` both identify which
+ * declaration to edit. Multiple scenes pointing at the same asset URL
+ * would otherwise produce indistinguishable lines (codex review
+ * cycle 3).
+ */
+function checkAssetResolvable(
+  item: Inspected,
+  asset: string,
+  baseUrl: string | undefined,
+  allowedSchemes: readonly string[],
+): Finding | null {
+  try {
+    resolveAssetUrl(asset, baseUrl, allowedSchemes);
+    return null;
+  } catch (cause) {
+    const detail = describeError(cause);
+    const id = item.id;
+    if (id === null) {
+      return { code: 'asset-unresolvable', message: detail, asset };
+    }
+    return {
+      code: 'asset-unresolvable',
+      message: `scene "${id}": ${detail}`,
+      sceneId: id,
+      asset,
+    };
+  }
 }
 
 /**
