@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Audio orchestration — PUL-F024 / ADR-004 — in `src/runtime/audio.ts`:
+  the runtime now provides an audio service exposed to scenes as
+  `ctx.audio`. `createHowlerAudioEngine()` wraps Howler.js behind the
+  small `AudioEngine` port (the one `import ... from 'howler'` site,
+  parallel to `createTimelineEngine()` wrapping GSAP); `noopAudioEngine`
+  is the silent fallback the scene loader uses when no backend is wired
+  (the same inert-seam pattern `renderPrompter` / `presenterCommands`
+  follow). `createAudioService(engine, opts)` is the per-navigation
+  service: `load(soundId, { src, sprite? })` registers a sound,
+  `play(soundId, { sprite?, loop?, volume?, group? })` plays it,
+  `fade(soundId, from, to, durationMs)` cross-fades, `stop(soundId)` /
+  `stopGroup(group)` stop instances (named groups are kebab-case audio
+  routing/cleanup scopes — not scene/composition/timeline ids), and
+  `mute(b)` / `isMuted()` toggle master mute (persistent runtime state
+  held on the engine). The service is bound to the navigation's
+  `AbortSignal` and `stopAll()`-ed on supersession / dispose /
+  completion, so fades, loops, sprites, and muted state never survive
+  scene cleanup (ADR-004's runtime-guaranteed per-scene cleanup);
+  `mode=screenshot` / `mode=paused` build it `silent` (audible playback
+  suppressed — ADR-019 / ADR-021). Source URLs reuse PUL-F005's
+  `resolveAssetUrl` scheme resolver (now exported from
+  `src/runtime/asset-preloader.ts` — no copied scheme rules) and must be
+  declared in the active slice's `scene.assets` (ADR-008 #5 — the
+  preloader warms them); sound ids and group names obey the ADR-008 #1
+  kebab-case rule. Errors are an `AudioError` family —
+  `AudioSoundError` / `AudioGroupError` / `AudioSourceError` /
+  `AudioRangeError`. `WorkbenchSceneCtx` gains `audio`; `SceneLoaderOptions`
+  gains an optional `audioEngine`; `buildCtx` now receives the
+  per-navigation `AudioService` as its second argument. Adds `howler`
+  as a runtime dependency (`@types/howler` dev). Scenes reach audio only
+  through `ctx.audio` — never by importing Howler or constructing
+  `<audio>`. Per-scene audio teardown is runtime-driven, not author
+  discipline: a scene scopes a sound to itself with
+  `play(id, { group: <its-scene-id> })` and the new
+  `ResolveCompositionOptions.onSceneCleaned` resolver hook (wired by the
+  loader to `ctx.audio.stopGroup(sceneId)`) stops that group when the
+  scene's `cleanup(ctx)` runs. Re-registering the same sound id with the
+  same definition is idempotent (a shared transition SFX two scenes
+  both `load`); a different definition is an `AudioSoundError`. Sprite
+  maps are validated at the runtime boundary (offsets and durations
+  finite + non-negative; loop flag boolean; non-empty names). (Scrub's
+  `headCueGate`→audio cue gating is a documented follow-up; the
+  timeline adapter does not yet fire audio cues.)
 - Named timeline beats — PUL-F023 / ADR-026 — in `src/runtime/timeline.ts`:
   a scene's GSAP timeline labels *are* its beats, and `assertSceneTimeline`
   now validates every authored label is a kebab-case identifier (the same

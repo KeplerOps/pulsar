@@ -25,6 +25,7 @@
 
 import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
 import { createAssetPreloader } from './runtime/asset-preloader';
+import { type AudioService, createHowlerAudioEngine } from './runtime/audio';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import {
   type NavigationMode,
@@ -52,6 +53,14 @@ const compositionRegistry = createCompositionRegistry([
 // scene timelines into a master timeline (see `./runtime/timeline.ts`).
 const timelineEngine = createTimelineEngine();
 
+// PUL-F024 / ADR-004: the Howler audio engine — a process singleton.
+// The loader builds a fresh per-navigation `AudioService` over it
+// (scoped to the navigation's `AbortSignal`) and threads it into
+// `ctx.audio`; scenes call `ctx.audio.play(...)` / `fade(...)` etc.
+// rather than importing Howler. Howler auto-handles the browser
+// autoplay-unlock gesture, so the workbench does not.
+const audioEngine = createHowlerAudioEngine();
+
 // PUL-F005 asset preloader. The placeholder scene declares no assets,
 // so the preloader is a structural no-op today; once scenes start
 // declaring URLs the same wire-up validates schemes, fetches, and
@@ -69,10 +78,12 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // timeline (`composeMasterTimeline` — namespaced labels, sequential
 // nesting), applies the URL/runner-input head hints (`beat` seek with
 // the `onBeatMissing` fallback, `mode=loop` repeat, `mode=paused` hold,
-// `mode=screenshot` freeze-at-beat; `cueGate` is a no-op until the
-// audio engine lands per PUL-F024), plays the master, and resolves on
-// its natural completion (the resolver then tears every scene down) or
-// on the per-navigation `AbortSignal`. Per-entry `range` overrides
+// `mode=screenshot` freeze-at-beat; the audio engine lands with
+// PUL-F024, but `cueGate`→audio cue gating is a separate follow-up —
+// scenes hang `ctx.audio` cues off their own timeline callbacks today),
+// plays the master, and resolves on its natural completion (the
+// resolver then tears every scene down) or on the per-navigation
+// `AbortSignal`. Per-entry `range` overrides
 // (PUL-F003) and the presenter command controller (PUL-F020 / PUL-F021)
 // are not interpreted here yet — both land on this adapter's
 // `MasterTimeline` transport seam when their requirements are
@@ -80,20 +91,24 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 const timeline = createGsapCompositionTimeline({ engine: timelineEngine });
 
 // Scene context carries the stage handle, the per-navigation effective
-// workbench mode (PUL-F012 / ADR-007), and the GSAP instance scenes
-// build their timeline with (PUL-F022 / ADR-003). The loader calls this
-// builder once per navigation that produces a runnable target, passing
-// the effective mode it derived from the URL via `effectiveMode`.
-// Constructing ctx per navigation enforces ADR-007's "URL is the only
-// source of mode" rule by construction — there is no long-lived ctx
-// slot for a previous mode to linger in. ADR-008 #2 (explicit
-// dependencies over ambient globals) is satisfied by passing `stage`
-// and `gsap` through ctx rather than reaching for `document` or
-// importing GSAP directly in scene modules.
-const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({
+// workbench mode (PUL-F012 / ADR-007), the GSAP instance scenes build
+// their timeline with (PUL-F022 / ADR-003), and the per-navigation
+// audio service (PUL-F024 / ADR-004). The loader calls this builder
+// once per navigation that produces a runnable target, passing the
+// effective mode it derived from the URL via `effectiveMode` and the
+// audio service it built over `audioEngine`. Constructing ctx per
+// navigation enforces ADR-007's "URL is the only source of mode" rule
+// by construction — there is no long-lived ctx slot for a previous
+// mode to linger in — and makes "audio survives the scene that started
+// it" impossible. ADR-008 #2 (explicit dependencies over ambient
+// globals) is satisfied by passing `stage`, `gsap`, and `audio` through
+// ctx rather than reaching for `document`, importing GSAP, or importing
+// Howler directly in scene modules.
+const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => ({
   stage,
   mode,
   gsap: timelineEngine.gsap,
+  audio,
 });
 
 // Prompter renderer placeholder (PUL-F019 / ADR-022). Under
@@ -141,6 +156,7 @@ const loader = createSceneLoader({
   buildCtx,
   createPreloader,
   timeline,
+  audioEngine,
   renderPrompter,
 });
 

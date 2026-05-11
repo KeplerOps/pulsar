@@ -6,6 +6,12 @@
 // the helpers they all use. The loader is the testable unit `main.ts`
 // drives once PUL-F007 has parsed the URL into a `NavigationTarget`.
 
+import {
+  type AudioEngine,
+  type AudioService,
+  createAudioService,
+  noopAudioEngine,
+} from '../../src/runtime/audio';
 import { createCompositionRegistry } from '../../src/runtime/composition-registry';
 import type {
   CompositionTimelineAdapter,
@@ -33,9 +39,13 @@ export {
   createSceneRegistry,
   createPresenterController,
   createSceneLoader,
+  createAudioService,
+  noopAudioEngine,
   NAVIGATION_MODES,
 };
 export type {
+  AudioEngine,
+  AudioService,
   Caption,
   CompositionTimelineAdapter,
   CompositionTimelineRunOptions,
@@ -50,17 +60,25 @@ export type {
   WorkbenchSceneCtx,
 };
 
-// PUL-F012 added `mode` and PUL-F022 added `gsap` to the ctx. The shared
-// GSAP handle is real (the timeline engine is a process singleton) so a
-// ctx-builder stub that does not care about ctx contents still satisfies
-// `WorkbenchSceneCtx`.
+// PUL-F012 added `mode`, PUL-F022 added `gsap`, and PUL-F024 added
+// `audio` to the ctx. The shared GSAP handle is real (the timeline
+// engine is a process singleton); the loader supplies the per-navigation
+// audio service as the second `buildCtx` argument, so a ctx-builder stub
+// that does not care about ctx contents still satisfies `WorkbenchSceneCtx`
+// by forwarding it.
 import { createTimelineEngine } from '../../src/runtime/timeline';
 export const { gsap } = createTimelineEngine();
-export const stubCtx = (mode: NavigationMode): WorkbenchSceneCtx => ({ stage: null, mode, gsap });
+export const stubCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => ({
+  stage: null,
+  mode,
+  gsap,
+  audio,
+});
 
 export interface BuildSceneOpts {
   readonly id: string;
   readonly title?: string;
+  readonly assets?: readonly string[];
   readonly captions?: readonly Caption[];
   readonly create?: SceneModule['create'];
   readonly timeline?: SceneModule['timeline'];
@@ -72,7 +90,7 @@ export const buildScene = (opts: BuildSceneOpts): SceneModule => ({
   title: opts.title ?? opts.id,
   duration: 1000,
   tags: [],
-  assets: [],
+  assets: opts.assets ?? [],
   captions: opts.captions ?? [],
   defaultNext: null,
   standalone: true,

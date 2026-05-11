@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
@@ -505,7 +506,7 @@ describe('createSceneLoader — paused & scrub modes (PUL-F008)', () => {
           scenes: createSceneRegistry([makeScene(locatorKind)]),
           compositions: createCompositionRegistry([{ id: 'full-talk', manifest: [sceneId] }]),
           stage: stage.element,
-          buildCtx: (mode) => ({ stage: stage.element, mode, gsap }),
+          buildCtx: (mode, audio: AudioService) => ({ stage: stage.element, mode, gsap, audio }),
           createPreloader: () => () => undefined,
           timeline: noopTimeline,
         });
@@ -1059,7 +1060,7 @@ describe('createSceneLoader — paused & scrub modes (PUL-F008)', () => {
           scenes: createSceneRegistry([makeScene(locatorKind)]),
           compositions: createCompositionRegistry([{ id: 'full-talk', manifest: [sceneId] }]),
           stage: stage.element,
-          buildCtx: (mode) => ({ stage: stage.element, mode, gsap }),
+          buildCtx: (mode, audio: AudioService) => ({ stage: stage.element, mode, gsap, audio }),
           createPreloader: () => () => undefined,
           timeline: noopTimeline,
         });

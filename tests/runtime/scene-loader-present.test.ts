@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
@@ -226,7 +227,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
           { id: 'full-talk', manifest: ['scene-a', 'scene-b'] },
         ]),
         stage: stage.element,
-        buildCtx: (mode) => ({ stage: stage.element, mode, gsap }),
+        buildCtx: (mode, audio: AudioService) => ({ stage: stage.element, mode, gsap, audio }),
         createPreloader: () => () => undefined,
         timeline: noopTimeline,
       });

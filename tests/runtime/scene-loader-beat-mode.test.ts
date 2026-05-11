@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
@@ -473,16 +474,16 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
 
     interface ModeProbe {
       readonly modes: NavigationMode[];
-      readonly buildCtx: (mode: NavigationMode) => WorkbenchSceneCtx;
+      readonly buildCtx: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
     }
 
     const buildModeProbe = (): ModeProbe => {
       const modes: NavigationMode[] = [];
       return {
         modes,
-        buildCtx: vi.fn((mode: NavigationMode): WorkbenchSceneCtx => {
+        buildCtx: vi.fn((mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
           modes.push(mode);
-          return { stage: null, mode, gsap };
+          return { stage: null, mode, gsap, audio };
         }),
       };
     };
@@ -581,7 +582,7 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
         scenes: createSceneRegistry([intro]),
         compositions: createCompositionRegistry([]),
         stage: stage.element,
-        buildCtx: (mode) => ({ stage: stage.element, mode, gsap }),
+        buildCtx: (mode, audio: AudioService) => ({ stage: stage.element, mode, gsap, audio }),
         createPreloader: () => () => undefined,
         timeline: noopTimeline,
       });
@@ -741,12 +742,12 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       const outro = buildScene({ id: 'outro' });
       const stage = buildStage();
       let ctxCalls = 0;
-      const buildCtx = (mode: NavigationMode): WorkbenchSceneCtx => {
+      const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
         ctxCalls += 1;
         if (ctxCalls === 1) {
           throw new Error('builder bug');
         }
-        return { stage: null, mode, gsap };
+        return { stage: null, mode, gsap, audio };
       };
       const loader = createSceneLoader({
         scenes: createSceneRegistry([intro, outro]),

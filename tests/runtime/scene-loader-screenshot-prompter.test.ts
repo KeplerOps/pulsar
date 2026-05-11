@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
@@ -373,7 +374,7 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
           scenes: createSceneRegistry([makeScene(locatorKind)]),
           compositions: createCompositionRegistry([{ id: 'full-talk', manifest: [sceneId] }]),
           stage: stage.element,
-          buildCtx: (mode) => ({ stage: stage.element, mode, gsap }),
+          buildCtx: (mode, audio: AudioService) => ({ stage: stage.element, mode, gsap, audio }),
           createPreloader: () => () => undefined,
           timeline: noopTimeline,
         });
@@ -737,7 +738,7 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
       readonly probe: LifecycleProbe;
       readonly preloader: () => Promise<void>;
       readonly runner: (input: LegacyRunInput) => void;
-      readonly buildCtxFn: (mode: NavigationMode) => WorkbenchSceneCtx;
+      readonly buildCtxFn: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
       readonly scenes: readonly SceneModule[];
     };
 
@@ -771,9 +772,9 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
         probe.preloaderInvocations += 1;
         return Promise.resolve();
       };
-      const buildCtxFn = (mode: NavigationMode): WorkbenchSceneCtx => {
+      const buildCtxFn = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
         probe.buildCtxInvocations += 1;
-        return { stage: null, mode, gsap };
+        return { stage: null, mode, gsap, audio };
       };
       const scenes = [
         trace('scene-a', [{ at: 0, text: 'A1' }]),

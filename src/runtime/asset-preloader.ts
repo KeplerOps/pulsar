@@ -228,8 +228,13 @@ export function createAssetPreloader(
  *  - `baseUrl` not provided, asset is a relative path: pass through.
  *    The browser resolves against `document.baseURI` (same-origin by
  *    default).
+ *
+ * Also reused by the audio service (PUL-F024) to scheme-validate
+ * `ctx.audio.load()` sources with the same allowlist — one rule, not
+ * two copies (per the codex preflight: "extract the existing helper;
+ * do not copy the rules").
  */
-function resolveAssetUrl(
+export function resolveAssetUrl(
   asset: string,
   baseUrl: string | undefined,
   allowedSchemes: readonly string[],
