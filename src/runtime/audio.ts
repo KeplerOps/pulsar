@@ -379,17 +379,22 @@ const isFiniteNumber = (value: unknown): value is number =>
 const sameSourceList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((url, i) => url === b[i]);
 
+/** Element-wise equality of two sprite tuples (`[start, duration]` or `[start, duration, loop]`). */
+const sameSpriteTuple = (
+  av: readonly [number, number] | readonly [number, number, boolean] | undefined,
+  bv: readonly [number, number] | readonly [number, number, boolean] | undefined,
+): boolean => {
+  if (av?.length !== bv?.length) return false;
+  if (av === undefined || bv === undefined) return true;
+  return av.every((v, i) => v === bv[i]);
+};
+
 /** Equality of two optional sprite maps (same keys, each tuple element-wise equal). */
 const sameSpriteMap = (a: AudioSpriteMap | undefined, b: AudioSpriteMap | undefined): boolean => {
   if (a === undefined || b === undefined) return a === b;
   const aKeys = Object.keys(a);
   if (aKeys.length !== Object.keys(b).length) return false;
-  return aKeys.every((key) => {
-    const av = a[key];
-    const bv = b[key];
-    if (av === undefined || bv === undefined || av.length !== bv.length) return false;
-    return av.every((v, i) => v === bv[i]);
-  });
+  return aKeys.every((key) => sameSpriteTuple(a[key], b[key]));
 };
 
 /**
