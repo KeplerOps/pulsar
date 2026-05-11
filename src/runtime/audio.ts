@@ -387,12 +387,8 @@ const sameSpriteMap = (a: AudioSpriteMap | undefined, b: AudioSpriteMap | undefi
   return aKeys.every((key) => {
     const av = a[key];
     const bv = b[key];
-    return (
-      bv !== undefined &&
-      av !== undefined &&
-      av.length === bv.length &&
-      av.every((v, i) => v === bv[i])
-    );
+    if (av === undefined || bv === undefined || av.length !== bv.length) return false;
+    return av.every((v, i) => v === bv[i]);
   });
 };
 
