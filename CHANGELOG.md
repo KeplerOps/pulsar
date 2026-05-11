@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Rehearsal mode — PUL-F026 / ADR-004 — in `src/runtime/navigation.ts`,
+  `src/runtime/audio.ts`, and `src/runtime/scene-loader.ts`: a new
+  workbench mode `mode=rehearsal` in which the runtime preserves every
+  timeline-state transition the equivalent non-rehearsal navigation
+  would run (same composition slice, same head-entry overrides, same
+  master timeline, no head-only `repeat` / `hold` / `cueGate` /
+  `screenshot` runner-input hint, no slice truncation) while the
+  per-navigation audio service is built `'log-cues'`: every accepted
+  audio operation (`play` / `fade` / `stop` / `stopGroup`) is emitted
+  as a frozen `AudioCueLogEntry` (semantic ids only — sound id,
+  sprite, group, operation, numeric envelope parameters, per-service
+  monotonic sequence; NEVER source URLs, Howler handles, asset paths,
+  or raw scene objects) to the workbench's optional `onAudioCue`
+  sink, and sounds are constructed muted at the engine so no audible
+  output reaches the listener. The rehearsal contract lives entirely
+  on the audio-service seam — there is no head-only runner-input
+  field, no slice transform, no new resolver semantics, no
+  presenter-command extension. The output policy is a literal-typed
+  `AudioOutputPolicy = 'audible' | 'silent' | 'log-cues'` on
+  `AudioServiceOptions`: `'silent'` is the existing screenshot /
+  paused build (audible playback suppressed — ADR-019 / ADR-021);
+  `'log-cues'` is rehearsal (muted + emitted); `'audible'` is the
+  default for every other mode. The previous `silent: boolean` field
+  is replaced by the union (one field, three values, future-extensible
+  to silent-rehearsal / export-silence / ducking variants on the same
+  seam). `load` and `mute` are NOT cues (registration is bookkeeping
+  and master mute is engine-level persistent state); validation
+  throws never emit; post-dispose calls never emit; a throwing
+  `onCue` sink is swallowed so a workbench-side log-surface bug does
+  not break scene playback. Master mute survives the rehearsal-mode
+  flip (engine-level state). The runtime-driven per-scene audio
+  teardown (`onSceneCleaned` → `audio.stopGroup(sceneId)`) is itself
+  an accepted audio operation and therefore part of the rehearsal
+  cue stream — pinned by `scene-loader-audio.test.ts`. PUL-F026
+  transitions DRAFT → ACTIVE with this PR: the runtime materially
+  delivers both halves of the requirement statement ("audio is
+  silenced OR logged as cues without altering timeline state") via
+  the policy + the no-slice-truncation / no-head-hint structural
+  defense.
 - Presenter master mute — PUL-F025 / ADR-004 — in `src/runtime/presenter.ts`
   and `src/runtime/scene-loader.ts`: the presenter command allowlist gains
   one new kind, `'toggle-master-mute'`, and the loader's `buildLoad`

@@ -135,8 +135,28 @@ PUL-F024 lands the runtime side in `src/runtime/audio.ts`:
   documented resolver follow-up — the same one that would let a
   composition slice repeat a scene id.
 - Master mute is held on the engine (persistent runtime state), not as a
-  per-scene checkbox. `mode=screenshot` / `mode=paused` build the
-  service `silent` (audible playback suppressed — ADR-019 / ADR-021).
+  per-scene checkbox. The per-navigation audio output policy is a
+  literal-typed `AudioOutputPolicy` on `AudioServiceOptions` (default
+  `'audible'`): `mode=screenshot` / `mode=paused` build the service
+  `'silent'` (audible playback suppressed — ADR-019 / ADR-021);
+  `mode=rehearsal` (PUL-F026) builds it `'log-cues'` — also muted at
+  engine construction, with each accepted audio operation (`play` /
+  `fade` / `stop` / `stopGroup`) emitted as a semantic
+  `AudioCueLogEntry` to the workbench's optional `onAudioCue` sink.
+  `'audible'` is the default for every other mode. Future variations
+  (export silence, ducking, bus volume, an audio-status UI) extend
+  this same union rather than scattering branches across the runtime.
+- Rehearsal (PUL-F026) lives entirely on this audio-service seam — not
+  as a head-only timeline-runner hint, not as a slice truncation, not
+  as a presenter command. Rehearsal preserves the same composition
+  slice and the same master timeline progression as the equivalent
+  non-rehearsal navigation; only audio output changes. The cue log
+  carries semantic ids only (sound id, sprite, group, operation,
+  monotonic sequence, numeric envelope parameters) — never source
+  URLs, Howler handles, absolute paths, or raw scene objects. `load`
+  and `mute` are NOT cues (registration and engine-level state).
+  Validation throws never emit. Post-dispose calls never emit. A
+  throwing sink is swallowed.
 - Browser autoplay policy is centralized by Howler's default Web Audio
   mode + `Howler.autoUnlock`: a `play()` made before the first user
   gesture is deferred (the suspended `AudioContext` blocks playback) and

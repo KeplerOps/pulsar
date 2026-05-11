@@ -40,9 +40,14 @@
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 
 /**
- * Workbench mode set per ADR-007. The seven modes are the only values
+ * Workbench mode set per ADR-007. The eight modes are the only values
  * accepted for `mode=` URL parameters. Frozen so consumers cannot
  * mutate the public allowlist in place.
+ *
+ * `rehearsal` (PUL-F026 / ADR-004) is the only mode whose contract
+ * lives entirely on the per-navigation audio service rather than at
+ * a head-only timeline-runner seam — see `audio.ts` `outputPolicy`
+ * and `scene-loader.ts` `buildLoad`.
  */
 export const NAVIGATION_MODES = Object.freeze([
   'present',
@@ -52,10 +57,11 @@ export const NAVIGATION_MODES = Object.freeze([
   'scrub',
   'screenshot',
   'prompter',
+  'rehearsal',
 ] as const);
 
 /**
- * One of the seven {@link NAVIGATION_MODES} values.
+ * One of the eight {@link NAVIGATION_MODES} values.
  */
 export type NavigationMode = (typeof NAVIGATION_MODES)[number];
 

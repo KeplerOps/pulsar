@@ -57,7 +57,7 @@ import { Howl, Howler, type SoundSpriteDefinitions } from 'howler';
 import { DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
 import { describeError } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
-import { isPlainRecord } from './object';
+import { deepFreeze, isPlainRecord } from './object';
 
 /* ------------------------------------------------------------------ *
  *  Errors
@@ -285,6 +285,126 @@ export interface PlayOptions {
   readonly group?: string;
 }
 
+/**
+ * Public allowlist of audio output policies (PUL-F024 / PUL-F026 /
+ * ADR-004). Frozen so consumers cannot mutate the public set, and
+ * mirrored by {@link AudioOutputPolicy} so the type and the runtime
+ * check share one source of truth — same pattern
+ * {@link import('./navigation').NAVIGATION_MODES} uses. Adding a value
+ * here automatically widens the type, the validation, and any
+ * `(AUDIO_OUTPUT_POLICIES as readonly string[]).includes(...)`
+ * defense-in-depth check at the loader.
+ */
+export const AUDIO_OUTPUT_POLICIES = Object.freeze(['audible', 'silent', 'log-cues'] as const);
+
+/**
+ * Output policy for the audio service (PUL-F024 / PUL-F026 / ADR-004).
+ *
+ * The policy is held on the per-navigation service rather than the
+ * engine because rehearsal vs screenshot vs paused vs present is a
+ * per-navigation contract — the engine is a process singleton.
+ *
+ *  - `'audible'` (default) — sounds are constructed unmuted; cue
+ *    requests reach the engine and produce audio. The historical
+ *    default for `mode=present` / `mode=standalone` / `mode=loop` /
+ *    `mode=scrub`.
+ *  - `'silent'` — sounds are constructed muted at the engine. The
+ *    workbench-mode capture / paused-inspection contract: `mode=
+ *    screenshot` / `mode=paused` build the service silent because
+ *    audible playback is suppressed (ADR-019 / ADR-021).
+ *  - `'log-cues'` — sounds are constructed muted AND each accepted
+ *    audio operation (post-validation, post-engine-call) emits a
+ *    semantic {@link AudioCueLogEntry} to the optional
+ *    {@link AudioServiceOptions.onCue} sink. The PUL-F026 / ADR-004
+ *    rehearsal-mode contract: "audio is silenced OR logged as cues
+ *    without altering timeline state." With no sink wired the policy
+ *    is effectively silent (the workbench has not yet attached a cue
+ *    UI / log surface).
+ *
+ * Future variations (silent rehearsal as a distinct mode, export
+ * silence, ducking, bus volume, an audio-status UI) extend this same
+ * union rather than adding scattered branches across the runtime.
+ */
+export type AudioOutputPolicy = (typeof AUDIO_OUTPUT_POLICIES)[number];
+
+/**
+ * Common fields shared by every {@link AudioCueLogEntry} variant.
+ * Factored out so a consumer that does not narrow by `operation` can
+ * still read `sequence` and `operation` without branching.
+ */
+interface AudioCueLogBase {
+  /**
+   * Per-service monotonic sequence number. Starts at `1` for the
+   * first emitted cue and increments by one per emitted cue. A
+   * service that emits no cues never assigns a sequence.
+   */
+  readonly sequence: number;
+}
+
+/** A `play` cue (PUL-F026 / ADR-004). `soundId` is always present. */
+export interface AudioCueLogPlay extends AudioCueLogBase {
+  readonly operation: 'play';
+  readonly soundId: string;
+  readonly sprite?: string;
+  readonly group?: string;
+  readonly volume?: number;
+  readonly loop?: boolean;
+}
+
+/** A `fade` cue (PUL-F026 / ADR-004). `soundId` and `fade` are always present. */
+export interface AudioCueLogFade extends AudioCueLogBase {
+  readonly operation: 'fade';
+  readonly soundId: string;
+  readonly fade: { readonly from: number; readonly to: number; readonly durationMs: number };
+}
+
+/** A `stop` cue (PUL-F026 / ADR-004). `soundId` is always present. */
+export interface AudioCueLogStop extends AudioCueLogBase {
+  readonly operation: 'stop';
+  readonly soundId: string;
+}
+
+/** A `stop-group` cue (PUL-F026 / ADR-004). `group` is present; `soundId` is forbidden (the call targets a group, not a sound). */
+export interface AudioCueLogStopGroup extends AudioCueLogBase {
+  readonly operation: 'stop-group';
+  readonly group: string;
+}
+
+/**
+ * One entry in the rehearsal cue log (PUL-F026 / ADR-004). Emitted by
+ * `outputPolicy: 'log-cues'` after the audio service has accepted an
+ * operation (sound id / sprite / group / range validation all passed
+ * and the engine call has returned). The entry is **semantic only**:
+ * sound ids, sprite names, group names, numeric envelope parameters,
+ * a `sequence` monotonic across the service's lifetime, and the
+ * `operation` name. It does NOT carry source URLs, Howler handles,
+ * absolute paths, request headers, scene objects, or asset payload
+ * — the preflight (`docs/design/pul-f026-rehearsal-mode-preflight.md`)
+ * names this explicitly: "log semantic ids only."
+ *
+ * `load` and `mute` are NOT cues: registration is bookkeeping and
+ * master mute is engine-level persistent state. Operations that fail
+ * the boundary validation do NOT emit (the cue log represents
+ * accepted operations, not rejected ones). Operations made after the
+ * service is disposed do NOT emit (the cue log stops when the
+ * navigation ends, parallel to `stopAll()`).
+ *
+ * Modeled as a discriminated union over `operation` so a consumer can
+ * narrow with `if (entry.operation === 'fade') ...` and have the
+ * compiler guarantee `entry.fade` is defined. Impossible shapes
+ * (`{ operation: 'play' }` without `soundId`,
+ * `{ operation: 'stop-group', soundId: 'bed' }`, etc.) are rejected
+ * at the type level rather than left to runtime invariant.
+ *
+ * Entries are returned deep-frozen so a consumer cannot mutate the
+ * log (or any nested payload such as `fade`) in place.
+ */
+export type AudioCueLogEntry =
+  | AudioCueLogPlay
+  | AudioCueLogFade
+  | AudioCueLogStop
+  | AudioCueLogStopGroup;
+
 /** Construction options for {@link createAudioService}. */
 export interface AudioServiceOptions {
   /**
@@ -294,8 +414,24 @@ export interface AudioServiceOptions {
    * An already-aborted signal disposes the service immediately.
    */
   readonly signal: AbortSignal;
-  /** Construct every sound muted (screenshot / paused modes — audible playback is suppressed). */
-  readonly silent?: boolean;
+  /**
+   * Per-navigation audio output policy (PUL-F024 / PUL-F026 / ADR-004).
+   * Defaults to `'audible'`. `'silent'` mutes at engine construction
+   * time (screenshot / paused). `'log-cues'` mutes AND emits a
+   * semantic {@link AudioCueLogEntry} to {@link onCue} for every
+   * accepted audio operation (rehearsal).
+   */
+  readonly outputPolicy?: AudioOutputPolicy;
+  /**
+   * Cue-log sink for {@link AudioOutputPolicy} `'log-cues'`. Receives
+   * a frozen {@link AudioCueLogEntry} per accepted audio operation
+   * (post-validation, post-engine-call). Non-fatal: a throwing sink is
+   * swallowed so a workbench-side log surface bug does not break
+   * scene playback. Inert under any policy other than `'log-cues'`
+   * even when supplied — the policy decides whether cues are emitted,
+   * not the presence of the sink. Inert post-dispose.
+   */
+  readonly onCue?: (entry: AudioCueLogEntry) => void;
   /**
    * The source URLs scenes may register. Every {@link SoundDefinition.src}
    * URL must be in this set (ADR-008 #5 — audio is declared in
@@ -495,17 +631,130 @@ const assertSpriteMap = (soundId: string, sprite: unknown): void => {
 };
 
 /** Build the per-navigation {@link AudioService} over `engine`. */
+/**
+ * Render an unknown value for the boundary-validation error message.
+ * `JSON.stringify` throws on BigInt and silently drops Symbols, so a
+ * plain-JS misuse that passes `1n` would surface as a `TypeError`
+ * instead of {@link AudioError} (codex review, cycle 2). This helper
+ * falls back to a `typeof` + `String()` rendering for values
+ * `JSON.stringify` cannot encode, so every primitive / object value
+ * produces a readable, safe diagnostic.
+ */
+function describeRawOption(value: unknown): string {
+  try {
+    const json = JSON.stringify(value);
+    if (json !== undefined) return json;
+  } catch {
+    // Fall through to the typeof path for BigInt / cyclic / etc.
+  }
+  return `${typeof value}(${String(value)})`;
+}
+
 export function createAudioService(
   engine: AudioEngine,
   options: AudioServiceOptions,
 ): AudioService {
-  const silent = options.silent === true;
+  // Reject the legacy `silent: boolean` key loudly (codex review,
+  // cycle 3). The previous public option was `silent?: boolean`; the
+  // new public option is the more general `outputPolicy`. A
+  // plain-JS / downstream caller that still passes `{ silent: true }`
+  // would have the key silently ignored and produce audible playback
+  // — the worst possible migration failure for an audio-suppression
+  // option. Fail loud at the boundary instead.
+  if ('silent' in options) {
+    throw new AudioError(
+      "audio 'silent' option was replaced by outputPolicy in PUL-F026 / ADR-004 — pass outputPolicy: 'silent' / 'log-cues' / 'audible' instead",
+    );
+  }
+  // Runtime boundary (codex review, cycles 1 + 2): a plain-JS caller
+  // (or a direct caller that casts past the literal-typed union) could
+  // pass a misspelled policy like `'log-cue'`, or pass `null`/`true`/
+  // `1n` / a Symbol / etc., and silently get a muted, no-cues service
+  // instead of `'audible'`. Validate at construction so the misuse
+  // fails loud rather than producing dead-air playback. `undefined` →
+  // default `'audible'`; every other value goes through the allowlist
+  // check (so `null`, `true`, an empty string, and misspelled
+  // policies all fail loud rather than coalescing to the default via
+  // `??`). The allowlist is the same frozen tuple
+  // {@link AUDIO_OUTPUT_POLICIES} the type derives from, so the type
+  // and the runtime check cannot drift.
+  const rawPolicy = options.outputPolicy === undefined ? 'audible' : options.outputPolicy;
+  if (!(AUDIO_OUTPUT_POLICIES as readonly unknown[]).includes(rawPolicy)) {
+    throw new AudioError(
+      `audio outputPolicy must be one of ${AUDIO_OUTPUT_POLICIES.map((p) => `'${p}'`).join(' / ')}; got ${describeRawOption(rawPolicy)}`,
+    );
+  }
+  const outputPolicy: AudioOutputPolicy = rawPolicy;
+  // Same boundary discipline (codex review, cycle 2): `onCue` is a
+  // workbench-supplied function (kept across navigations in
+  // `SceneLoaderOptions.onAudioCue`), so a JS caller / a test
+  // harness / a misconfigured bootstrap could pass a non-function
+  // (`true`, `{}`, a number). Validating at construction surfaces
+  // the misuse via the loader's existing rollback-then-surfaceError
+  // path instead of silently swallowing a `TypeError` inside the
+  // non-fatal `emitCue` try/catch — which would leave rehearsal with
+  // an empty cue stream and no diagnostic.
+  if (options.onCue !== undefined && typeof options.onCue !== 'function') {
+    throw new AudioError(
+      `audio onCue must be a function or omitted; got ${describeRawOption(options.onCue)}`,
+    );
+  }
+  // Engine sounds are constructed muted under both 'silent' and
+  // 'log-cues' — they share the no-audible-output structural defense.
+  // 'log-cues' adds an extra logging layer on top.
+  const muted = outputPolicy !== 'audible';
   const onError = options.onError ?? ((): void => undefined);
+  const onCue = options.onCue;
   const allowed = options.allowedSources === undefined ? null : new Set(options.allowedSources);
 
   const sounds = new Map<string, RegisteredSound>();
   const groups = new Map<string, GroupedPlay[]>();
   let disposed = false;
+  // Per-service monotonic sequence for `AudioCueLogEntry.sequence`.
+  // Only incremented when a cue is actually emitted (policy is
+  // `log-cues` AND a sink is wired), so non-log-cues services pay
+  // zero cost.
+  let cueSequence = 0;
+
+  /**
+   * Emit a cue log entry to the optional `onCue` sink (PUL-F026 /
+   * ADR-004). Inert when:
+   *  - the policy is not `'log-cues'`, OR
+   *  - no sink was supplied, OR
+   *  - the service has been disposed (the cue logger stops with the
+   *    navigation, parallel to `stopAll()`).
+   *
+   * A throwing sink is swallowed: the diagnostic surface must not
+   * propagate exceptions back through `play` / `fade` / `stop` /
+   * `stopGroup` and break scene playback.
+   */
+  // Per-variant `Omit<…, 'sequence'>` so emitting code can hand in
+  // each operation's exact shape and TypeScript narrows correctly.
+  // `Omit<AudioCueLogEntry, 'sequence'>` on the union would collapse
+  // the variant-specific required fields (`group` on `stop-group`,
+  // `fade` on `fade`) into optional ones, defeating the
+  // discriminated-union guarantee.
+  type CueInput =
+    | Omit<AudioCueLogPlay, 'sequence'>
+    | Omit<AudioCueLogFade, 'sequence'>
+    | Omit<AudioCueLogStop, 'sequence'>
+    | Omit<AudioCueLogStopGroup, 'sequence'>;
+  const emitCue = (entry: CueInput): void => {
+    if (outputPolicy !== 'log-cues' || onCue === undefined || disposed) return;
+    cueSequence += 1;
+    // Deep-freeze (codex review, cycle 1): the contract says the cue
+    // log is read-only. `Object.freeze` alone would leave nested
+    // payloads (e.g. `fade: { from, to, durationMs }`) writable, so a
+    // consumer could mutate `cue.fade.to` after receiving the entry.
+    // `deepFreeze` walks every plain object/array reachable from the
+    // entry.
+    const frozen = deepFreeze({ sequence: cueSequence, ...entry } as AudioCueLogEntry);
+    try {
+      onCue(frozen);
+    } catch {
+      // Intentionally empty: the cue-log sink is non-fatal.
+    }
+  };
 
   const assertSoundId = (soundId: string): void => {
     if (!isKebabIdentifier(soundId)) {
@@ -639,7 +888,7 @@ export function createAudioService(
       const handle = engine.createSound({
         src,
         ...(definition.sprite === undefined ? {} : { sprite: definition.sprite }),
-        muted: silent,
+        muted,
         onError: (err) => {
           // Howler's async load failures can arrive after the navigation
           // ended (abort / supersession / completion). A disposed
@@ -677,6 +926,19 @@ export function createAudioService(
         if (list === undefined) groups.set(opts.group, [{ handle: sound.handle, playId }]);
         else list.push({ handle: sound.handle, playId });
       }
+      // Rehearsal cue log (PUL-F026): emitted only when `outputPolicy
+      // === 'log-cues'` AND `onCue` is set (the `emitCue` helper
+      // short-circuits otherwise so non-log-cues services pay no
+      // per-op cost). Captures every play option the scene supplied,
+      // with NO source URL.
+      emitCue({
+        operation: 'play',
+        soundId,
+        ...(opts.sprite === undefined ? {} : { sprite: opts.sprite }),
+        ...(opts.group === undefined ? {} : { group: opts.group }),
+        ...(opts.volume === undefined ? {} : { volume: opts.volume }),
+        ...(opts.loop === undefined ? {} : { loop: opts.loop }),
+      });
     },
 
     fade(soundId, from, to, durationMs) {
@@ -690,32 +952,47 @@ export function createAudioService(
         );
       }
       sound.handle.fade(from, to, durationMs);
+      emitCue({
+        operation: 'fade',
+        soundId,
+        fade: { from, to, durationMs },
+      });
     },
 
     stop(soundId) {
       if (disposed) return;
       const sound = requireSound(soundId);
       sound.handle.stop();
+      emitCue({ operation: 'stop', soundId });
     },
 
     stopGroup(group) {
       if (disposed) return;
       assertGroupName(group);
       const list = groups.get(group);
-      if (list === undefined) return;
-      // Per-play error isolation (codex review, cycle 3): a throwing
-      // engine `stop()` must not prevent later plays in the group from
-      // being stopped. Failures route through the non-fatal `onError`
-      // sink — the cleanup contract is "every play in the group is
-      // attempted to be stopped," not "all-or-nothing."
-      for (const play of list) {
-        try {
-          play.handle.stop(play.playId);
-        } catch (err) {
-          reportCleanupError('stopGroup', group, err);
+      if (list !== undefined) {
+        // Per-play error isolation (codex review, cycle 3): a throwing
+        // engine `stop()` must not prevent later plays in the group from
+        // being stopped. Failures route through the non-fatal `onError`
+        // sink — the cleanup contract is "every play in the group is
+        // attempted to be stopped," not "all-or-nothing."
+        for (const play of list) {
+          try {
+            play.handle.stop(play.playId);
+          } catch (err) {
+            reportCleanupError('stopGroup', group, err);
+          }
         }
+        groups.delete(group);
       }
-      groups.delete(group);
+      // PUL-F026 (codex review, cycle 1): emit AFTER the engine
+      // stop loop and the bookkeeping delete (parity with `play` /
+      // `fade` / `stop`, which all emit after the engine call
+      // returns). An accepted stop-group of an empty group is still
+      // recorded as an audio operation the scene requested — same
+      // semantics `stop` of a never-played sound has — but the cue
+      // is published only after the state transition it represents.
+      emitCue({ operation: 'stop-group', group });
     },
 
     mute(muted) {

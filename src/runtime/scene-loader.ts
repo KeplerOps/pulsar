@@ -29,7 +29,14 @@
 //  - ADR-007 — runtime parses URL parameters at startup AND popstate.
 //  - ADR-013 — URL navigation grammar boundary; F007 owns parsing.
 
-import { type AudioEngine, type AudioService, createAudioService, noopAudioEngine } from './audio';
+import {
+  type AudioCueLogEntry,
+  type AudioEngine,
+  type AudioOutputPolicy,
+  type AudioService,
+  createAudioService,
+  noopAudioEngine,
+} from './audio';
 import type { CompositionRegistry } from './composition-registry';
 import type { AssetPreloader, CompositionTimelineAdapter } from './composition-resolver';
 import { describeError } from './error';
@@ -185,6 +192,20 @@ export interface SceneLoaderOptions {
    * follow.
    */
   readonly audioEngine?: AudioEngine;
+  /**
+   * Workbench-supplied cue-log sink (PUL-F026 / ADR-004). When set,
+   * the loader threads it through to every per-navigation
+   * {@link AudioService} as `onCue`. The per-navigation
+   * {@link AudioOutputPolicy} decides whether cues are emitted — the
+   * loader supplies `'log-cues'` under `mode=rehearsal` and `'silent'`
+   * under `mode=screenshot` / `mode=paused`, so a workbench that
+   * always wires a cue-log surface only sees entries during
+   * rehearsal navigations. Optional: a workbench that has not wired
+   * a cue UI yet omits the field and rehearsal navigations are
+   * effectively silent — the audio is still muted at the engine
+   * level (PUL-F026: "audio is silenced OR logged as cues").
+   */
+  readonly onAudioCue?: (entry: AudioCueLogEntry) => void;
   /**
    * Build a per-navigation asset preloader bound to that
    * navigation's abort signal. The loader calls this once per
@@ -641,24 +662,49 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       surfaceError(err);
       return null;
     }
-    // PUL-F024 / ADR-004: the per-navigation audio service. Built over
-    // `audioEngine`, scoped to `controller.signal` (abort ⇒ every sound
-    // stopped + unloaded), restricted to the URLs the slice declared in
-    // `scene.assets` (ADR-008 #5 — the preloader warmed them), and
-    // `silent` under screenshot / paused. Threaded into `ctx.audio` via
-    // `buildCtx`, alongside `mode` (PUL-F012). Built AFTER the preloader
-    // so a preloader-factory failure does not waste allocations, and
-    // wrapped in the same rollback-then-surfaceError pattern so a
-    // throwing builder does not leave stale stage attrs or skip the
-    // queue's error sink.
+    // PUL-F024 / PUL-F026 / ADR-004: the per-navigation audio service.
+    // Built over `audioEngine`, scoped to `controller.signal` (abort ⇒
+    // every sound stopped + unloaded), restricted to the URLs the slice
+    // declared in `scene.assets` (ADR-008 #5 — the preloader warmed
+    // them), and with a per-mode `AudioOutputPolicy`:
+    //  - `'silent'`   under `mode=screenshot` / `mode=paused` (audible
+    //                 playback suppressed — ADR-019 / ADR-021).
+    //  - `'log-cues'` under `mode=rehearsal` (audible playback
+    //                 suppressed AND every accepted audio operation
+    //                 is emitted to the workbench's optional
+    //                 `onAudioCue` sink — PUL-F026 / ADR-004).
+    //  - `'audible'`  otherwise (`present` / `standalone` / `loop` /
+    //                 `scrub`).
+    //
+    // The rehearsal policy lives entirely on this audio-service seam
+    // — there is no head-only runner-input hint, no slice truncation,
+    // no resolver semantics — so "without altering timeline state"
+    // (PUL-F026) is the structural invariant. The optional
+    // `onAudioCue` sink is threaded through unconditionally; the
+    // policy decides whether cues are emitted, so a non-rehearsal
+    // navigation pays no per-op cost even when the workbench wired a
+    // cue surface.
+    //
+    // Threaded into `ctx.audio` via `buildCtx`, alongside `mode`
+    // (PUL-F012). Built AFTER the preloader so a preloader-factory
+    // failure does not waste allocations, and wrapped in the same
+    // rollback-then-surfaceError pattern so a throwing builder does
+    // not leave stale stage attrs or skip the queue's error sink.
+    const outputPolicy: AudioOutputPolicy =
+      mode === 'rehearsal'
+        ? 'log-cues'
+        : mode === 'screenshot' || mode === 'paused'
+          ? 'silent'
+          : 'audible';
     let ctx: unknown;
     let audio: AudioService;
     try {
       audio = createAudioService(audioEngine, {
         signal: controller.signal,
-        silent: mode === 'screenshot' || mode === 'paused',
+        outputPolicy,
         allowedSources: collectAudioSources(resolved),
         onError,
+        ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
       });
       ctx = options.buildCtx(mode, audio);
     } catch (err) {
