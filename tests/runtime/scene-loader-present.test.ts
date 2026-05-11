@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioEngine,
   type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
@@ -34,6 +35,32 @@ import {
   sceneTarget,
   stubCtx,
 } from './scene-loader.helpers';
+
+interface FakeSource {
+  readonly source: import('../../src/runtime/presenter').PresenterCommandSource;
+  readonly emit: (cmd: unknown) => void;
+  readonly handlerCount: () => number;
+}
+
+const buildFakeSource = (): FakeSource => {
+  const handlers = new Set<(cmd: import('../../src/runtime/presenter').PresenterCommand) => void>();
+  return {
+    source: {
+      subscribe(handler) {
+        handlers.add(handler);
+        return () => {
+          handlers.delete(handler);
+        };
+      },
+    },
+    emit(cmd) {
+      for (const h of handlers) {
+        h(cmd as import('../../src/runtime/presenter').PresenterCommand);
+      }
+    },
+    handlerCount: () => handlers.size,
+  };
+};
 
 describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () => {
   describe('present-mode adapter seams (PUL-F013 boundary, NOT a PUL-F013 implementation)', () => {
@@ -431,7 +458,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
     });
   });
 
-  describe('presenter-controls dispatch (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
+  describe('presenter-controls dispatch (PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / ADR-024)', () => {
     // PUL-F020 statement: in `mode=present`, the runtime SHALL accept
     // presenter input to advance to the next beat, hold the current
     // beat, skip forward, and skip backward. Beat progression SHALL
@@ -446,6 +473,19 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
     // unchanged. "Same point" playhead behavior is the runner's
     // contract, so PUL-F021, like PUL-F020, stays DRAFT until a real
     // presenter UI and a GSAP runner land with end-to-end tests.
+    //
+    // PUL-F025 statement: the runtime SHALL accept presenter input to
+    // toggle master mute, and master mute SHALL silence audio without
+    // altering timeline state. PUL-F025 also extends THIS seam by
+    // adding the `toggle-master-mute` command kind; the loader-side
+    // dispatch is the same mode scoping + controller construction +
+    // abort-tied auto-cleanup. PUL-F025-specific behavior is the
+    // loader's audio handler: on `toggle-master-mute` it calls
+    // `audio.mute(!audio.isMuted())`. The audio engine already owns
+    // master mute as runtime state per ADR-004, so PUL-F025 stays
+    // DRAFT until a real presenter UI surface lands and emits the
+    // kind end-to-end (mirroring PUL-F020 / PUL-F021). The
+    // PUL-F025-specific tests live in their own describe block below.
     //
     // This block pins the loader-side dispatch — the seam by which a
     // workbench-supplied `PresenterCommandSource` reaches the
@@ -481,33 +521,6 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
     //     "interruptible without breaking timeline state" clause).
     //   - Unknown command kinds are dropped at the controller
     //     boundary; the loader's `onError` sees a diagnostic.
-
-    interface FakeSource {
-      readonly source: import('../../src/runtime/presenter').PresenterCommandSource;
-      readonly emit: (cmd: unknown) => void;
-      readonly handlerCount: () => number;
-    }
-    const buildFakeSource = (): FakeSource => {
-      const handlers = new Set<
-        (cmd: import('../../src/runtime/presenter').PresenterCommand) => void
-      >();
-      return {
-        source: {
-          subscribe(handler) {
-            handlers.add(handler);
-            return () => {
-              handlers.delete(handler);
-            };
-          },
-        },
-        emit(cmd) {
-          for (const h of handlers) {
-            h(cmd as import('../../src/runtime/presenter').PresenterCommand);
-          }
-        },
-        handlerCount: () => handlers.size,
-      };
-    };
 
     it('forwards `input.presenter` to the runner under `mode=present` for a single-scene target', async () => {
       const sceneA = buildScene({ id: 'scene-a' });
@@ -651,7 +664,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       expect(seen).toEqual([{ presenterPresent: false }]);
     });
 
-    it('delivers every command kind PUL-F020 + PUL-F021 name (advance, hold, skip-forward, skip-backward, pause, resume) to the runner', async () => {
+    it('delivers every command kind PUL-F020 + PUL-F021 + PUL-F025 name (advance, hold, skip-forward, skip-backward, pause, resume, toggle-master-mute) to the runner', async () => {
       const sceneA = buildScene({ id: 'scene-a' });
       const stage = buildStage();
       const fake = buildFakeSource();
@@ -692,6 +705,10 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       // PUL-F021 (ADR-024): pause/resume ride the same dispatch path.
       fake.emit({ kind: 'pause' });
       fake.emit({ kind: 'resume' });
+      // PUL-F025 (ADR-004): toggle-master-mute rides the same
+      // dispatch path. The runner sees it too — the loader's audio
+      // handler is additive, not a filter.
+      fake.emit({ kind: 'toggle-master-mute' });
 
       loader.dispose();
       await loader.idle();
@@ -703,6 +720,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
         'skip-backward',
         'pause',
         'resume',
+        'toggle-master-mute',
       ]);
     });
 
@@ -916,6 +934,15 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       await loader.idle();
 
       expect(received).toEqual(['advance']);
+      // PUL-F025 / ADR-023 (codex review, post-PUL-F025): even
+      // though PUL-F025 added a second subscriber on the navigation
+      // controller (the loader's audio handler), the controller
+      // validates each source emission ONCE — not once per
+      // subscriber — and surfaces ONE diagnostic per rejected
+      // emission regardless of how many subscribers are attached.
+      // Pin the exact count so a regression that reverted the
+      // controller to per-subscriber validation (multiplying
+      // diagnostic noise as subscribers grow) is caught here.
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeInstanceOf(Error);
       expect((errors[0] as Error).message).toMatch(/presenter/i);
@@ -945,6 +972,829 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
         name.startsWith('data-pulsar-mode-'),
       );
       expect(modeAttrs).toEqual([]);
+    });
+  });
+
+  describe('presenter master-mute dispatch (PUL-F025 / ADR-004)', () => {
+    // PUL-F025 statement: the runtime SHALL accept presenter input to
+    // toggle master mute. Master mute SHALL silence audio without
+    // altering timeline state.
+    //
+    // PUL-F025 composes ADR-004 (master mute as engine-level runtime
+    // state) with the existing presenter command seam (ADR-023):
+    //  - Schema: `'toggle-master-mute'` joins `PRESENTER_COMMAND_KINDS`.
+    //    No new command source, controller, validator, or mode.
+    //  - Loader-side audio handler: on `'toggle-master-mute'`,
+    //    `audio.mute(!audio.isMuted())`. The handler lives in
+    //    `buildLoad` because that is the only seam holding both the
+    //    per-navigation `PresenterController` and the per-navigation
+    //    `AudioService`. The subscription is auto-detached on the
+    //    navigation's `AbortSignal` via the controller's existing
+    //    teardown.
+    //  - Timeline state untouched: no `cleanup(ctx)`, no abort, no
+    //    URL / history / mode mutation. The runner's pending promise
+    //    stays pending while mute toggles.
+    //
+    // PUL-F025 stays DRAFT until a presenter UI surface lands and
+    // emits the kind end-to-end, mirroring the PUL-F020 / PUL-F021
+    // precedent. The runtime-side contract is delivered by this PR;
+    // the issue ↔ PUL-F025 link stays `DOCUMENTS`.
+
+    // Local fresh-engine factory: the exported `noopAudioEngine` is a
+    // process singleton with mutable master-mute state, so reusing it
+    // across tests would leak state. This mirrors `noopAudioEngine`
+    // but returns a fresh instance per test, giving each test
+    // hermetic engine state.
+    const freshAudioEngine = (): AudioEngine => {
+      let muted = false;
+      const noopHandle = {
+        play: () => 0,
+        stop: () => undefined,
+        fade: () => undefined,
+        loop: () => undefined,
+        volume: () => undefined,
+        unload: () => undefined,
+      };
+      return {
+        createSound: () => noopHandle,
+        setMasterMute: (m: boolean) => {
+          muted = m;
+        },
+        isMasterMuted: () => muted,
+      };
+    };
+
+    interface MountedPresent {
+      readonly loader: ReturnType<typeof createSceneLoader>;
+      readonly fake: ReturnType<typeof buildFakeSource>;
+      readonly capturedAudio: () => AudioService;
+      readonly captureCount: () => number;
+      readonly readyP: Promise<void>;
+    }
+
+    // Mount a single-scene `mode=present` navigation, capture
+    // `ctx.audio` from the scene's `create(ctx)` (the only lifecycle
+    // hook guaranteed to run before the runner starts), park the
+    // runner until abort, and resolve `readyP` once the scene is
+    // mounted and the runner has entered. Tests then drive presenter
+    // commands and assert on the captured audio service.
+    //
+    // The runner subscribes to `input.presenter` so the codex review
+    // can verify the loader's audio handler is additive (the runner
+    // still receives every kind). `runner.received` is exposed for
+    // tests that need it.
+    const mountPresent = (opts?: {
+      readonly noPresenterCommands?: boolean;
+      readonly mode?: NavigationMode;
+      readonly scenes?: readonly SceneModule[];
+      readonly compositionId?: string;
+      readonly compositionScenes?: readonly string[];
+      readonly engine?: AudioEngine;
+      readonly runnerReceived?: string[];
+    }): MountedPresent => {
+      const fake = buildFakeSource();
+      const engine = opts?.engine ?? freshAudioEngine();
+      let captured: AudioService | undefined;
+      let captureCount = 0;
+      const captureCtx = (ctx: unknown): void => {
+        const a = (ctx as { audio: AudioService }).audio;
+        captured = a;
+        captureCount += 1;
+      };
+      const scenes = opts?.scenes ?? [
+        buildScene({
+          id: 'scene-a',
+          create: (ctx) => captureCtx(ctx),
+        }),
+      ];
+      let runnerEntered: () => void = () => undefined;
+      const readyP = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        // Capture commands the runner sees so additive-handler tests
+        // can verify the loader's PUL-F025 dispatch did not consume
+        // the command before the runner.
+        if (opts?.runnerReceived !== undefined) {
+          input.presenter?.subscribe((cmd) => opts.runnerReceived?.push(cmd.kind));
+        }
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loaderOpts: SceneLoaderOptions = {
+        scenes: createSceneRegistry(scenes),
+        compositions: createCompositionRegistry(
+          opts?.compositionId === undefined
+            ? []
+            : [
+                {
+                  id: opts.compositionId,
+                  manifest: opts.compositionScenes ?? [scenes[0]?.id ?? ''],
+                },
+              ],
+        ),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        ...(opts?.noPresenterCommands === true ? {} : { presenterCommands: fake.source }),
+      };
+      const loader = createSceneLoader(loaderOpts);
+      const target: NavigationTarget =
+        opts?.compositionId === undefined
+          ? {
+              locator: { kind: 'scene', scene: scenes[0]?.id ?? 'scene-a' },
+              ...(opts?.mode === undefined ? {} : { mode: opts.mode }),
+            }
+          : {
+              locator: { kind: 'composition', composition: opts.compositionId },
+              ...(opts?.mode === undefined ? {} : { mode: opts.mode }),
+            };
+      void loader.handle(target);
+      return {
+        loader,
+        fake,
+        capturedAudio: () => {
+          if (captured === undefined) throw new Error('ctx.audio was never captured');
+          return captured;
+        },
+        captureCount: () => captureCount,
+        readyP,
+      };
+    };
+
+    it('flips master mute from unmuted to muted on the first `toggle-master-mute` command', async () => {
+      // Clause 1: "accept presenter input to toggle master mute."
+      // First emission must flip the engine-level mute state via
+      // the audio service.
+      const m = mountPresent({ mode: 'present' });
+      await m.readyP;
+      expect(m.capturedAudio().isMuted()).toBe(false);
+      m.fake.emit({ kind: 'toggle-master-mute' });
+      expect(m.capturedAudio().isMuted()).toBe(true);
+      m.loader.dispose();
+      await m.loader.idle();
+    });
+
+    it('round-trips master mute on repeated `toggle-master-mute` commands', async () => {
+      // The command is a *fact*, not a target state — the loader
+      // reads the engine's current mute at receipt time and flips
+      // it. Two emissions return to unmuted; a third re-mutes.
+      const m = mountPresent({ mode: 'present' });
+      await m.readyP;
+      expect(m.capturedAudio().isMuted()).toBe(false);
+      m.fake.emit({ kind: 'toggle-master-mute' });
+      m.fake.emit({ kind: 'toggle-master-mute' });
+      expect(m.capturedAudio().isMuted()).toBe(false);
+      m.fake.emit({ kind: 'toggle-master-mute' });
+      expect(m.capturedAudio().isMuted()).toBe(true);
+      m.loader.dispose();
+      await m.loader.idle();
+    });
+
+    it('does NOT alter timeline state — no `cleanup(ctx)`, no abort, runner pending stays pending across toggles', async () => {
+      // Clause 2: "Master mute SHALL silence audio without altering
+      // timeline state." The handler must not abort the navigation,
+      // call cleanup, or affect the runner's transport. We pin this
+      // by counting `cleanup(ctx)` invocations, observing
+      // `signal.aborted` from the runner side, and verifying the
+      // navigation handle stays pending while toggles fire.
+      let cleanupRan = 0;
+      let abortedAtRunner = false;
+      let capturedAudio: AudioService | undefined;
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      // One scene that captures `ctx.audio` in `create` AND counts
+      // cleanup invocations, so both invariants are pinned on the
+      // same navigation.
+      const scene = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          capturedAudio = (ctx as { audio: AudioService }).audio;
+        },
+        cleanup: () => {
+          cleanupRan += 1;
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        // Resolve `ready` once the runner has entered so the test
+        // can assert mid-flight. `create(ctx)` already ran by this
+        // point (ADR-025: mount-all then run), so `capturedAudio`
+        // is set.
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener(
+            'abort',
+            () => {
+              abortedAtRunner = true;
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      };
+      const fake = buildFakeSource();
+      const engine = freshAudioEngine();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([scene]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      const handle = loader.handle({
+        locator: { kind: 'scene', scene: 'scene-a' },
+        mode: 'present',
+      });
+      // Track handle settlement so we can pin "toggles do not
+      // complete the navigation."
+      let handleSettled = false;
+      void handle.then(
+        () => {
+          handleSettled = true;
+        },
+        () => {
+          handleSettled = true;
+        },
+      );
+      await ready;
+      expect(capturedAudio?.isMuted()).toBe(false);
+      fake.emit({ kind: 'toggle-master-mute' });
+      fake.emit({ kind: 'toggle-master-mute' });
+      fake.emit({ kind: 'toggle-master-mute' });
+      // Yield to the microtask queue so any spurious settle would
+      // have already happened.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(handleSettled).toBe(false);
+      expect(cleanupRan).toBe(0);
+      expect(abortedAtRunner).toBe(false);
+      // Three toggles on a no-op engine — ends muted.
+      expect(capturedAudio?.isMuted()).toBe(true);
+      loader.dispose();
+      await loader.idle();
+      // After dispose: cleanup must run exactly once (the normal
+      // mandatory-cleanup invariant), and the runner must observe
+      // the abort. Both are existing PUL-F006 invariants; we only
+      // re-pin them to make explicit that PUL-F025's handler did
+      // NOT cause additional cleanups.
+      expect(cleanupRan).toBe(1);
+      expect(abortedAtRunner).toBe(true);
+    });
+
+    it.each(NAVIGATION_MODES.filter((m) => m !== 'present'))(
+      'does NOT toggle master mute under non-present mode `%s` even when `presenterCommands` is supplied',
+      async (mode) => {
+        // PUL-F025 mode scoping: presenter input is `mode=present`
+        // only. The controller is never built for other modes, so a
+        // workbench source that emits `'toggle-master-mute'` while a
+        // non-present navigation is active reaches NO subscriber —
+        // master mute stays untouched. Without this guard, mute
+        // would leak into screenshot / paused / loop / etc.
+        const sceneA = buildScene({ id: 'scene-a' });
+        const fake = buildFakeSource();
+        const engine = freshAudioEngine();
+        let capturedAudio: AudioService | undefined;
+        let runnerEntered: () => void = () => undefined;
+        const ready = new Promise<void>((resolve) => {
+          runnerEntered = resolve;
+        });
+        const runner = (input: LegacyRunInput): Promise<void> => {
+          runnerEntered();
+          return new Promise<void>((resolve) => {
+            input.signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        };
+        const noopRendererForPrompter: PrompterRenderer = () => undefined;
+        const captureScene = buildScene({
+          id: 'scene-a',
+          create: (ctx) => {
+            capturedAudio = (ctx as { audio: AudioService }).audio;
+            runnerEntered();
+          },
+        });
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([captureScene]),
+          compositions: createCompositionRegistry([]),
+          stage: buildStage().element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          timeline: asTimeline(runner),
+          audioEngine: engine,
+          renderPrompter: noopRendererForPrompter,
+          presenterCommands: fake.source,
+        });
+        void sceneA;
+        const handle = loader.handle({
+          locator: { kind: 'scene', scene: 'scene-a' },
+          mode,
+        });
+        if (mode === 'prompter') {
+          // mode=prompter bypasses the resolver lifecycle entirely
+          // (ADR-022) so `ctx.audio` is never built. The invariant
+          // "presenter master mute does not run under non-present
+          // modes" still holds vacuously, because no subscription
+          // exists; pin it by emitting and confirming the source
+          // has zero handlers.
+          await handle;
+          fake.emit({ kind: 'toggle-master-mute' });
+          expect(fake.handlerCount()).toBe(0);
+        } else {
+          await ready;
+          expect(capturedAudio?.isMuted()).toBe(false);
+          fake.emit({ kind: 'toggle-master-mute' });
+          fake.emit({ kind: 'toggle-master-mute' });
+          fake.emit({ kind: 'toggle-master-mute' });
+          expect(capturedAudio?.isMuted()).toBe(false);
+          // The loader must not have wired a controller — the source
+          // has zero subscribed handlers.
+          expect(fake.handlerCount()).toBe(0);
+          loader.dispose();
+          await loader.idle();
+        }
+      },
+    );
+
+    it('toggles master mute under absent-mode URLs (mode defaults to present per ADR-007)', async () => {
+      // Defense in depth: a regression that branched on
+      // `target.mode === 'present'` instead of
+      // `effectiveMode(target) === 'present'` would skip the mute
+      // handler for `mode`-absent URLs even though they resolve to
+      // present.
+      const sceneA = buildScene({ id: 'scene-a' });
+      const fake = buildFakeSource();
+      const engine = freshAudioEngine();
+      let capturedAudio: AudioService | undefined;
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const captureScene = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          capturedAudio = (ctx as { audio: AudioService }).audio;
+          runnerEntered();
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> =>
+        new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([captureScene]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void sceneA;
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' } });
+      await ready;
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(capturedAudio?.isMuted()).toBe(true);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('does NOT toggle master mute when `presenterCommands` is omitted (graceful degradation)', async () => {
+      // Mirror of the PUL-F020 graceful-degradation invariant: when
+      // the workbench omits `presenterCommands` the loader builds no
+      // controller, so there is no subscriber for the audio handler.
+      // The audio service stays unmuted; no source to assert against,
+      // so we drive the test by mounting and inspecting `isMuted()`
+      // after a hypothetical out-of-band emission would have run.
+      const engine = freshAudioEngine();
+      let capturedAudio: AudioService | undefined;
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          capturedAudio = (ctx as { audio: AudioService }).audio;
+          runnerEntered();
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> =>
+        new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      // With no source the workbench cannot emit; the invariant is
+      // "engine stays at initial unmuted." A regression that wired
+      // master mute through some other path (e.g., a default-on
+      // listener) would flip the engine state here.
+      expect(capturedAudio?.isMuted()).toBe(false);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('toggles master mute even when no scene has registered a sound (engine-level state, noop engine round-trip)', async () => {
+      // The preflight calls out: "The command is accepted even before
+      // any sound has been registered. `noopAudioEngine` must round-
+      // trip the mute state the same way the Howler engine does."
+      // The scene here does NOT call `ctx.audio.load(...)`, yet the
+      // toggle still mutates engine state observable via `isMuted()`.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      let capturedAudio: AudioService | undefined;
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          capturedAudio = (ctx as { audio: AudioService }).audio;
+          runnerEntered();
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> =>
+        new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      // The engine starts unmuted; isMasterMuted() reads from the
+      // engine, not from any registered sound.
+      expect(engine.isMasterMuted()).toBe(false);
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(engine.isMasterMuted()).toBe(true);
+      expect(capturedAudio?.isMuted()).toBe(true);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('persists master mute across scenes within a present-mode composition slice (engine-level runtime state)', async () => {
+      // A composition slice runs the full slice through one audio
+      // service shared across scenes (PUL-F024 / ADR-004), backed by
+      // a single engine. Toggling mute mid-slice must be observable
+      // by the next scene's `ctx.audio.isMuted()`; the audio service
+      // delegates to the engine, which is the single source of
+      // truth. Without engine-level persistence the second scene
+      // would see unmuted again.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      let firstAudio: AudioService | undefined;
+      let secondAudio: AudioService | undefined;
+      let firstEntered: () => void = () => undefined;
+      const firstReady = new Promise<void>((resolve) => {
+        firstEntered = resolve;
+      });
+      let secondEntered: () => void = () => undefined;
+      const secondReady = new Promise<void>((resolve) => {
+        secondEntered = resolve;
+      });
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          firstAudio = (ctx as { audio: AudioService }).audio;
+          firstEntered();
+        },
+      });
+      const sceneB = buildScene({
+        id: 'scene-b',
+        create: (ctx) => {
+          secondAudio = (ctx as { audio: AudioService }).audio;
+          secondEntered();
+        },
+      });
+      // The composition runs both scenes through one master timeline
+      // adapter `run` call (ADR-025). Park until aborted so we can
+      // assert mid-flight.
+      const rec = recordingTimeline(true);
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA, sceneB]),
+        compositions: createCompositionRegistry([
+          { id: 'two-scenes', manifest: ['scene-a', 'scene-b'] },
+        ]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: rec.adapter,
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({
+        locator: { kind: 'composition', composition: 'two-scenes' },
+        mode: 'present',
+      });
+      await firstReady;
+      await secondReady;
+      // Both scenes mounted under the same per-navigation service —
+      // the resolver mounts every entry before `run` begins (ADR-025).
+      expect(firstAudio).toBeDefined();
+      expect(secondAudio).toBeDefined();
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(firstAudio?.isMuted()).toBe(true);
+      // Engine-level state: both services backed by the same engine
+      // observe the toggle.
+      expect(secondAudio?.isMuted()).toBe(true);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('stops responding to `toggle-master-mute` after the navigation aborts', async () => {
+      // Auto-cleanup: the presenter controller detaches the loader's
+      // mute subscription when the per-navigation `AbortSignal`
+      // fires. Post-abort emissions reach NO subscriber. The audio
+      // service is also disposed and inert, so even if the
+      // subscription somehow stayed attached the engine state would
+      // not move — this test pins both layers.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      let capturedAudio: AudioService | undefined;
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: (ctx) => {
+          capturedAudio = (ctx as { audio: AudioService }).audio;
+          runnerEntered();
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> =>
+        new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      // First toggle pre-abort flips engine state — proves the
+      // baseline subscription works.
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(engine.isMasterMuted()).toBe(true);
+      loader.dispose();
+      await loader.idle();
+      // Post-abort: the loader's subscription is detached AND the
+      // audio service is disposed (PUL-F024). Engine state stays
+      // wherever the last pre-abort toggle left it.
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(engine.isMasterMuted()).toBe(true);
+      expect(fake.handlerCount()).toBe(0);
+      // The audio service is disposed; calling mute() on it from
+      // outside the runtime now is a no-op (PUL-F024 invariant).
+      expect(capturedAudio?.isDisposed()).toBe(true);
+    });
+
+    it('still delivers `toggle-master-mute` to the runner — the loader handler is additive, not a filter', async () => {
+      // A runner that subscribes to `input.presenter` MUST still
+      // receive every command the controller forwards, including
+      // `toggle-master-mute`. The loader's audio handler is a
+      // second subscriber on the controller, not a transformation
+      // of the stream — see the existing "delivers every command
+      // kind" test, which already includes `toggle-master-mute` in
+      // the expected sequence. This focused test pins the rule in
+      // isolation so a regression that gated the runner on a kind
+      // allowlist would fail here with a single-kind failure that
+      // is easy to read in CI output.
+      const received: string[] = [];
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({ id: 'scene-a' });
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        input.presenter?.subscribe((cmd) => received.push(cmd.kind));
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      fake.emit({ kind: 'toggle-master-mute' });
+      // Engine moved AND the runner observed the kind.
+      expect(engine.isMasterMuted()).toBe(true);
+      expect(received).toEqual(['toggle-master-mute']);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('tears down the presenter subscription when a `mode=present` navigation completes normally (no leak across successful runs)', async () => {
+      // Finding 1 from the codex review, post-PUL-F025: the
+      // presenter controller's only teardown path used to be the
+      // navigation `AbortSignal`. A `mode=present` navigation that
+      // resolved normally (the resolver finished + `load.settled`
+      // resolved) would clear `inFlight` without aborting the
+      // navigation controller, leaving the loader-owned mute
+      // subscription (and any runner-owned subscription) attached
+      // to the long-lived `PresenterCommandSource`. Across many
+      // successful navigations, stale wrappers would accumulate.
+      //
+      // Pin the fix: after a successful navigation completes, the
+      // workbench source has zero attached handlers — the loader's
+      // happy-path teardown disposed the presenter controller.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      const sceneA = buildScene({ id: 'scene-a' });
+      // Adapter resolves immediately — successful normal completion.
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: noopTimeline,
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      expect(fake.handlerCount()).toBe(0);
+      // A second successful navigation must also leave the source
+      // clean — a regression that only fixed the first nav would
+      // pass the assertion above and fail here as the second
+      // controller leaks.
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      expect(fake.handlerCount()).toBe(0);
+    });
+
+    it('keeps the navigation `AbortSignal` un-aborted after a successful completion (the presenter teardown uses its own lifecycle signal)', async () => {
+      // Layered defense for the PUL-F013-boundary invariant: the
+      // happy-path presenter teardown MUST use a separate
+      // AbortController from the navigation `controller` so the
+      // navigation signal's "un-aborted at runner receive time AND
+      // un-aborted across a successful completion" property is
+      // preserved. A regression that aborted the navigation
+      // controller in `finally` to tear down the presenter
+      // controller would flip this invariant — the cached signal
+      // reference on the recorded run options would show
+      // `aborted: true` after navigation completes.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      const sceneA = buildScene({ id: 'scene-a' });
+      const rec = recordingTimeline();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: rec.adapter,
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      expect(rec.calls).toHaveLength(1);
+      // Navigation signal stays un-aborted across a successful
+      // completion. Presenter teardown happens via the separate
+      // `presenterAbort` signal in `InFlightLoad`.
+      expect(rec.calls[0]?.opts.signal?.aborted).toBe(false);
+      // And the presenter source's wrappers were nonetheless
+      // detached — proving both invariants hold simultaneously.
+      expect(fake.handlerCount()).toBe(0);
+    });
+
+    it('surfaces a subscribe-time throw from `presenterCommands.subscribe` through the loader `onError` envelope (does not escape `buildLoad`)', async () => {
+      // Finding 3 from the codex review, post-PUL-F025: the loader
+      // now subscribes a navigation-owned audio handler in
+      // `buildLoad`. A workbench source whose `subscribe` throws
+      // during registration would have escaped past the existing
+      // stage-attr rollback + `surfaceError` envelope, leaving the
+      // navigation in an inconsistent state. Pin the fix: a
+      // throwing source surfaces a diagnostic via `onError` and the
+      // navigation still settles (the resolver still runs because
+      // the loader's `buildLoad` returned without re-throwing).
+      const engine = freshAudioEngine();
+      const throwingSource: import('../../src/runtime/presenter').PresenterCommandSource = {
+        subscribe() {
+          throw new Error('source subscribe failed (test)');
+        },
+      };
+      const sceneA = buildScene({ id: 'scene-a' });
+      const errors: unknown[] = [];
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: noopTimeline,
+        audioEngine: engine,
+        presenterCommands: throwingSource,
+        onError: (err) => errors.push(err),
+      });
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      // The subscribe-time throw was routed through `onError`
+      // exactly once and did NOT abort the navigation. A regression
+      // that let the throw escape `buildLoad` would either reject
+      // the handle promise or leave stale stage attrs (the latter
+      // detectable by additional tests; the former by this `await`
+      // throwing). The exact count of 1 also pins that the
+      // controller does NOT retry the source's subscribe (a
+      // regression that mistakenly looped on transient failure
+      // would surface here).
+      const subscribeFailures = errors.filter(
+        (e) => e instanceof Error && /subscribe failed/i.test(e.message),
+      );
+      expect(subscribeFailures).toHaveLength(1);
+    });
+
+    it('drops misspelled mute kinds (`mute`, `master-mute`, `unmute`) at the controller boundary — audio is never toggled', async () => {
+      // PUL-F025 spelling defense at the loader level: only the full
+      // `'toggle-master-mute'` reaches the audio handler. Common
+      // drift candidates that pass static-string checks but fail the
+      // allowlist must be dropped at `isPresenterCommand` and never
+      // touch the engine. Mirrors the unit-level coverage in
+      // `presenter.test.ts` but pinned at the integrated seam.
+      const engine = freshAudioEngine();
+      const fake = buildFakeSource();
+      const errors: unknown[] = [];
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({
+        id: 'scene-a',
+        create: () => {
+          runnerEntered();
+        },
+      });
+      const runner = (input: LegacyRunInput): Promise<void> =>
+        new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+        onError: (err) => errors.push(err),
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      fake.emit({ kind: 'mute' });
+      fake.emit({ kind: 'master-mute' });
+      fake.emit({ kind: 'unmute' });
+      expect(engine.isMasterMuted()).toBe(false);
+      // Centralized validation surfaces exactly one diagnostic per
+      // rejected emission, regardless of subscriber count — so 3
+      // misspelled kinds yield 3 errors. A regression to per-
+      // subscriber validation would emit 3 × subscribers and fail
+      // this exact-count assertion.
+      const rejects = errors.filter((e) => e instanceof Error && /presenter/i.test(e.message));
+      expect(rejects).toHaveLength(3);
+      loader.dispose();
+      await loader.idle();
     });
   });
 });

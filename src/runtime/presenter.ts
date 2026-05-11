@@ -1,4 +1,4 @@
-// Presenter controls — PUL-F020 / PUL-F021 / ADR-023 / ADR-024.
+// Presenter controls — PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / ADR-024.
 //
 // Defines the runtime-side contract layer for accepting presenter
 // commands under `mode=present`. The runtime does not own the input
@@ -30,6 +30,22 @@
 // DRAFT until a real presenter UI lands AND a GSAP runner proves the
 // command-to-transport behavior end to end.
 //
+// PUL-F025 (master mute) composes ADR-004 with this same seam by
+// adding the `toggle-master-mute` kind to the allowlist below. The
+// command is a *fact* ("presenter pressed mute"), not a target state:
+// the loader's audio handler reads the engine's current master mute
+// at command receipt time and flips it via
+// `AudioService.mute(!AudioService.isMuted())`. The handler lives
+// where both the per-navigation `PresenterController` and the
+// per-navigation `AudioService` are in scope — `src/runtime/scene-loader.ts`
+// (`buildLoad`) — and never imports Howler, touches the master
+// timeline, aborts the navigation, calls `cleanup(ctx)`, or mutates
+// URL / history. Master mute is engine-level runtime state, so it
+// survives scene cleanup and navigation completion (the existing
+// `AudioService.stopAll()` does not reset it). PUL-F025 stays DRAFT
+// until a presenter UI surface lands and emits the kind end-to-end,
+// mirroring the PUL-F020 / PUL-F021 precedent.
+//
 // References:
 //  - PUL-F020 — runtime SHALL accept presenter input under
 //    `mode=present` for advance / hold / skip-forward / skip-backward;
@@ -39,6 +55,11 @@
 //    active timeline and SHALL accept input to resume from the same
 //    point. Extends this seam with the `pause` / `resume` command
 //    kinds; transport behavior is the runner's contract (ADR-024).
+//  - PUL-F025 — runtime SHALL accept presenter input to toggle
+//    master mute. Master mute SHALL silence audio without altering
+//    timeline state. Extends this seam with the `toggle-master-mute`
+//    kind; the audio dispatch lives in `scene-loader.ts` and
+//    composes `AudioService.mute()` / `isMuted()` per ADR-004.
 //  - ADR-023 — workbench presenter controls: command source +
 //    per-navigation controller seam.
 //  - ADR-024 — presenter pause/resume: runner-owned transport state
@@ -46,6 +67,9 @@
 //    controller/schema; `pause` / `resume` join `PRESENTER_COMMAND_KINDS`).
 //  - ADR-003 — GSAP timeline engine. The runner consumes
 //    {@link PresenterCommand} and dispatches via GSAP's transport API.
+//  - ADR-004 — Howler audio engine; master mute is engine-level
+//    runtime state and the audio service exposes it via `mute()` /
+//    `isMuted()`. PUL-F025's audio handler calls those methods only.
 //  - ADR-007 — workbench mode dispatch; presenter input is scoped to
 //    `mode=present`.
 //  - ADR-016 — names PUL-F020 / PUL-F021 / PUL-F025 as the presenter
@@ -55,10 +79,11 @@
  * The presenter command kinds the runtime accepts under
  * `mode=present`. The first four are PUL-F020 (advance / hold /
  * skip-forward / skip-backward); `pause` and `resume` are PUL-F021
- * (ADR-024), added to this same allowlist rather than to a separate
- * pause-specific schema. Centralized as a single source of truth so
- * the validator and the discriminated-union type cannot drift. Frozen
- * so a misbehaving caller cannot mutate the allowlist at runtime.
+ * (ADR-024); `toggle-master-mute` is PUL-F025 (ADR-004), added to
+ * this same allowlist rather than to a separate audio-specific
+ * schema. Centralized as a single source of truth so the validator
+ * and the discriminated-union type cannot drift. Frozen so a
+ * misbehaving caller cannot mutate the allowlist at runtime.
  */
 export const PRESENTER_COMMAND_KINDS = Object.freeze([
   'advance',
@@ -67,6 +92,7 @@ export const PRESENTER_COMMAND_KINDS = Object.freeze([
   'skip-backward',
   'pause',
   'resume',
+  'toggle-master-mute',
 ] as const);
 
 /** Element type of {@link PRESENTER_COMMAND_KINDS}. */
@@ -174,22 +200,28 @@ export function createPresenterController(
   onError?: (err: unknown) => void,
 ): PresenterController {
   // One record per active subscription. `active` is the single
-  // source of truth for "this subscription is live" — both the
-  // per-subscriber unsubscribe AND the abort-driven tearDownAll
-  // check it before calling `sourceUnsub`, so a non-idempotent
-  // source receives at most one unsubscribe per registration even
-  // when both teardown paths fire (codex review: abort-then-runner-
-  // unsubscribe and per-scene-after-nav-abort are real overlapping
-  // paths). The wrapped handler also checks `active` before
-  // forwarding, so post-abort emissions cannot reach the runner
-  // even if a misbehaving source ignored or threw on its
-  // unsubscribe.
+  // source of truth for "this subscription is live" — the per-
+  // subscriber unsubscribe AND the abort-driven tearDownAll BOTH
+  // set it to false. The dispatch loop checks `active` before
+  // forwarding so post-abort or post-unsubscribe emissions from a
+  // misbehaving source whose unsubscribe ignored or threw still
+  // cannot reach the runner.
   interface Subscription {
     active: boolean;
-    sourceUnsub: () => void;
+    readonly handler: (cmd: PresenterCommand) => void;
   }
   const subscriptions: Subscription[] = [];
   let aborted = signal.aborted;
+  // The single source subscription's unsubscribe handle (codex
+  // review, post-PUL-F025: validation and onError emission MUST
+  // happen once per source event, not once per controller
+  // subscriber — otherwise adding a second runtime-owned subscriber
+  // would multiply diagnostic noise. The controller therefore
+  // registers ONE wrapped handler on the source and fans the
+  // sanitized command out to every active subscription, so adding
+  // the loader's PUL-F025 audio handler does not double up
+  // diagnostics for malformed kinds).
+  let sourceUnsub: (() => void) | null = null;
 
   const reportError = (err: unknown): void => {
     if (onError === undefined) return;
@@ -205,22 +237,44 @@ export function createPresenterController(
     }
   };
 
-  const tearDownSubscription = (sub: Subscription): void => {
-    if (!sub.active) return;
-    // Mark inactive BEFORE calling sourceUnsub so the wrapped
-    // handler's `!sub.active` guard fires for any in-flight
-    // emissions the source is still mid-iteration over (covers
-    // sources whose unsubscribe is asynchronous-leaning or whose
-    // accounting is non-idempotent).
-    sub.active = false;
-    try {
-      sub.sourceUnsub();
-    } catch (err) {
-      // A misbehaving source could throw on unsubscribe; record
-      // the diagnostic but keep tearing the rest down. Without
-      // the catch a single bad source would strand the remaining
-      // subscriptions.
-      reportError(err);
+  // Single centralized wrapper. Four guards layer here:
+  //   1. `aborted` — controller-level abort guard. Drops every
+  //      emission after the navigation aborts even if a
+  //      misbehaving source kept emitting after its unsubscribe.
+  //   2. `isPresenterCommand` — boundary validation; unknown kinds
+  //      are dropped ONCE with an `onError` diagnostic regardless
+  //      of how many subscribers are attached.
+  //   3. Frozen defensive copy of the command — one subscriber
+  //      cannot mutate `kind` and corrupt sibling subscribers'
+  //      view of the same emission. The freeze runs once here
+  //      and the same frozen object is fanned out to every
+  //      subscriber.
+  //   4. Per-handler try/catch — a buggy subscriber cannot poison
+  //      emissions for siblings; exceptions flow through
+  //      `onError`.
+  const centralWrapped = (cmd: unknown): void => {
+    if (aborted) return;
+    if (!isPresenterCommand(cmd)) {
+      reportError(
+        new Error(
+          `presenter command rejected: payload does not match the PresenterCommand shape (allowed kinds: ${PRESENTER_COMMAND_KINDS.join(', ')})`,
+        ),
+      );
+      return;
+    }
+    const safe: PresenterCommand = Object.freeze({ kind: cmd.kind });
+    // Snapshot to a local copy so a subscriber that unsubscribes
+    // (or subscribes) mid-fan-out doesn't perturb iteration.
+    const active = subscriptions.filter((s) => s.active);
+    for (const sub of active) {
+      // Re-check `active` in case a sibling handler unsubscribed
+      // this sub during this same emission's fan-out.
+      if (!sub.active) continue;
+      try {
+        sub.handler(safe);
+      } catch (err) {
+        reportError(err);
+      }
     }
   };
 
@@ -232,14 +286,46 @@ export function createPresenterController(
     // any later code path sees an empty registry.
     const drained = subscriptions.splice(0, subscriptions.length);
     for (const sub of drained) {
-      tearDownSubscription(sub);
+      sub.active = false;
+    }
+    // Detach from the source exactly once (codex review history:
+    // non-idempotent unsubscribes must run at most once).
+    if (sourceUnsub !== null) {
+      const unsub = sourceUnsub;
+      sourceUnsub = null;
+      try {
+        unsub();
+      } catch (err) {
+        // A misbehaving source could throw on unsubscribe; record
+        // the diagnostic but do not propagate — the boundary's job
+        // is to detach what it can and surface the rest.
+        reportError(err);
+      }
     }
   };
 
-  if (aborted) {
-    // Signal already fired before construction. Nothing to wire;
-    // subscribe will fall through to the aborted no-op below.
-  } else {
+  // Lazy source attachment: register the central wrapper on the
+  // source the first time a subscriber attaches. A controller with
+  // zero subscribers (e.g., the placeholder timeline runner that
+  // ignores `input.presenter`) does not pay a source registration.
+  // Subscribe-time failures from the workbench-supplied source are
+  // routed through `onError` here rather than escaping the loader's
+  // `buildLoad` (codex review, post-PUL-F025: a throwing source
+  // subscribe used to bypass the loader's stage-attr rollback and
+  // navigation error envelope; routing through `onError` keeps
+  // setup failures contained at the boundary the source owns).
+  const ensureSourceAttached = (): boolean => {
+    if (sourceUnsub !== null) return true;
+    try {
+      sourceUnsub = source.subscribe(centralWrapped);
+    } catch (err) {
+      reportError(err);
+      return false;
+    }
+    return true;
+  };
+
+  if (!aborted) {
     signal.addEventListener('abort', tearDownAll, { once: true });
   }
 
@@ -249,57 +335,28 @@ export function createPresenterController(
       // attachment, no emissions, no leak.
       return () => undefined;
     }
-    // Pre-allocate the subscription record so the wrapped handler
-    // closure can capture it. `sourceUnsub` is patched in
-    // immediately after `source.subscribe(wrapped)` returns.
-    const sub: Subscription = { active: true, sourceUnsub: () => undefined };
-    // Validate-and-forward wrapper. Five guards layer here:
-    //   1. `!sub.active` — post-abort or post-unsubscribe emission
-    //      from a misbehaving source whose own unsubscribe didn't
-    //      actually detach. Without this, a bad source could
-    //      deliver commands to a runner whose subscription was
-    //      torn down. This is the leak-prevention invariant
-    //      (codex review).
-    //   2. `aborted` — controller-level abort guard. Same defense
-    //      as `!sub.active` but cheaper to check (one bool).
-    //   3. `isPresenterCommand` — boundary validation; unknown
-    //      kinds are dropped with an `onError` diagnostic.
-    //   4. Frozen defensive copy of the command — one subscriber
-    //      cannot mutate `kind` and corrupt later subscribers'
-    //      view of the same emission (the source emits ONE
-    //      reference to every wrapped handler).
-    //   5. Per-handler try/catch — a buggy subscriber cannot
-    //      poison emissions for siblings; exceptions flow through
-    //      `onError`.
-    const wrapped = (cmd: unknown): void => {
-      if (!sub.active || aborted) return;
-      if (!isPresenterCommand(cmd)) {
-        reportError(
-          new Error(
-            `presenter command rejected: payload does not match the PresenterCommand shape (allowed kinds: ${PRESENTER_COMMAND_KINDS.join(', ')})`,
-          ),
-        );
-        return;
-      }
-      const safe: PresenterCommand = Object.freeze({ kind: cmd.kind });
-      try {
-        handler(safe);
-      } catch (err) {
-        reportError(err);
-      }
-    };
-    sub.sourceUnsub = source.subscribe(wrapped);
+    const sub: Subscription = { active: true, handler };
     subscriptions.push(sub);
-    return () => {
-      // Idempotent: re-calling does nothing because
-      // `tearDownSubscription` short-circuits on `!sub.active`.
-      // Also covers the abort-then-runner-unsubscribe race where
-      // the abort listener already drained this sub; the
-      // remove-then-tear-down sequence handles either order
-      // safely.
+    // Attach the source wrapper on the first live subscription.
+    // If the source's `subscribe` throws (a misbehaving workbench
+    // bridge, an early-failure stub), the failure is reported
+    // through `onError` and the subscription is rolled back so the
+    // caller's invariant ("subscribe returns a usable unsub") is
+    // preserved.
+    if (!ensureSourceAttached()) {
       const idx = subscriptions.indexOf(sub);
       if (idx >= 0) subscriptions.splice(idx, 1);
-      tearDownSubscription(sub);
+      sub.active = false;
+      return () => undefined;
+    }
+    return () => {
+      // Idempotent: marking inactive is enough — the next dispatch
+      // skips this sub. We remove from the registry to keep the
+      // active-count snapshot cheap for steady-state.
+      if (!sub.active) return;
+      sub.active = false;
+      const idx = subscriptions.indexOf(sub);
+      if (idx >= 0) subscriptions.splice(idx, 1);
     };
   };
 

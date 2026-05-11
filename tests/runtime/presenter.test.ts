@@ -1,11 +1,11 @@
-// Presenter controls — PUL-F020 / PUL-F021 / ADR-023 / ADR-024.
+// Presenter controls — PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / ADR-024.
 //
 // Pure tests for the presenter command boundary: the discriminator
 // validator, the per-navigation controller's subscribe / unsubscribe
 // semantics, and the abort-tied auto-cleanup that prevents
 // subscriptions from leaking across navigations. The loader-side
-// dispatch tests live in `scene-loader.test.ts`'s presenter-controls
-// describe block.
+// dispatch tests (including the PUL-F025 master-mute audio handler)
+// live in `scene-loader-present.test.ts`.
 //
 // References:
 //  - PUL-F020 — runtime SHALL accept presenter input under mode=present
@@ -16,6 +16,17 @@
 //    `pause` and `resume` kinds; "same point" playhead behavior is
 //    the future GSAP runner's contract, so PUL-F021 stays DRAFT until
 //    that runner lands.
+//  - PUL-F025 — runtime SHALL accept presenter input to toggle master
+//    mute. Master mute SHALL silence audio without altering timeline
+//    state. Composes ADR-004 (master mute owned by the audio engine)
+//    with the same command seam by adding the `toggle-master-mute`
+//    kind; the engine-level mute mechanics already exist in
+//    `src/runtime/audio.ts`. The loader-side dispatch (subscribe in
+//    `buildLoad`, call `audio.mute(!audio.isMuted())`) is the
+//    PUL-F025-specific wiring and is pinned in the scene-loader
+//    suite. PUL-F025 stays DRAFT until a presenter UI surface lands
+//    and emits the kind end-to-end, mirroring the PUL-F020 / PUL-F021
+//    precedent.
 //  - ADR-023 — presenter command source / per-navigation controller.
 //  - ADR-024 — presenter pause/resume on the existing command seam.
 
@@ -49,9 +60,12 @@ const buildSource = (): {
 };
 
 describe('PRESENTER_COMMAND_KINDS', () => {
-  it('lists exactly the six kinds PUL-F020 + PUL-F021 name', () => {
+  it('lists exactly the seven kinds PUL-F020 + PUL-F021 + PUL-F025 name', () => {
     // PUL-F020: advance / hold / skip-forward / skip-backward.
     // PUL-F021 (ADR-024): pause / resume extend the same allowlist.
+    // PUL-F025: toggle-master-mute extends the same allowlist again —
+    // composes ADR-004 (engine-level master mute) without adding a
+    // second command schema, source, controller, or mode.
     expect([...PRESENTER_COMMAND_KINDS]).toEqual([
       'advance',
       'hold',
@@ -59,6 +73,7 @@ describe('PRESENTER_COMMAND_KINDS', () => {
       'skip-backward',
       'pause',
       'resume',
+      'toggle-master-mute',
     ]);
   });
 
@@ -67,8 +82,8 @@ describe('PRESENTER_COMMAND_KINDS', () => {
   });
 });
 
-describe('isPresenterCommand (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
-  it('accepts every kind PUL-F020 + PUL-F021 name', () => {
+describe('isPresenterCommand (PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / ADR-024)', () => {
+  it('accepts every kind PUL-F020 + PUL-F021 + PUL-F025 name', () => {
     for (const kind of PRESENTER_COMMAND_KINDS) {
       expect(isPresenterCommand({ kind })).toBe(true);
     }
@@ -84,6 +99,17 @@ describe('isPresenterCommand (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
     expect(isPresenterCommand({ kind: 'resume' })).toBe(true);
   });
 
+  it('accepts the PUL-F025 toggle-master-mute kind explicitly', () => {
+    // Pin the PUL-F025 contract clause directly: the boundary admits
+    // `toggle-master-mute` so the workbench command source can
+    // deliver presenter master-mute requests to the loader-side
+    // audio handler. Independent of the loop above so a regression
+    // that dropped only this kind is caught — and so a regression
+    // that drifted the kind's spelling (e.g., to `mute` or
+    // `master-mute`) is caught with a specific failure.
+    expect(isPresenterCommand({ kind: 'toggle-master-mute' })).toBe(true);
+  });
+
   it('rejects an unknown kind', () => {
     expect(isPresenterCommand({ kind: 'rewind' })).toBe(false);
     expect(isPresenterCommand({ kind: '' })).toBe(false);
@@ -91,6 +117,13 @@ describe('isPresenterCommand (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
     // `mode=paused` is a URL inspection mode (ADR-019), not a
     // presenter command — its name must not be admitted as a kind.
     expect(isPresenterCommand({ kind: 'paused' })).toBe(false);
+    // PUL-F025 spelling defense: only the full `toggle-master-mute`
+    // is admitted. Common drift candidates must remain rejected so
+    // a misspelled workbench source cannot smuggle the kind in.
+    expect(isPresenterCommand({ kind: 'mute' })).toBe(false);
+    expect(isPresenterCommand({ kind: 'master-mute' })).toBe(false);
+    expect(isPresenterCommand({ kind: 'unmute' })).toBe(false);
+    expect(isPresenterCommand({ kind: 'toggle-mute' })).toBe(false);
   });
 
   it('rejects values that are not plain command objects', () => {
@@ -109,7 +142,7 @@ describe('isPresenterCommand (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
   });
 });
 
-describe('createPresenterController (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', () => {
+describe('createPresenterController (PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / ADR-024)', () => {
   it('forwards every valid command from the source to the subscribed handler', () => {
     const { source, emit } = buildSource();
     const controller = new AbortController();
@@ -126,6 +159,7 @@ describe('createPresenterController (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', 
       'skip-backward',
       'pause',
       'resume',
+      'toggle-master-mute',
     ]);
   });
 
@@ -146,6 +180,24 @@ describe('createPresenterController (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', 
     emit({ kind: 'pause' });
     emit({ kind: 'resume' });
     expect(seen.map((c) => c.kind)).toEqual(['pause', 'resume']);
+  });
+
+  it('forwards the PUL-F025 toggle-master-mute command to the subscriber', () => {
+    // PUL-F025 contract clause at the seam: a workbench-supplied
+    // source emitting `toggle-master-mute` reaches the subscribed
+    // handler in order. The loader-side audio dispatch (call
+    // `audio.mute(!audio.isMuted())`) is pinned by the
+    // scene-loader-present suite; here we pin only that the kind
+    // crosses the command boundary unchanged, independent of any
+    // audio service.
+    const { source, emit } = buildSource();
+    const controller = new AbortController();
+    const ctl = createPresenterController(source, controller.signal);
+    const seen: PresenterCommand[] = [];
+    ctl.subscribe((cmd) => seen.push(cmd));
+    emit({ kind: 'toggle-master-mute' });
+    emit({ kind: 'toggle-master-mute' });
+    expect(seen.map((c) => c.kind)).toEqual(['toggle-master-mute', 'toggle-master-mute']);
   });
 
   it('returns an unsubscribe that detaches the handler from further emissions', () => {
@@ -222,6 +274,60 @@ describe('createPresenterController (PUL-F020 / PUL-F021 / ADR-023 / ADR-024)', 
       expect(call[0]).toBeInstanceOf(Error);
       expect((call[0] as Error).message).toMatch(/presenter/i);
     }
+  });
+
+  it('reports a rejected emission ONCE regardless of subscriber count (centralized validation)', () => {
+    // Codex review, post-PUL-F025: each PresenterController used
+    // to attach a wrapped handler PER subscriber on the underlying
+    // source. A malformed emission would therefore surface one
+    // `onError` diagnostic per subscriber — observable noise that
+    // grew quadratically with the number of runtime-owned
+    // subscribers (loader's mute handler, the runner, any future
+    // facets). The refactor centralizes validation: ONE source
+    // wrapper validates each emission and fans a sanitized command
+    // out to every subscriber, so the rejected-emission diagnostic
+    // fires exactly once regardless of subscriber count.
+    const { source, emit } = buildSource();
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const ctl = createPresenterController(source, controller.signal, onError);
+    ctl.subscribe(() => undefined);
+    ctl.subscribe(() => undefined);
+    ctl.subscribe(() => undefined);
+    emit({ kind: 'rewind' });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/presenter/i);
+  });
+
+  it('contains a subscribe-time throw from the source and routes it through onError', () => {
+    // Codex review, post-PUL-F025: the loader's PUL-F025 audio
+    // handler subscribes during `buildLoad`, BEFORE the navigation
+    // queue runs the lifecycle. A workbench-supplied
+    // `PresenterCommandSource.subscribe` that throws on attach
+    // used to escape past the loader's stage-attr rollback /
+    // navigation-error envelope. Pin that the controller contains
+    // the throw at its own boundary: `subscribe()` does not
+    // propagate the source's error to the caller; instead the
+    // diagnostic flows through `onError` and the call returns a
+    // no-op unsubscribe so the caller's invariant ("subscribe
+    // returns a usable unsubscribe function") is preserved.
+    const throwingSource: PresenterCommandSource = {
+      subscribe() {
+        throw new Error('source subscribe failed');
+      },
+    };
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const ctl = createPresenterController(throwingSource, controller.signal, onError);
+    let unsub: (() => void) | undefined;
+    expect(() => {
+      unsub = ctl.subscribe(() => undefined);
+    }).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/source subscribe failed/);
+    // The returned unsubscribe is callable and does not throw —
+    // even though no source attachment ever happened.
+    expect(() => unsub?.()).not.toThrow();
   });
 
   it('drops unknown commands silently when no onError sink is provided', () => {
