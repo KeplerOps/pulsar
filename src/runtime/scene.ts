@@ -21,12 +21,23 @@ import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { isPlainRecord } from './object';
 
 /**
- * Caption metadata. ADR-002 specifies `{ at: ms, text }`. The prompter,
- * the live runtime, and the export pipeline all consume this same
- * structure (PUL-A009).
+ * Caption metadata. ADR-002 / ADR-008 / PUL-F027: `{ at, text }` where
+ * `at` is EITHER a finite non-negative integer (millisecond offset
+ * from scene start) OR a kebab-case beat label sharing the same
+ * identifier grammar as scene ids, composition ids, timeline labels,
+ * and asset ids (ADR-008 #1 — `isKebabIdentifier`). The prompter, the
+ * live runtime, and the export pipeline all consume this same
+ * structure (PUL-A009 / PUL-F019).
+ *
+ * Beat-label `at` values are scene-local — they refer to a label
+ * registered on the scene's own timeline (ADR-026 named beats). The
+ * scene-schema validator does NOT walk the timeline to verify the
+ * label exists; lifecycle side effects do not belong in metadata
+ * validation. A future authoring lint MAY cross-check caption beat
+ * labels against `MasterTimeline.beats()`.
  */
 export interface Caption {
-  at: number;
+  at: number | string;
   text: string;
 }
 
@@ -93,11 +104,50 @@ const isStringArray = (v: unknown): v is readonly string[] =>
 const isValidDuration = (v: unknown): v is number | null =>
   v === null || (typeof v === 'number' && Number.isInteger(v) && Number.isFinite(v) && v >= 0);
 
-const isCaption = (v: unknown): v is Caption =>
-  isPlainRecord(v) && typeof v.at === 'number' && typeof v.text === 'string';
+/**
+ * PUL-F027: a caption's `at` field is either a millisecond offset
+ * (finite non-negative integer) OR a beat label string sharing the
+ * one identifier grammar ADR-008 #1 reserves for scenes, compositions,
+ * beats, and assets — `isKebabIdentifier`. Floats, negatives, NaN,
+ * ±Infinity, empty strings, and non-kebab labels are rejected at
+ * this boundary. A purely-digit label like `"1000"` IS valid (the
+ * shared kebab regex accepts it), the same as it is for a timeline
+ * label, a URL `beat=` parameter, and a composition `range` endpoint
+ * — caption labels do not invent a stricter sub-grammar (codex
+ * review, cycle 1).
+ *
+ * Hoisted to module scope (pure, no closure captures) so the same
+ * predicate covers `describeCaptionFault` and any future
+ * caption-time classifier the preflight reserves.
+ */
+const isCaptionAt = (v: unknown): v is number | string => {
+  if (typeof v === 'number') {
+    return Number.isInteger(v) && Number.isFinite(v) && v >= 0;
+  }
+  return isKebabIdentifier(v);
+};
 
-const isCaptionArray = (v: unknown): v is readonly Caption[] =>
-  Array.isArray(v) && v.every(isCaption);
+/**
+ * Describe why a caption is malformed, indexed by position so the
+ * scene author can find the offending entry directly (codex review,
+ * cycle 1 — adjacent composition-manifest validator does the same).
+ * Returns the message the scene-schema error envelope will report,
+ * or `null` when the caption is well-formed. Caption text is NEVER
+ * echoed in the message (preflight: avoid leaking full caption
+ * content through diagnostics).
+ */
+const describeCaptionFault = (cap: unknown, index: number): string | null => {
+  if (!isPlainRecord(cap)) {
+    return `captions[${index}] must be a {at, text} object`;
+  }
+  if (!isCaptionAt(cap.at)) {
+    return `captions[${index}].at must be a non-negative integer (ms) or a kebab-case beat label (${KEBAB_IDENTIFIER_FORM})`;
+  }
+  if (typeof cap.text !== 'string') {
+    return `captions[${index}].text must be a string`;
+  }
+  return null;
+};
 
 // Scene ids share the kebab-case rule with all other Pulsar
 // identifiers per ADR-008 #1; the predicate lives in ./identifier.ts
@@ -138,8 +188,8 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
   },
   {
     field: 'captions',
-    check: (v) => isCaptionArray(v.captions),
-    condition: 'must be an array of {at: number, text: string}',
+    check: (v) => Array.isArray(v.captions),
+    condition: 'must be an array',
   },
   {
     field: 'defaultNext',
@@ -202,6 +252,22 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
   for (const guard of FIELD_GUARDS) {
     if (!guard.check(value)) {
       fail(id, guard.field, guard.condition);
+    }
+  }
+
+  // Indexed caption validation (codex review, cycle 1): the
+  // FIELD_GUARDS pass above only verifies `captions` is an array.
+  // Per-element validation runs here so a bad caption in a
+  // multi-caption scene surfaces with its index and the failing
+  // field, matching the adjacent composition-manifest validator's
+  // `composition entry [N] is invalid: ...` envelope. Caption text
+  // is never echoed in the message (preflight: avoid leaking full
+  // caption content).
+  const idLabel = id === undefined ? '?' : `"${id}"`;
+  for (let i = 0; i < (value.captions as readonly unknown[]).length; i++) {
+    const fault = describeCaptionFault((value.captions as readonly unknown[])[i], i);
+    if (fault !== null) {
+      throw new Error(`scene ${idLabel} is invalid: ${fault}`);
     }
   }
 }

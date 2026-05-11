@@ -59,6 +59,8 @@ export const scene = {
   tags: [],              // free-form labels (act, theme, surface kind, etc.)
   assets: [],            // images, audio, fonts, data, etc.
   captions: [],          // [{ at: ms, text }] for prompter and exporters
+                         // (refined by ADR-027: `at` may also be a
+                         // kebab-case beat label string)
   defaultNext: "string", // optional: scene id to advance to by default
   standalone: false,     // safe to launch in isolation?
   trailerSafe: false,    // safe to use in a trailer cut without context?

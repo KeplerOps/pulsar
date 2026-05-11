@@ -148,6 +148,37 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
     expect(script.entries[0]?.captions).toEqual([{ at: 0, text: 'kept' }]);
   });
 
+  it('carries mixed numeric and beat-label "at" values through the script entries unchanged (PUL-F027)', () => {
+    // PUL-F027: `Caption.at` is a union of `number` (ms offset) and
+    // `string` (kebab-case beat label). The runtime SHALL derive the
+    // prompter view from this same metadata — `buildPrompterScript`
+    // does NOT coerce, sort, drop, or rewrite `at` based on its type.
+    // A regression that normalized all `at` values to milliseconds in
+    // the prompter path would lose authored beat-label semantics for
+    // consumers (caption editor, beat-aware UI, exporter) that
+    // discriminate by `typeof`.
+    const intro = buildScene({
+      id: 'intro',
+      title: 'Intro',
+      captions: [
+        { at: 0, text: 'opening' },
+        { at: 'hook', text: 'beat-labelled' },
+        { at: 4000, text: 'numeric again' },
+        { at: 'midpoint-stinger', text: 'multi-segment label' },
+      ],
+    });
+    const target: SceneNavigationTarget = { scene: intro };
+
+    const script = buildPrompterScript(target);
+
+    expect(script.entries[0]?.captions).toEqual([
+      { at: 0, text: 'opening' },
+      { at: 'hook', text: 'beat-labelled' },
+      { at: 4000, text: 'numeric again' },
+      { at: 'midpoint-stinger', text: 'multi-segment label' },
+    ]);
+  });
+
   it('preserves all Caption fields structurally (no parallel { at, text } schema)', () => {
     // PUL-F001 declares `Caption` with `at` and `text` today.
     // Future fields (e.g. a `speaker` annotation, an `id` for
