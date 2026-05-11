@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Presenter master mute — PUL-F025 / ADR-004 — in `src/runtime/presenter.ts`
+  and `src/runtime/scene-loader.ts`: the presenter command allowlist gains
+  one new kind, `'toggle-master-mute'`, and the loader's `buildLoad`
+  subscribes a per-navigation audio handler on the existing
+  `PresenterController` that, on receipt, calls
+  `audio.mute(!audio.isMuted())`. The handler lives where both the
+  controller and the per-navigation `AudioService` are in scope; it never
+  imports Howler, touches the master timeline, aborts the navigation,
+  calls `cleanup(ctx)`, or mutates URL / history. Master mute remains
+  engine-level runtime state, so the flip survives scene cleanup and
+  navigation completion (the existing `AudioService.stopAll()` does not
+  reset it — pinned by `audio.test.ts`). The subscription auto-detaches
+  on the navigation's `AbortSignal` via the controller's existing
+  `tearDownAll`. The runner still receives every command kind on its own
+  `input.presenter.subscribe(...)` — the loader handler is additive, not
+  a filter. The command is a *fact* ("presenter pressed mute"), not a
+  target state: a future `set-master-mute` kind with a boolean payload
+  would be a discriminated-union extension on the same seam. The
+  command is scoped to `mode=present` only (the controller is never built
+  for other modes); unknown / misspelled kinds (`mute`, `master-mute`,
+  `unmute`) are dropped at the controller boundary with an `onError`
+  diagnostic and never reach the audio service. No URL parameter, no new
+  mode, no localStorage / sessionStorage / cookie / history state, no
+  `MuteCommandSource` / `MuteController` / second command schema.
+  PUL-F025 remains DRAFT — the runtime-side contract is complete here,
+  but ACTIVE requires a presenter UI surface (keyboard / on-screen / remote
+  protocol) that emits `'toggle-master-mute'` through
+  `PresenterCommandSource`. `src/main.ts` still omits `presenterCommands`,
+  so production reaches the graceful-degradation path (mirrors PUL-F020 /
+  PUL-F021).
 - Audio orchestration — PUL-F024 / ADR-004 — in `src/runtime/audio.ts`:
   the runtime now provides an audio service exposed to scenes as
   `ctx.audio`. `createHowlerAudioEngine()` wraps Howler.js behind the
