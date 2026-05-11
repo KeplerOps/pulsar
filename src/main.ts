@@ -38,15 +38,52 @@ import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
 import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loader';
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
+import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { placeholderScene } from './scenes/placeholder';
 
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
 
-const sceneRegistry = createSceneRegistry([placeholderScene]);
-const compositionRegistry = createCompositionRegistry([
-  { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
-]);
+// PUL-F028 / ADR-008 #7: structural validation pass BEFORE any
+// lifecycle effect. Runs over the same declarative inputs the
+// workbench is about to hand to `createSceneRegistry` and
+// `createCompositionRegistry`, surfacing every finding — missing
+// scenes in compositions, dangling assets, duplicate ids, undeclared
+// cleanup — in one aggregate. The workbench error sink picks up the
+// per-finding detail; the `data-pulsar-validation-failed` stage
+// attribute lets screenshot regression and agent-driven inspection
+// see at a glance that boot was aborted on structural grounds. The
+// throwing wrapper halts the workbench so navigation, the loader,
+// the preloader, and the resolver never touch a broken graph. Empty
+// findings array → boot proceeds untouched.
+//
+// `scenes` and `compositionEntries` are declared ONCE and passed to
+// both the validator and the registry constructors. Splitting them
+// into per-call literals would let a future scene get added to the
+// registry path without being added to validation, leaving the
+// PUL-F028 gate looking active while running unvalidated inputs
+// (codex review cycle 3).
+const scenes = [placeholderScene];
+const compositionEntries = [{ id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition }];
+
+// Clear the failure marker before every boot. In a same-document
+// lifecycle (Vite HMR or repeated `import` evaluation) a previous
+// failed evaluation may have set the attribute; without an explicit
+// reset, the stage would stay marked as validation-failed even after
+// the author fixes the broken graph (codex review cycle 3).
+stage?.removeAttribute('data-pulsar-validation-failed');
+
+const validationFindings = validateRuntime({ scenes, compositions: compositionEntries });
+if (validationFindings.length > 0) {
+  stage?.setAttribute('data-pulsar-validation-failed', 'true');
+  for (const finding of validationFindings) {
+    console.error(`pulsar validation [${finding.code}]: ${finding.message}`);
+  }
+  assertNoValidationFindings(validationFindings);
+}
+
+const sceneRegistry = createSceneRegistry(scenes);
+const compositionRegistry = createCompositionRegistry(compositionEntries);
 
 // PUL-F022 / ADR-003: the GSAP timeline engine. Scenes receive it as
 // `ctx.gsap` and build their timeline with it; the runtime composes the

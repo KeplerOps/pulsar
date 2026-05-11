@@ -56,12 +56,20 @@ export interface IdRegistry<T> {
  *  - `transform` — applied to each registered value before storage.
  *    Lets the composition registry deep-freeze its manifests without
  *    leaking that concern into the generic.
+ *  - `onDuplicate` — optional collector invoked instead of throwing
+ *    when an entry's id is already registered. Lets PUL-F028's
+ *    runtime validation pass aggregate every duplicate occurrence
+ *    rather than stopping at the first, while leaving the runtime
+ *    construction path (no callback supplied) fail-fast with the
+ *    `<label>: duplicate id "<id>"` envelope. The duplicating entry
+ *    is NOT registered; the first occurrence remains canonical.
  */
 export interface IdRegistryConfig<T> {
   readonly label: string;
   readonly subject?: string;
   readonly validateId: (id: string) => void;
   readonly transform?: (value: T) => T;
+  readonly onDuplicate?: (entry: IdRegistryEntry<T>) => void;
 }
 
 /**
@@ -89,6 +97,15 @@ export function createIdRegistry<T>(
   for (const entry of entries) {
     config.validateId(entry.id);
     if (byId.has(entry.id)) {
+      // `onDuplicate` lets the PUL-F028 validation pass aggregate every
+      // duplicate occurrence (registry stays the single source of truth
+      // for uniqueness + error grammar). Default path remains fail-fast:
+      // the runtime's boot construction never supplies the callback, so
+      // a duplicate at registry construction still throws.
+      if (config.onDuplicate !== undefined) {
+        config.onDuplicate(entry);
+        continue;
+      }
       throw new Error(`${config.label}: duplicate id "${entry.id}"`);
     }
     const stored = config.transform === undefined ? entry.value : config.transform(entry.value);
