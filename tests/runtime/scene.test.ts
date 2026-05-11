@@ -206,28 +206,135 @@ describe('SceneModule contract (PUL-F001)', () => {
     });
   });
 
-  describe('caption element shape', () => {
+  describe('caption element shape (PUL-F027)', () => {
+    // PUL-F027 widens `Caption.at` from `number` to `number | string`,
+    // where the string is a kebab-case beat label sharing the existing
+    // ADR-008 #1 identifier grammar. The numeric branch tightens to
+    // "finite, non-negative integer milliseconds" — the values the
+    // existing scene-module contract documents but did not gate.
     const captionScene = (caption: unknown): Record<string, unknown> =>
       withField('captions', [caption]);
 
-    it('accepts a valid caption', () => {
+    it('accepts a valid numeric caption', () => {
       const cap: Caption = { at: 1000, text: 'hello' };
       expect(() => assertSceneModule(captionScene(cap))).not.toThrow();
     });
 
-    it('accepts multiple captions', () => {
+    it('accepts at: 0 (frame zero)', () => {
+      expect(() => assertSceneModule(captionScene({ at: 0, text: 'hi' }))).not.toThrow();
+    });
+
+    it('accepts a kebab-case beat-label "at" (PUL-F027 string branch)', () => {
+      // ADR-008 #1: scenes, compositions, beats, and assets share one
+      // identifier grammar. A caption pinned to a named beat uses the
+      // same kebab-case string a timeline label uses.
+      expect(() =>
+        assertSceneModule(captionScene({ at: 'midpoint', text: 'pivotal line' })),
+      ).not.toThrow();
+    });
+
+    it('accepts mixed numeric and beat-label captions in one scene', () => {
       expect(() =>
         assertSceneModule(
           withField('captions', [
             { at: 0, text: 'opening hook' },
+            { at: 'hook', text: 'named beat caption' },
             { at: 4000, text: 'first payoff' },
+            { at: 'midpoint-stinger', text: 'multi-segment label' },
           ]),
         ),
       ).not.toThrow();
     });
 
-    it('rejects caption with non-number "at"', () => {
-      expect(() => assertSceneModule(captionScene({ at: '1000', text: 'hi' }))).toThrow(/captions/);
+    it('rejects a non-integer numeric "at"', () => {
+      expect(() => assertSceneModule(captionScene({ at: 1.5, text: 'hi' }))).toThrow(/captions/);
+    });
+
+    it('rejects a negative "at"', () => {
+      expect(() => assertSceneModule(captionScene({ at: -1, text: 'hi' }))).toThrow(/captions/);
+    });
+
+    it('rejects NaN "at"', () => {
+      expect(() => assertSceneModule(captionScene({ at: Number.NaN, text: 'hi' }))).toThrow(
+        /captions/,
+      );
+    });
+
+    it('rejects Infinity "at"', () => {
+      expect(() =>
+        assertSceneModule(captionScene({ at: Number.POSITIVE_INFINITY, text: 'hi' })),
+      ).toThrow(/captions/);
+      expect(() =>
+        assertSceneModule(captionScene({ at: Number.NEGATIVE_INFINITY, text: 'hi' })),
+      ).toThrow(/captions/);
+    });
+
+    it('rejects an empty-string "at"', () => {
+      expect(() => assertSceneModule(captionScene({ at: '', text: 'hi' }))).toThrow(/captions/);
+    });
+
+    it('rejects a non-kebab-case label "at"', () => {
+      // The preflight names every shape the kebab regex rejects.
+      expect(() => assertSceneModule(captionScene({ at: 'Bad Label', text: 'hi' }))).toThrow(
+        /captions/,
+      );
+      expect(() => assertSceneModule(captionScene({ at: 'midpoint!', text: 'hi' }))).toThrow(
+        /captions/,
+      );
+      expect(() => assertSceneModule(captionScene({ at: '--mid', text: 'hi' }))).toThrow(
+        /captions/,
+      );
+      expect(() => assertSceneModule(captionScene({ at: 'a--b', text: 'hi' }))).toThrow(/captions/);
+      expect(() => assertSceneModule(captionScene({ at: 'scene_a', text: 'hi' }))).toThrow(
+        /captions/,
+      );
+    });
+
+    it('accepts a digit-only beat-label "at" (it satisfies the shared kebab grammar)', () => {
+      // Codex review, cycle 1: caption beat labels share the ONE
+      // identifier grammar ADR-008 #1 reserves for scenes,
+      // compositions, beats, and assets. The shared kebab regex
+      // accepts purely-digit labels (`[a-z0-9]+`), and a caption
+      // label MUST NOT carry a stricter sub-grammar — a timeline
+      // label of `"1000"` is valid, a URL `beat=1000` is valid, a
+      // composition `range: ["1000", ...]` is valid, so the caption
+      // schema is consistent. A string `at` value is interpreted
+      // as a beat label, not as a coerced number; if the author
+      // wants 1000ms they write `at: 1000`.
+      expect(() => assertSceneModule(captionScene({ at: '1000', text: 'hi' }))).not.toThrow();
+    });
+
+    it('reports the offending caption index and field on a multi-caption scene (codex review, cycle 1)', () => {
+      // The validator must identify the caption index and the
+      // failing field — not collapse to a generic "captions must be
+      // an array of ..." message — so a scene author with twenty
+      // captions can find the broken one.
+      expect(() =>
+        assertSceneModule(
+          withField('captions', [
+            { at: 0, text: 'good first' },
+            { at: 'good-label', text: 'good middle' },
+            { at: -5, text: 'bad third' },
+          ]),
+        ),
+      ).toThrow(/captions\[2\]\.at/);
+    });
+
+    it('reports the offending caption index and field for a non-string text', () => {
+      expect(() =>
+        assertSceneModule(
+          withField('captions', [
+            { at: 0, text: 'good' },
+            { at: 100, text: 42 },
+          ]),
+        ),
+      ).toThrow(/captions\[1\]\.text/);
+    });
+
+    it('reports the offending caption index when the entry is not an object', () => {
+      expect(() =>
+        assertSceneModule(withField('captions', [{ at: 0, text: 'good' }, 'not-a-caption'])),
+      ).toThrow(/captions\[1\]/);
     });
 
     it('rejects caption with non-string "text"', () => {

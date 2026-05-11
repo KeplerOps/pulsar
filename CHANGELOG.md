@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Caption metadata `at` widened — PUL-F027 / ADR-002 / ADR-008 — in
+  `src/runtime/scene.ts`: `Caption.at` now accepts either a finite
+  non-negative integer (millisecond offset, as before) OR a
+  kebab-case beat label string sharing the existing ADR-008 #1
+  identifier grammar. The scene-schema gate (`assertSceneModule`)
+  tightens the numeric branch at the same boundary so floats,
+  negatives, `NaN`, ±`Infinity`, empty strings, and non-kebab
+  labels are all rejected at validation time. Caption beat labels
+  use the same kebab-case predicate the runtime already uses for
+  scene ids, composition ids, timeline labels, and URL `beat=`
+  parameters — caption labels do NOT carry a stricter sub-grammar.
+  Caption validation errors now identify the caption index and
+  failing field (`captions[2].at must be ...`) rather than
+  collapsing to a generic per-array message. The prompter
+  (`buildPrompterScript`) already derives the caption view from
+  `scene.captions` and copies each entry structurally with
+  `{ ...c }`, so the widened `at` flows through the prompter
+  script unchanged — single source of truth. No URL parameter,
+  composition override, prompter-only caption schema, or new
+  exception hierarchy.
+
 ### Added
 
 - Rehearsal mode — PUL-F026 / ADR-004 — in `src/runtime/navigation.ts`,

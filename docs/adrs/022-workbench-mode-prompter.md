@@ -33,7 +33,8 @@ The clauses decompose this way:
 
 - "Render a script/caption view derived from the captions metadata of
   the addressed scene or composition" — the runtime aggregates
-  `scene.captions` (PUL-F001 / ADR-002 — `{ at: ms, text }[]`) from
+  `scene.captions` (PUL-F001 / ADR-002, refined by ADR-027 to
+  `{ at: ms | beat-label, text }[]`) from
   the addressed target into a script structure and hands it to a
   rendering surface. For composition targets, captions span every
   scene in the resolved slice (PUL-F008 / ADR-014's snapshot from the
@@ -442,6 +443,10 @@ mismatch.
 
 - [ADR-002](002-scene-registry-and-compositions.md) — defines the
   `Caption = { at: ms, text }` shape this ADR aggregates.
+- [ADR-027](027-caption-timestamp-grammar.md) — refines `Caption.at`
+  to also accept a kebab-case beat label string. The prompter
+  aggregation seam is structurally unchanged; the widened `at` flows
+  through `buildPrompterScript()`'s `{ ...c }` spread.
 - [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes; specifically references `mode=prompter` as the
   script/caption review mode.
