@@ -79,6 +79,7 @@ The runtime supports the following modes:
 | `scrub` | Timeline controls are visible. For inspecting timing, easing, and beat alignment. |
 | `screenshot` | Deterministic state, fixed seed for any randomness, no animation. For visual regression checks and exported stills. |
 | `prompter` | Script/caption view for the selected scene or composition, regardless of visual rendering. |
+| `rehearsal` | Author rehearsal — audio is silenced or logged as cues (PUL-F026 / ADR-004's `AudioOutputPolicy: 'log-cues'`). Timeline state, master timeline, and composition slice are unchanged from the equivalent non-rehearsal navigation. |
 
 Modes are explicit, addressable, and orthogonal to navigation: any
 scene + beat target works in any mode that makes sense for that target.

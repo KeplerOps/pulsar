@@ -39,6 +39,7 @@ const ALL_MODES: readonly NavigationMode[] = [
   'scrub',
   'screenshot',
   'prompter',
+  'rehearsal',
 ];
 
 describe('parseNavigationSearch — clause 1: accepts the five grammar keys', () => {

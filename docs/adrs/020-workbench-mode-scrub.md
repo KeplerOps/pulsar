@@ -10,8 +10,8 @@ Accepted
 
 ## Context
 
-ADR-007 names seven workbench modes: `present`, `standalone`, `loop`,
-`paused`, `scrub`, `screenshot`, `prompter`. ADR-013 fixes the URL
+ADR-007 names eight workbench modes: `present`, `standalone`, `loop`,
+`paused`, `scrub`, `screenshot`, `prompter`, `rehearsal`. ADR-013 fixes the URL
 grammar boundary that carries `mode=` to the runtime. ADR-014 fixes
 the scene navigation dispatch layer. ADR-015 fixes URL beat
 positioning. ADR-016 (`mode=present`), ADR-017 (`mode=standalone`),
@@ -477,7 +477,7 @@ PR as satisfying PUL-F017 would be a traceability/status mismatch.
 - [ADR-004](004-howler-audio-engine.md) — audio cues are the
   consumer of the cue gate. Today there is no audio engine, so the
   gate has no consumer.
-- [ADR-007](007-browser-workbench.md) — defines the seven workbench
+- [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
   Specifically references `mode=scrub` as the timing/beat-alignment
   inspection mode.

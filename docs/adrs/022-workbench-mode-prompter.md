@@ -10,8 +10,8 @@ Accepted
 
 ## Context
 
-ADR-007 names seven workbench modes: `present`, `standalone`, `loop`,
-`paused`, `scrub`, `screenshot`, `prompter`. ADR-013 fixes the URL
+ADR-007 names eight workbench modes: `present`, `standalone`, `loop`,
+`paused`, `scrub`, `screenshot`, `prompter`, `rehearsal`. ADR-013 fixes the URL
 grammar boundary that carries `mode=` to the runtime. ADR-014 fixes
 the scene navigation dispatch layer. ADR-015 fixes URL beat
 positioning. ADR-016 (`mode=present`), ADR-017 (`mode=standalone`),
@@ -104,7 +104,7 @@ extension.
 
 `mode=prompter` is dispatched at the loader
 (`src/runtime/scene-loader.ts`) on a separate code path from the
-other six lifecycle-running modes. When `effectiveMode(target) ===
+other seven lifecycle-running modes. When `effectiveMode(target) ===
 'prompter'`:
 
 1. The loader still validates the navigation target via the existing
@@ -442,7 +442,7 @@ mismatch.
 
 - [ADR-002](002-scene-registry-and-compositions.md) — defines the
   `Caption = { at: ms, text }` shape this ADR aggregates.
-- [ADR-007](007-browser-workbench.md) — defines the seven workbench
+- [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes; specifically references `mode=prompter` as the
   script/caption review mode.
 - [ADR-008](008-agent-native-authoring.md) — manifests-over-flow-

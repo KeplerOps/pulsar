@@ -10,8 +10,8 @@ Accepted
 
 ## Context
 
-ADR-007 names seven workbench modes: `present`, `standalone`, `loop`,
-`paused`, `scrub`, `screenshot`, `prompter`. ADR-013 fixes the URL
+ADR-007 names eight workbench modes: `present`, `standalone`, `loop`,
+`paused`, `scrub`, `screenshot`, `prompter`, `rehearsal`. ADR-013 fixes the URL
 grammar boundary that carries `mode=` to the runtime. ADR-014 fixes
 the scene navigation dispatch layer that turns a `NavigationTarget`
 into a runnable scene/slice. ADR-015 fixes URL beat positioning.
@@ -233,7 +233,7 @@ to inspect — fully supported.
   through which audio rendering will flow; the surrounding-audio-bed
   suppression clause maps onto a future audio surface reading
   `ctx.mode === 'standalone'`.
-- [ADR-007](007-browser-workbench.md) — defines the seven workbench
+- [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
 - [ADR-008](008-agent-native-authoring.md) — manifests-over-flow-
   control underpins the slice-drop-not-manifest-mutation choice.

@@ -10,8 +10,8 @@ Accepted
 
 ## Context
 
-ADR-007 names seven workbench modes: `present`, `standalone`, `loop`,
-`paused`, `scrub`, `screenshot`, `prompter`. ADR-013 fixes the URL
+ADR-007 names eight workbench modes: `present`, `standalone`, `loop`,
+`paused`, `scrub`, `screenshot`, `prompter`, `rehearsal`. ADR-013 fixes the URL
 grammar boundary that carries `mode=` to the runtime. ADR-014 fixes
 the scene navigation dispatch layer. ADR-015 fixes URL beat
 positioning. ADR-016 (`mode=present`), ADR-017 (`mode=standalone`),
@@ -387,7 +387,7 @@ mismatch.
   the seam through which hold-at-first-frame will flow when the
   GSAP runner lands. Today the runner is a placeholder, so paused
   behavior is structurally vacuous.
-- [ADR-007](007-browser-workbench.md) — defines the seven workbench
+- [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
 - [ADR-008](008-agent-native-authoring.md) — manifests-over-flow-
   control underpins the no-mode-suppression-in-resolver constraint.

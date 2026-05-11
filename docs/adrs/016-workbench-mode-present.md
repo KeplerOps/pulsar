@@ -15,13 +15,15 @@ PUL-F013 specifies `mode=present` behavior:
 > In `mode=present`, the runtime SHALL render full chrome, audio, and
 > inter-scene transitions, and SHALL respond to presenter input.
 
-`present` is one of the seven workbench modes ADR-007 defines, and it
+`present` is one of the eight workbench modes ADR-007 defines, and it
 is the default selected by `effectiveMode()` when the URL omits
 `mode=`. Other modes (`standalone`, `loop`, `paused`, `scrub`,
-`screenshot`, `prompter`) suppress some subset of the four facets
-PUL-F013 names — for example, `standalone` suppresses chrome,
-inter-scene transitions, and the audio bed (PUL-F014); `screenshot`
-suppresses audio and animation (PUL-F018).
+`screenshot`, `prompter`, `rehearsal`) suppress some subset of the
+four facets PUL-F013 names — for example, `standalone` suppresses
+chrome, inter-scene transitions, and the audio bed (PUL-F014);
+`screenshot` suppresses audio and animation (PUL-F018); `rehearsal`
+suppresses audible playback (silenced or logged as cues —
+PUL-F026 / ADR-004).
 
 Each of the four facets PUL-F013 names depends on a surface that has
 not yet landed in this repo:
@@ -185,7 +187,7 @@ traceability/status mismatch.
   input flow.
 - [ADR-004](004-howler-audio-engine.md) — `ctx.audio` is the seam
   through which audio rendering will flow.
-- [ADR-007](007-browser-workbench.md) — defines the seven workbench
+- [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
 - [ADR-008](008-agent-native-authoring.md) — manifests-over-flow-
   control underpins the no-mode-suppression-in-resolver constraint.

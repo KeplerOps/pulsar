@@ -19,6 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type {
+  AudioCueLogEntry,
   AudioEngine,
   AudioService,
   AudioSoundConfig,
@@ -232,6 +233,9 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
       await loader.handle(targetWithMode('a', mode));
       await loader.idle();
       expect(audio.created).toHaveLength(1);
+      // outputPolicy === 'silent' constructs every sound muted at the
+      // engine (PUL-F024 / ADR-019 / ADR-021). The cue log stays
+      // silent because the policy is not 'log-cues'.
       expect(audio.created[0]?.muted).toBe(true);
     }
   });
@@ -352,6 +356,34 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
     expect(audio.created).toHaveLength(0);
   });
 
+  it('threads onAudioCue through ctx.audio under mode=present but emits no cues (policy: audible)', async () => {
+    const cues: AudioCueLogEntry[] = [];
+    const audio = recordingAudioEngine();
+    const scene = buildScene({
+      id: 'a',
+      assets: ['/audio/bed.mp3'],
+      create: (ctx) => {
+        (ctx as { audio: AudioService }).audio.load('bed', { src: '/audio/bed.mp3' });
+        (ctx as { audio: AudioService }).audio.play('bed');
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      onAudioCue: (entry) => cues.push(entry),
+    });
+    await loader.handle(targetWithMode('a', 'present'));
+    await loader.idle();
+    // Audible policy => audio.created[0].muted is false; no cues emitted.
+    expect(audio.created[0]?.muted).toBe(false);
+    expect(cues).toEqual([]);
+  });
+
   it('falls back to a silent (no-op) audio engine when audioEngine is omitted', async () => {
     let captured: AudioService | undefined;
     const scene = buildScene({
@@ -382,3 +414,278 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
     expect(captured?.isDisposed()).toBe(true);
   });
 });
+
+/* -------------------------------------------------------------------- *
+ *  mode=rehearsal — PUL-F026 / ADR-004
+ *
+ *  Rehearsal is an audio-output policy, not a timeline-state mode. The
+ *  loader's responsibility:
+ *
+ *  - Build the per-navigation `AudioService` with
+ *    `outputPolicy: 'log-cues'` (audio muted at engine level AND
+ *    every accepted audio operation emitted to the workbench's
+ *    optional `onAudioCue` sink).
+ *  - Thread `onAudioCue` through to `onCue` regardless of mode (the
+ *    policy decides whether cues are emitted).
+ *  - Reach `ctx.mode === 'rehearsal'` (PUL-F012 seam) on every
+ *    lifecycle hook.
+ *  - NOT truncate the composition slice (rehearsal preserves "the
+ *    same scene slice and timeline progression as normal playback
+ *    from that target" — preflight).
+ *  - Preserve head-entry `range` / `behavior` overrides for composition
+ *    + scene / composition + index rehearsal targets.
+ * -------------------------------------------------------------------- */
+
+describe('scene loader — mode=rehearsal (PUL-F026 / ADR-004)', () => {
+  it('builds the audio service with outputPolicy log-cues (sounds muted at the engine)', async () => {
+    const audio = recordingAudioEngine();
+    const scene = buildScene({
+      id: 'a',
+      assets: ['/audio/bed.mp3'],
+      create: (ctx) => {
+        (ctx as { audio: AudioService }).audio.load('bed', { src: '/audio/bed.mp3' });
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+    });
+    await loader.handle(targetWithMode('a', 'rehearsal'));
+    await loader.idle();
+    expect(audio.created).toHaveLength(1);
+    expect(audio.created[0]?.muted).toBe(true);
+  });
+
+  it('emits cues through onAudioCue when scenes play audio under mode=rehearsal', async () => {
+    const cues: AudioCueLogEntry[] = [];
+    const audio = recordingAudioEngine();
+    // Scope the scene's audio to its own group (`scene.id`) so the
+    // loader's per-scene post-cleanup hook (`onSceneCleaned` →
+    // `audio.stopGroup(sceneId)`) emits the same group's stop-group
+    // cue at teardown — the runtime-guaranteed audio-group teardown
+    // (ADR-004) is itself an accepted audio operation and therefore
+    // part of the rehearsal cue stream.
+    const scene = buildScene({
+      id: 'a',
+      assets: ['/audio/bed.mp3'],
+      create: (ctx) => {
+        const x = (ctx as { audio: AudioService }).audio;
+        x.load('bed', { src: '/audio/bed.mp3' });
+        x.play('bed', { group: 'a' });
+        x.fade('bed', 1, 0, 100);
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      onAudioCue: (entry) => cues.push(entry),
+    });
+    await loader.handle(targetWithMode('a', 'rehearsal'));
+    await loader.idle();
+    expect(cues.map((c) => c.operation)).toEqual(['play', 'fade', 'stop-group']);
+    expect(cues[0]).toMatchObject({ operation: 'play', soundId: 'bed', group: 'a' });
+    expect(cues[1]).toMatchObject({ operation: 'fade', soundId: 'bed' });
+    // The final stop-group cue is the runtime-fired teardown of the
+    // scene's audio group on `cleanup(ctx)` (PUL-F024 / ADR-004).
+    expect(cues[2]).toMatchObject({ operation: 'stop-group', group: 'a' });
+    // Engine-level mute is independent of the cue log.
+    expect(audio.created[0]?.muted).toBe(true);
+  });
+
+  it('rehearses a composition target through the FULL slice — no slice truncation', async () => {
+    // Distinguishes rehearsal from standalone/loop/paused/scrub/screenshot:
+    // those modes truncate the slice to the head; rehearsal preserves it.
+    const a = buildScene({ id: 'scene-a' });
+    const b = buildScene({ id: 'scene-b' });
+    const c = buildScene({ id: 'scene-c' });
+    const { adapter, calls } = recordingTimeline();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a, b, c]),
+      compositions: createCompositionRegistry([
+        { id: 'talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+      ]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: adapter,
+    });
+    await loader.handle({
+      locator: { kind: 'composition', composition: 'talk' },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.segments.map((s) => s.id)).toEqual(['scene-a', 'scene-b', 'scene-c']);
+  });
+
+  it('rehearses a composition+scene target from the addressed head onward (slice preserved)', async () => {
+    const a = buildScene({ id: 'scene-a' });
+    const b = buildScene({ id: 'scene-b' });
+    const c = buildScene({ id: 'scene-c' });
+    const { adapter, calls } = recordingTimeline();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a, b, c]),
+      compositions: createCompositionRegistry([
+        { id: 'talk', manifest: ['scene-a', 'scene-b', 'scene-c'] },
+      ]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: adapter,
+    });
+    await loader.handle({
+      locator: { kind: 'composition-scene', composition: 'talk', scene: 'scene-b' },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    // Slice from scene-b onward — full progression, no truncation to head.
+    expect(calls[0]?.segments.map((s) => s.id)).toEqual(['scene-b', 'scene-c']);
+  });
+
+  it('rehearses a composition+index target preserving the head entry’s `range` / `behavior` overrides', async () => {
+    const a = buildScene({ id: 'scene-a' });
+    const b = buildScene({ id: 'scene-b' });
+    const { adapter, calls } = recordingTimeline();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a, b]),
+      compositions: createCompositionRegistry([
+        {
+          id: 'talk',
+          manifest: [
+            'scene-a',
+            // Object-form entry with range + behavior so we can verify
+            // they reach the runner unchanged under rehearsal. The
+            // entry shape is `{ id, range?, behavior? }` per PUL-F003;
+            // `range` is a `[start, end]` tuple of kebab-case beat
+            // labels (or a single kebab string).
+            { id: 'scene-b', range: ['a-beat', 'z-beat'], behavior: { x: 1 } },
+          ],
+        },
+      ]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: adapter,
+    });
+    await loader.handle({
+      locator: { kind: 'composition-index', composition: 'talk', index: 1 },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    const segment = calls[0]?.segments[0];
+    expect(segment?.id).toBe('scene-b');
+    expect(segment?.range).toEqual(['a-beat', 'z-beat']);
+    expect(segment?.behavior).toEqual({ x: 1 });
+  });
+
+  it('reaches ctx.mode === "rehearsal" in every lifecycle hook of every scene in the slice', async () => {
+    const seen: Array<{ id: string; phase: string; mode: string | undefined }> = [];
+    const a = buildScene({
+      id: 'scene-a',
+      create: (ctx) => {
+        seen.push({ id: 'scene-a', phase: 'create', mode: (ctx as WorkbenchSceneCtxLike).mode });
+      },
+      timeline: (ctx) => {
+        seen.push({ id: 'scene-a', phase: 'timeline', mode: (ctx as WorkbenchSceneCtxLike).mode });
+        return null;
+      },
+      cleanup: (ctx) => {
+        seen.push({ id: 'scene-a', phase: 'cleanup', mode: (ctx as WorkbenchSceneCtxLike).mode });
+      },
+    });
+    const b = buildScene({
+      id: 'scene-b',
+      create: (ctx) => {
+        seen.push({ id: 'scene-b', phase: 'create', mode: (ctx as WorkbenchSceneCtxLike).mode });
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a, b]),
+      compositions: createCompositionRegistry([{ id: 'talk', manifest: ['scene-a', 'scene-b'] }]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+    });
+    await loader.handle({
+      locator: { kind: 'composition', composition: 'talk' },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    expect(seen.every((s) => s.mode === 'rehearsal')).toBe(true);
+    // Both scenes mounted (full slice — no truncation).
+    expect(seen.some((s) => s.id === 'scene-a')).toBe(true);
+    expect(seen.some((s) => s.id === 'scene-b')).toBe(true);
+  });
+
+  it('exposes every declared composition-slice asset to ctx.audio under mode=rehearsal', async () => {
+    // Rehearsal preserves the full slice, so the audio service's
+    // allowedSources is the union of every scene's `scene.assets` —
+    // same invariant as `mode=present`. A scene further down the slice
+    // can register a sibling scene's declared URL.
+    const a = buildScene({
+      id: 'scene-a',
+      assets: ['/audio/a.mp3'],
+      create: (ctx) => {
+        (ctx as { audio: AudioService }).audio.load('a-bed', { src: '/audio/a.mp3' });
+      },
+    });
+    const b = buildScene({
+      id: 'scene-b',
+      assets: ['/audio/b.mp3'],
+      create: (ctx) => {
+        (ctx as { audio: AudioService }).audio.load('a-from-b', { src: '/audio/a.mp3' });
+        (ctx as { audio: AudioService }).audio.load('b-bed', { src: '/audio/b.mp3' });
+      },
+    });
+    const audio = recordingAudioEngine();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a, b]),
+      compositions: createCompositionRegistry([{ id: 'pair', manifest: ['scene-a', 'scene-b'] }]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+    });
+    await loader.handle({
+      locator: { kind: 'composition', composition: 'pair' },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    expect(audio.created).toHaveLength(3);
+    expect(audio.created.every((c) => c.muted)).toBe(true);
+  });
+
+  it('preserves head-only timeline-runner contracts under mode=rehearsal (no `repeat` / `hold` / `cueGate` / `screenshot`)', async () => {
+    const a = buildScene({ id: 'scene-a' });
+    const { adapter, calls } = recordingTimeline();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a]),
+      compositions: createCompositionRegistry([]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: adapter,
+    });
+    await loader.handle(targetWithMode('scene-a', 'rehearsal'));
+    await loader.idle();
+    const opts = calls[0]?.opts;
+    expect(opts?.headRepeat).toBeUndefined();
+    expect(opts?.headHold).toBeUndefined();
+    expect(opts?.headCueGate).toBeUndefined();
+    expect(opts?.headScreenshot).toBeUndefined();
+  });
+});
+
+type WorkbenchSceneCtxLike = { readonly mode?: string };

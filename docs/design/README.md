@@ -19,6 +19,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-f023-named-timeline-beats-preflight.md](pul-f023-named-timeline-beats-preflight.md) | Guardrails for implementing named timeline beats. |
 | [pul-f024-audio-orchestration-preflight.md](pul-f024-audio-orchestration-preflight.md) | Guardrails for implementing runtime-owned audio orchestration. |
 | [pul-f025-master-mute-preflight.md](pul-f025-master-mute-preflight.md) | Guardrails for implementing presenter master mute. |
+| [pul-f026-rehearsal-mode-preflight.md](pul-f026-rehearsal-mode-preflight.md) | Guardrails for implementing rehearsal audio suppression or cue logging without timeline-state changes. |
 
 Design docs are mutable. Decisions are captured as ADRs (immutable once
 accepted).

@@ -126,7 +126,7 @@ parameters follow that model:
   composition (compatibility shim).
 - `?scene=<scene-id>&beat=<label>` — jump to a labeled point inside a
   scene timeline (see [ADR-003](003-gsap-timeline-engine.md)).
-- `?...&mode=<present|standalone|loop|paused|scrub|screenshot|prompter>`
+- `?...&mode=<present|standalone|loop|paused|scrub|screenshot|prompter|rehearsal>`
   — select a workbench mode (see [ADR-007](007-browser-workbench.md)).
 
 Numeric / positional navigation, if exposed, is a compatibility shim

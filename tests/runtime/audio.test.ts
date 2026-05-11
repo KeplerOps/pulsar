@@ -19,6 +19,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  type AudioCueLogEntry,
+  type AudioCueLogStopGroup,
   type AudioEngine,
   AudioError,
   AudioGroupError,
@@ -270,8 +272,20 @@ describe('createAudioService — load (C2 register a sound)', () => {
     });
   });
 
-  it('builds every sound muted when the service is silent', () => {
-    const { fake, service } = buildService({ silent: true });
+  it('builds every sound audible by default (outputPolicy: audible)', () => {
+    const { fake, service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(fake.created[0]?.muted).toBe(false);
+  });
+
+  it('builds every sound muted when outputPolicy is silent', () => {
+    const { fake, service } = buildService({ outputPolicy: 'silent' });
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(fake.created[0]?.muted).toBe(true);
+  });
+
+  it('builds every sound muted when outputPolicy is log-cues (rehearsal)', () => {
+    const { fake, service } = buildService({ outputPolicy: 'log-cues' });
     service.load('bed', { src: '/audio/bed.mp3' });
     expect(fake.created[0]?.muted).toBe(true);
   });
@@ -691,5 +705,396 @@ describe('noopAudioEngine', () => {
     expect(service.isMuted()).toBe(true);
     service.mute(false);
     expect(service.isMuted()).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------- *
+ *  Output policy `log-cues` — PUL-F026 / ADR-004 rehearsal mode
+ *
+ *  The cue log is the runtime-visible half of "audio is silenced or
+ *  logged as cues" (PUL-F026). Engine sounds are still constructed
+ *  muted (the `silent` parity check lives above), and every ACCEPTED
+ *  audio operation (post-validation, post-engine-call) emits a
+ *  semantic `AudioCueLogEntry` to `onCue`. Entries carry sound id,
+ *  sprite, group, volume, loop, fade endpoints, operation, and a
+ *  monotonic sequence — NO source URLs, Howler handles, raw scene
+ *  objects, or asset paths (preflight: "log semantic ids only").
+ *  `load` and `mute` are NOT cues; validation throws never emit;
+ *  post-dispose calls never emit; a throwing sink is swallowed.
+ * -------------------------------------------------------------------- */
+
+describe('createAudioService — outputPolicy log-cues (PUL-F026 / ADR-004)', () => {
+  const buildLogCues = (
+    options: Partial<Parameters<typeof createAudioService>[1]> = {},
+  ): {
+    fake: FakeEngine;
+    controller: AbortController;
+    service: ReturnType<typeof createAudioService>;
+    cues: AudioCueLogEntry[];
+  } => {
+    const cues: AudioCueLogEntry[] = [];
+    const fake = fakeEngine();
+    const controller = new AbortController();
+    const service = createAudioService(fake.engine, {
+      signal: controller.signal,
+      outputPolicy: 'log-cues',
+      onCue: (entry) => cues.push(entry),
+      ...options,
+    });
+    return { fake, controller, service, cues };
+  };
+
+  it('emits a cue entry for an accepted play (sound id, monotonic sequence)', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    expect(cues).toHaveLength(1);
+    const cue = cues[0];
+    expect(cue?.operation).toBe('play');
+    if (cue?.operation === 'play') {
+      expect(cue.soundId).toBe('bed');
+      expect(cue.sequence).toBe(1);
+    }
+  });
+
+  it('captures sprite, group, volume, and loop on the play cue', () => {
+    const { service, cues } = buildLogCues();
+    service.load('fx', { src: '/audio/fx.webm', sprite: { laugh: [0, 1000] } });
+    service.play('fx', { sprite: 'laugh', group: 'scene-a', volume: 0.5, loop: true });
+    expect(cues).toEqual([
+      {
+        sequence: 1,
+        operation: 'play',
+        soundId: 'fx',
+        sprite: 'laugh',
+        group: 'scene-a',
+        volume: 0.5,
+        loop: true,
+      },
+    ]);
+  });
+
+  it('omits optional fields from the play cue when not supplied', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    const cue = cues[0];
+    expect(cue?.operation).toBe('play');
+    if (cue?.operation !== 'play') return;
+    expect(cue.sprite).toBeUndefined();
+    expect(cue.group).toBeUndefined();
+    expect(cue.volume).toBeUndefined();
+    expect(cue.loop).toBeUndefined();
+  });
+
+  it('emits a fade cue with from / to / durationMs', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.fade('bed', 0.8, 0.15, 1200);
+    expect(cues).toEqual([
+      {
+        sequence: 1,
+        operation: 'fade',
+        soundId: 'bed',
+        fade: { from: 0.8, to: 0.15, durationMs: 1200 },
+      },
+    ]);
+  });
+
+  it('emits a stop cue with sound id', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    service.stop('bed');
+    const stops = cues.filter((c) => c.operation === 'stop');
+    expect(stops).toEqual([{ sequence: 2, operation: 'stop', soundId: 'bed' }]);
+  });
+
+  it('emits a stop-group cue with group only (no sound id)', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed', { group: 'scene-a' });
+    service.stopGroup('scene-a');
+    const groupStops = cues.filter((c): c is AudioCueLogStopGroup => c.operation === 'stop-group');
+    expect(groupStops).toEqual([{ sequence: 2, operation: 'stop-group', group: 'scene-a' }]);
+    // The discriminated-union type already guarantees `soundId` is
+    // absent on `stop-group` cues — assert at runtime too.
+    const entry = groupStops[0];
+    expect(entry).toBeDefined();
+    expect(entry !== undefined && 'soundId' in entry).toBe(false);
+  });
+
+  it('emits a stop-group cue even when the group has no plays (audible call vs effect)', () => {
+    const { service, cues } = buildLogCues();
+    service.stopGroup('scene-a');
+    expect(cues).toEqual([{ sequence: 1, operation: 'stop-group', group: 'scene-a' }]);
+  });
+
+  it('does NOT emit cues for load (registration is not a cue)', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3', sprite: { hit: [0, 100] } });
+    service.load('whoosh', { src: ['/audio/whoosh.webm', '/audio/whoosh.mp3'] });
+    expect(cues).toEqual([]);
+  });
+
+  it('does NOT emit cues for master mute (engine state, not a cue)', () => {
+    const { service, cues } = buildLogCues();
+    service.mute(true);
+    service.mute(false);
+    expect(cues).toEqual([]);
+  });
+
+  it('does NOT emit a cue when validation rejects an operation', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(() => service.play('ghost')).toThrow(AudioSoundError);
+    expect(() => service.play('bed', { volume: 5 })).toThrow(AudioRangeError);
+    expect(() => service.fade('bed', -0.1, 1, 100)).toThrow(AudioRangeError);
+    expect(() => service.stop('ghost')).toThrow(AudioSoundError);
+    expect(() => service.stopGroup('Bad Group')).toThrow(AudioGroupError);
+    expect(cues).toEqual([]);
+  });
+
+  it('sequence is monotonic across operations', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed', { group: 'scene-a' });
+    service.fade('bed', 1, 0, 100);
+    service.stop('bed');
+    service.stopGroup('scene-a');
+    expect(cues.map((c) => c.sequence)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('never includes source URLs in cue entries', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/super-secret-asset.mp3' });
+    service.play('bed', { group: 'scene-a' });
+    service.fade('bed', 1, 0, 100);
+    service.stop('bed');
+    service.stopGroup('scene-a');
+    const blob = JSON.stringify(cues);
+    expect(blob).not.toContain('super-secret-asset.mp3');
+    expect(blob).not.toContain('/audio/');
+    expect(blob).not.toContain('mp3');
+  });
+
+  it('does NOT emit cues after the service is disposed', () => {
+    const { service, controller, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    cues.length = 0;
+    controller.abort();
+    service.play('bed');
+    service.fade('bed', 1, 0, 100);
+    service.stop('bed');
+    service.stopGroup('scene-a');
+    expect(cues).toEqual([]);
+  });
+
+  it('does not let a throwing onCue sink escape through play / fade / stop / stopGroup', () => {
+    const fake = fakeEngine();
+    const service = createAudioService(fake.engine, {
+      signal: liveSignal(),
+      outputPolicy: 'log-cues',
+      onCue: () => {
+        throw new Error('cue sink blew up');
+      },
+    });
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(() => service.play('bed', { group: 'g' })).not.toThrow();
+    expect(() => service.fade('bed', 1, 0, 100)).not.toThrow();
+    expect(() => service.stop('bed')).not.toThrow();
+    expect(() => service.stopGroup('g')).not.toThrow();
+  });
+
+  it('emits cues only under outputPolicy log-cues (not silent, not audible)', () => {
+    for (const policy of ['audible', 'silent'] as const) {
+      const cues: AudioCueLogEntry[] = [];
+      const fake = fakeEngine();
+      const service = createAudioService(fake.engine, {
+        signal: liveSignal(),
+        outputPolicy: policy,
+        onCue: (e) => cues.push(e),
+      });
+      service.load('bed', { src: '/audio/bed.mp3' });
+      service.play('bed');
+      service.fade('bed', 1, 0, 100);
+      service.stop('bed');
+      expect(cues).toEqual([]);
+    }
+  });
+
+  it('log-cues without an onCue sink still mutes audio (silent rehearsal)', () => {
+    const fake = fakeEngine();
+    const service = createAudioService(fake.engine, {
+      signal: liveSignal(),
+      outputPolicy: 'log-cues',
+      // onCue intentionally omitted — workbench has not wired a cue UI
+    });
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(fake.created[0]?.muted).toBe(true);
+    expect(() => service.play('bed')).not.toThrow();
+  });
+
+  it('cue entries are frozen so consumers cannot mutate them in place', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    expect(Object.isFrozen(cues[0])).toBe(true);
+  });
+
+  it('fade cues are deep-frozen — nested fade payload is also immutable', () => {
+    const { service, cues } = buildLogCues();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.fade('bed', 1, 0, 100);
+    const cue = cues[0];
+    expect(cue?.operation).toBe('fade');
+    if (cue?.operation !== 'fade') return;
+    expect(Object.isFrozen(cue.fade)).toBe(true);
+  });
+
+  it('emits the stop-group cue AFTER the engine stop loop and bookkeeping delete', () => {
+    // Contract parity with `play` / `fade` / `stop`: a cue is published
+    // only after the state transition it represents. A consumer must
+    // not observe a stop-group cue before its grouped handles have
+    // been stopped.
+    const fake = fakeEngine();
+    const cues: AudioCueLogEntry[] = [];
+    let stoppedPlays = 0;
+    const original = fake.engine.createSound;
+    fake.engine.createSound = ((config) => {
+      const handle = original.call(fake.engine, config);
+      return {
+        ...handle,
+        stop: (playId) => {
+          stoppedPlays += 1;
+          handle.stop(playId);
+        },
+      };
+    }) as typeof fake.engine.createSound;
+    const service = createAudioService(fake.engine, {
+      signal: liveSignal(),
+      outputPolicy: 'log-cues',
+      onCue: (entry) => {
+        if (entry.operation === 'stop-group') {
+          // Observed at cue-emit time: every play in the group has
+          // already been stopped (the engine `stop()` calls ran
+          // before the cue published).
+          expect(stoppedPlays).toBe(2);
+        }
+        cues.push(entry);
+      },
+    });
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed', { group: 'scene-a' });
+    service.play('bed', { group: 'scene-a' });
+    service.stopGroup('scene-a');
+    expect(cues.map((c) => c.operation)).toEqual(['play', 'play', 'stop-group']);
+  });
+});
+
+describe('createAudioService — legacy silent option rejection (codex review, cycle 3)', () => {
+  type Opts = Parameters<typeof createAudioService>[1];
+
+  it('rejects the legacy `silent: true` key loudly instead of failing open to audible playback', () => {
+    // The previous public option was `silent?: boolean`; PUL-F026
+    // replaces it with the general `outputPolicy` union. A JS caller
+    // that still passes `{ silent: true }` would have the key silently
+    // ignored and produce AUDIBLE playback — the worst migration
+    // failure for an audio-suppression option. The boundary throws
+    // `AudioError` instead.
+    const fake = fakeEngine();
+    const buildWithSilent =
+      (silentValue: unknown): (() => void) =>
+      () => {
+        const opts = { signal: liveSignal(), silent: silentValue } as unknown as Opts;
+        createAudioService(fake.engine, opts);
+      };
+    expect(buildWithSilent(true)).toThrow(AudioError);
+    expect(buildWithSilent(false)).toThrow(AudioError);
+    expect(buildWithSilent(undefined)).toThrow(AudioError);
+  });
+});
+
+describe('createAudioService — outputPolicy runtime validation', () => {
+  type Opts = Parameters<typeof createAudioService>[1];
+  // Cast the bad value through `unknown` and into the parameter type
+  // so the test exercises the runtime guard (a plain-JS / direct
+  // caller can supply garbage that the literal-typed union would
+  // not).
+  const buildBadPolicy =
+    (fake: FakeEngine, policy: unknown): (() => void) =>
+    () => {
+      const opts = { signal: liveSignal(), outputPolicy: policy } as unknown as Opts;
+      createAudioService(fake.engine, opts);
+    };
+
+  it('rejects an unknown outputPolicy value at construction', () => {
+    const fake = fakeEngine();
+    expect(buildBadPolicy(fake, 'log-cue')).toThrow(AudioError);
+    expect(buildBadPolicy(fake, 'SILENT')).toThrow(AudioError);
+    expect(buildBadPolicy(fake, '')).toThrow(AudioError);
+    expect(buildBadPolicy(fake, true)).toThrow(AudioError);
+    expect(buildBadPolicy(fake, null)).toThrow(AudioError);
+  });
+
+  it('does NOT throw a TypeError on values JSON.stringify cannot encode (codex review, cycle 2)', () => {
+    // A plain-JS caller passing `1n` or a Symbol used to surface as a
+    // `TypeError` from `JSON.stringify` inside the audio-error
+    // construction itself — the documented `AudioError` envelope
+    // never reached the loader's rollback path. The safe describer
+    // turns these into a typeof+String rendering so the construction
+    // throws `AudioError` instead.
+    const fake = fakeEngine();
+    expect(buildBadPolicy(fake, 1n)).toThrow(AudioError);
+    expect(buildBadPolicy(fake, 1n)).not.toThrow(TypeError);
+    expect(buildBadPolicy(fake, Symbol('x'))).toThrow(AudioError);
+    expect(buildBadPolicy(fake, Symbol('x'))).not.toThrow(TypeError);
+  });
+
+  it('accepts each of the three valid policies', () => {
+    const fake = fakeEngine();
+    for (const policy of ['audible', 'silent', 'log-cues'] as const) {
+      expect(() =>
+        createAudioService(fake.engine, { signal: liveSignal(), outputPolicy: policy }),
+      ).not.toThrow();
+    }
+  });
+});
+
+describe('createAudioService — onCue runtime validation (codex review, cycle 2)', () => {
+  type Opts = Parameters<typeof createAudioService>[1];
+  const buildBadOnCue =
+    (fake: FakeEngine, onCue: unknown): (() => void) =>
+    () => {
+      const opts = {
+        signal: liveSignal(),
+        outputPolicy: 'log-cues' as const,
+        onCue,
+      } as unknown as Opts;
+      createAudioService(fake.engine, opts);
+    };
+
+  it('rejects a non-function onCue at construction so misconfiguration fails loud', () => {
+    const fake = fakeEngine();
+    // A plain-JS caller or a misconfigured loader could pass garbage
+    // here; without boundary validation, the misuse would be silently
+    // swallowed inside the non-fatal `emitCue` try/catch and rehearsal
+    // would see an empty cue stream.
+    expect(buildBadOnCue(fake, true)).toThrow(AudioError);
+    expect(buildBadOnCue(fake, 42)).toThrow(AudioError);
+    expect(buildBadOnCue(fake, {})).toThrow(AudioError);
+    expect(buildBadOnCue(fake, 'cue-log')).toThrow(AudioError);
+    expect(buildBadOnCue(fake, null)).toThrow(AudioError);
+  });
+
+  it('accepts an omitted onCue (workbench without a cue UI)', () => {
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        outputPolicy: 'log-cues',
+      }),
+    ).not.toThrow();
   });
 });
