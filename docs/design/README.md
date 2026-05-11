@@ -21,6 +21,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-f025-master-mute-preflight.md](pul-f025-master-mute-preflight.md) | Guardrails for implementing presenter master mute. |
 | [pul-f026-rehearsal-mode-preflight.md](pul-f026-rehearsal-mode-preflight.md) | Guardrails for implementing rehearsal audio suppression or cue logging without timeline-state changes. |
 | [pul-f027-caption-metadata-prompter-preflight.md](pul-f027-caption-metadata-prompter-preflight.md) | Guardrails for widening caption metadata timing and keeping prompter content single-sourced. |
+| [pul-f028-validation-preflight.md](pul-f028-validation-preflight.md) | Guardrails for implementing structural runtime validation without duplicating schemas, registries, asset policy, or lifecycle logic. |
 
 Design docs are mutable. Decisions are captured as ADRs (immutable once
 accepted).

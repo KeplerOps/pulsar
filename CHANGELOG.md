@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Runtime validation pass — PUL-F028 / ADR-008 #7 — in
+  `src/runtime/validation.ts`: a new `validateRuntime(input)` function
+  that inspects the same declarative inputs the runtime consumes at
+  boot (raw scene modules + composition registrations + an optional
+  asset policy) and returns a frozen `readonly Finding[]` covering the
+  four clauses of the requirement statement — scene ids referenced in
+  compositions but not registered (`unknown-scene-reference`), assets
+  referenced in scene metadata that fail `resolveAssetUrl`
+  (`asset-unresolvable`), duplicate scene ids
+  (`duplicate-scene-id`), and scenes that do not export a
+  `cleanup` function (`scene-schema-invalid`, which is the existing
+  PUL-F001 envelope from `assertSceneModule`). A malformed composition
+  manifest emits one `composition-manifest-invalid` finding and is
+  skipped for the reference check so a bad shape never produces
+  misleading "missing scene" misses. The pass is a pure orchestrator
+  over existing contracts: `assertSceneModule`,
+  `assertCompositionManifest` + `entryId` + the same iteration
+  `findUnregisteredEntries` uses, `resolveAssetUrl` with the
+  preloader's `baseUrl` / `allowedSchemes` (defaulting to
+  `DEFAULT_ALLOWED_SCHEMES`), and the id-registry duplicate-id
+  grammar — no parallel scene/composition schema, registry, asset
+  inventory, URL parser, exception hierarchy, logging framework, or
+  config surface. Side-effect-free by construction: never calls
+  `scene.create` / `scene.timeline` / `scene.cleanup`, never `fetch`es,
+  never imports anything, never touches the DOM / history / storage
+  / audio engine / preloader / timeline adapter / navigation dispatch
+  / process argv / env vars. Findings carry only ids, indexes, asset
+  strings, and bounded diagnostic text — never raw scene objects,
+  full captions, request headers, cookies, or auth values. A thin
+  fail-loud wrapper `assertNoValidationFindings(findings)` throws an
+  `AggregateError` (`runtime validation failed: N finding(s)`) whose
+  `errors` array carries one `Error` per finding for callers that
+  want exception semantics. Validation is the agent / author
+  inspection tool that runs *before* the throwing registry /
+  resolver / preloader paths the runtime already exposes — those
+  paths stay untouched. `src/main.ts` invokes the pass at boot
+  against the same scene and composition inputs it is about to hand
+  to `createSceneRegistry` and `createCompositionRegistry`; on a
+  non-empty findings array, each finding is logged through the
+  workbench error sink (`console.error`), the `#stage` element gets a
+  `data-pulsar-validation-failed` attribute so screenshot regression
+  / agent-driven inspection can see at a glance that boot aborted
+  on structural grounds, and `assertNoValidationFindings` halts the
+  workbench before navigation, loader, preloader, or resolver
+  touch a broken graph. Empty findings → boot proceeds untouched.
+  The `createIdRegistry` helper gained an optional `onDuplicate`
+  collector hook so the validator and the runtime boot path share
+  one source of truth for duplicate-id semantics; the runtime path
+  (no callback) still throws fail-fast with the
+  `<label>: duplicate id "<id>"` grammar.
+
 ### Changed
 
 - Caption metadata `at` widened — PUL-F027 / ADR-002 / ADR-008 — in
