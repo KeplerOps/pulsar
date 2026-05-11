@@ -541,6 +541,70 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   };
 
   /**
+   * Construct the per-navigation presenter pipeline:
+   *  - `presenterAbort` — a separate `AbortController` whose signal
+   *    drives the `PresenterController`'s teardown. Distinct from
+   *    the navigation `controller` so the navigation signal can
+   *    stay un-aborted across a successful completion (PUL-F013
+   *    boundary). Wired to fire on navigation abort AND aborted by
+   *    `runTarget`'s `finally` on normal completion.
+   *  - `presenter` — the `PresenterController` itself (PUL-F020 /
+   *    ADR-023), with the PUL-F025 audio handler attached.
+   *
+   * Both are `null` / `undefined` when the loader does NOT build a
+   * controller for this navigation: non-present mode OR the workbench
+   * did not supply a `presenterCommands` source. Hoisted out of
+   * `buildLoad` to keep that function within Sonar's
+   * cognitive-complexity budget.
+   *
+   * The PUL-F025 audio handler (presenter master mute / ADR-004)
+   * lives here — the only seam where both the controller and the
+   * per-navigation `AudioService` are in scope. On
+   * `'toggle-master-mute'` it reads the engine's current master
+   * mute and flips it via the audio boundary; `audio.mute()`
+   * validates the boolean (PUL-F024) and is inert post-dispose.
+   * Master mute is engine-level runtime state so the flip survives
+   * scene cleanup and is observable by sibling services backed by
+   * the same engine (pinned in `audio.test.ts`). The handler is
+   * additive — the runner still receives every kind on its own
+   * `input.presenter.subscribe(...)`. The controller's per-handler
+   * `try/catch` already routes any throw through the same `onError`.
+   */
+  const buildPresenterPipe = (
+    mode: NavigationMode,
+    controller: AbortController,
+    audio: AudioService,
+  ): {
+    readonly presenter: ReturnType<typeof createPresenterController> | undefined;
+    readonly presenterAbort: AbortController | null;
+  } => {
+    if (mode !== 'present' || options.presenterCommands === undefined) {
+      return { presenter: undefined, presenterAbort: null };
+    }
+    const presenterAbort = new AbortController();
+    // Propagate navigation abort → presenter abort. Without this
+    // wiring, supersession-time `controller.abort()` would not tear
+    // down the presenter controller (bound to `presenterAbort.signal`,
+    // not `controller.signal`).
+    if (controller.signal.aborted) {
+      presenterAbort.abort();
+    } else {
+      controller.signal.addEventListener('abort', () => presenterAbort.abort(), { once: true });
+    }
+    const presenter = createPresenterController(
+      options.presenterCommands,
+      presenterAbort.signal,
+      onError,
+    );
+    // PUL-F025 / ADR-004 audio handler — see method header.
+    presenter.subscribe((cmd) => {
+      if (cmd.kind !== 'toggle-master-mute') return;
+      audio.mute(!audio.isMuted());
+    });
+    return { presenter, presenterAbort };
+  };
+
+  /**
    * Build the in-flight load record: an `AbortController`, the
    * preloader factory's per-load preloader (a synchronous failure
    * is rolled back through `resetStageAttrs()` + `surfaceError`),
@@ -660,99 +724,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // exclusive at the URL boundary, so at most one of `repeat` /
     // `hold` / `cueGate` / `screenshot` is non-undefined here.
     const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
-    // PUL-F020 / ADR-023: under `mode=present` the loader builds a
-    // per-navigation `PresenterController` bound to this load's
-    // `controller.signal` and forwards it to every scene's run input
-    // via the bridge → resolver. Two scoping conditions: the mode
-    // must resolve to `'present'` (URL `mode=present` OR absent
-    // `mode=`, both of which `effectiveMode` collapses), AND the
-    // workbench must have supplied a `presenterCommands` source.
-    // When either condition is unmet, `presenter` is `undefined` and
-    // the spread below omits it from the bridge call so a runner
-    // that branches on `'presenter' in input` sees an absent key
-    // (parity with the `repeat` / `hold` / `cueGate` / `screenshot`
-    // / `beat` plumbing).
-    //
-    // Auto-cleanup: the controller registers `controller.signal`'s
-    // abort listener internally. When the navigation aborts (next
-    // handle, dispose, popstate, presenter-driven scene exit), every
-    // outstanding runner subscription is detached from the source.
-    // A runner that subscribes via `input.presenter.subscribe(...)`
-    // and forgets to unsubscribe cannot leak across navigations.
-    //
-    // Per ADR-007, mode dispatch lives in the runtime core, not at
-    // adapters; this is the central enforcement point for "presenter
-    // input only under mode=present" — no other code path builds the
-    // controller.
-    // PUL-F025 / ADR-023 (codex review, post-PUL-F025): the
-    // presenter controller's lifetime is "the navigation" — which
-    // ends on supersession / dispose / popstate (the navigation
-    // signal aborts) OR on normal completion (the resolver finishes
-    // and `runTarget`'s `finally` runs). Binding to the navigation
-    // signal alone covers only the first set; we use a separate
-    // `AbortController` so the loader can also tear down on the
-    // success path. The presenter signal is fired on EITHER cause:
-    // the navigation-abort listener below propagates supersession /
-    // dispose / popstate, and `runTarget`'s `finally` aborts it on
-    // completion. Both aborts are idempotent. The navigation signal
-    // itself stays un-aborted on the success path so the PUL-F013
-    // boundary contract — "the navigation signal reaches the runner
-    // un-aborted at receive time AND stays un-aborted across a
-    // successful completion" — is preserved.
-    const presenterAbort: AbortController | null =
-      mode === 'present' && options.presenterCommands !== undefined ? new AbortController() : null;
-    if (presenterAbort !== null) {
-      // Propagate navigation abort → presenter abort. Without this
-      // wiring, a supersession-time `controller.abort()` would not
-      // tear down the presenter controller (because it's bound to
-      // `presenterAbort.signal`, not `controller.signal`).
-      const propagateAbort = (): void => {
-        presenterAbort.abort();
-      };
-      if (controller.signal.aborted) {
-        presenterAbort.abort();
-      } else {
-        controller.signal.addEventListener('abort', propagateAbort, { once: true });
-      }
-    }
-    const presenter =
-      presenterAbort !== null && options.presenterCommands !== undefined
-        ? createPresenterController(options.presenterCommands, presenterAbort.signal, onError)
-        : undefined;
-    // PUL-F025 / ADR-004: presenter master mute. The audio handler
-    // lives here because this is the only seam where both the
-    // per-navigation `PresenterController` and the per-navigation
-    // `AudioService` are in scope — the runner cannot reach `audio`
-    // and the audio service does not see presenter commands.
-    //
-    // The command is a *fact* ("presenter pressed mute"), not a
-    // target state — the handler reads the engine's current master
-    // mute at receipt time and flips it via the audio boundary.
-    // `audio.mute()` validates the boolean (PUL-F024) and is inert
-    // post-dispose; the engine owns mute as runtime state so the
-    // flip survives scene cleanup and is observable by sibling
-    // services backed by the same engine (ADR-004, pinned in
-    // `audio.test.ts`).
-    //
-    // The subscription auto-detaches on `controller.signal` abort
-    // via the presenter controller's existing `tearDownAll` — no
-    // separate teardown wiring is needed. The handler is additive,
-    // not a filter: the runner still receives every command kind
-    // on its own `input.presenter.subscribe(...)`. Other kinds
-    // fall through to no-ops here.
-    //
-    // The handler can only throw if `audio.mute()` itself does. The
-    // controller's per-handler `try/catch` (`createPresenterController`)
-    // catches and routes through the same `onError` sink the loader
-    // already supplies, so a regression that made `mute()` throw
-    // mid-toggle cannot poison sibling subscribers or abort the
-    // navigation.
-    if (presenter !== undefined) {
-      presenter.subscribe((cmd) => {
-        if (cmd.kind !== 'toggle-master-mute') return;
-        audio.mute(!audio.isMuted());
-      });
-    }
+    const { presenter, presenterAbort } = buildPresenterPipe(mode, controller, audio);
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
