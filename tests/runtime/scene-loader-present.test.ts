@@ -1791,9 +1791,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       // misspelled kinds yield 3 errors. A regression to per-
       // subscriber validation would emit 3 × subscribers and fail
       // this exact-count assertion.
-      const rejects = errors.filter(
-        (e) => e instanceof Error && /presenter/i.test(e.message),
-      );
+      const rejects = errors.filter((e) => e instanceof Error && /presenter/i.test(e.message));
       expect(rejects).toHaveLength(3);
       loader.dispose();
       await loader.idle();
