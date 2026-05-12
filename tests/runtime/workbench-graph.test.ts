@@ -81,7 +81,14 @@ describe('workbench graph validation (PUL-P002)', () => {
       compositions: WORKBENCH_COMPOSITIONS,
     });
     expect(findings.map((f) => f.code)).toContain('scene-schema-invalid');
-    const offender = findings.find((f) => f.sceneId === 'broken-cleanup-fixture');
+    // Filter on BOTH `code` and `sceneId` so a regression that
+    // emitted a different code against the same fixture (e.g., a
+    // future schema-extension landed `duplicate-scene-id` on a
+    // collision in the same record) cannot grab the wrong row and
+    // pass an unrelated message check.
+    const offender = findings.find(
+      (f) => f.code === 'scene-schema-invalid' && f.sceneId === 'broken-cleanup-fixture',
+    );
     expect(offender).toBeDefined();
     expect(offender?.message).toMatch(/cleanup/);
   });
