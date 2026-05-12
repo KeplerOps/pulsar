@@ -379,17 +379,28 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
       });
 
       it('does NOT flag `obj.eval` where `obj` is a non-global local', () => {
+        // Assert the FULL findings list is empty (not just the
+        // global-wrapper label). If `isPropertyNamePosition` regressed
+        // and started returning false, `eval` in `obj.eval(...)` would
+        // be recorded as `'eval (value read)'` — a different label
+        // that `.not.toContain('eval (global wrapper)')` would still
+        // pass. The empty-list assertion catches every possible
+        // mis-label for the same site.
         const findings = findingsOf(
           'declare const obj: { eval: (input: string) => unknown }; obj.eval("1+2");',
         );
-        expect(findings.map((f) => f.label)).not.toContain('eval (global wrapper)');
+        expect(findings).toEqual([]);
       });
 
       it('does NOT flag `obj.Function` where `obj` is a non-global local', () => {
+        // Same belt-and-braces shape as the `obj.eval` test above:
+        // assert the full findings list is empty so a regression in
+        // `isPropertyNamePosition` or related identifier classification
+        // cannot escape via a different label.
         const findings = findingsOf(
           'declare const obj: { Function: (a: string) => unknown }; obj.Function("a");',
         );
-        expect(findings.map((f) => f.label)).not.toContain('Function (global wrapper)');
+        expect(findings).toEqual([]);
       });
 
       it('does NOT flag the legitimate `import.meta` access (it is not `import()`)', () => {
