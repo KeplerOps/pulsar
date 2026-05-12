@@ -260,10 +260,18 @@ describe('PUL-A002 — audio library encapsulation (source scan)', () => {
       expect(scanForA002(src, 'src/scenes/x.ts')).toEqual([]);
     });
 
+    // Every entry in `GLOBAL_WRAPPERS` (`globalThis`, `window`, `self`,
+    // `global`) appears at least once below so a regression that drops
+    // one wrapper from the set fails here. `global.Audio()` /
+    // `new global.HTMLAudioElement()` are the Node.js-adjacent bypass
+    // shapes a developer in a Node-side script could otherwise use to
+    // slip past the scene-side audio ban while every other test stayed
+    // green.
     it.each([
       ['new Audio() (scene constructs HTMLAudioElement)', 'new window.Audio();'],
       ['new Audio() (scene constructs HTMLAudioElement)', "new globalThis.Audio('clip.mp3');"],
       ['new Audio() (scene constructs HTMLAudioElement)', 'new self.Audio();'],
+      ['new Audio() (scene constructs HTMLAudioElement)', "new global.Audio('clip.mp3');"],
       [
         'new HTMLAudioElement() (scene constructs HTMLAudioElement)',
         'new window.HTMLAudioElement();',
@@ -271,6 +279,10 @@ describe('PUL-A002 — audio library encapsulation (source scan)', () => {
       [
         'new HTMLAudioElement() (scene constructs HTMLAudioElement)',
         'globalThis.HTMLAudioElement();',
+      ],
+      [
+        'new HTMLAudioElement() (scene constructs HTMLAudioElement)',
+        'new global.HTMLAudioElement();',
       ],
       ['new Audio() (scene constructs HTMLAudioElement)', "window['Audio']('clip.mp3');"],
       [

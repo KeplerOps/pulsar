@@ -188,13 +188,23 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
     });
 
     describe('global-wrapper forms', () => {
+      // Every entry in `GLOBAL_WRAPPERS` (`globalThis`, `window`, `self`,
+      // `global`) must appear at least once for both `eval` and
+      // `Function` so a regression that drops one wrapper from the set
+      // fails here. Without `global` coverage, a Node.js-adjacent
+      // runtime would bypass the gate with `global.eval(payload)` /
+      // `new global.Function(code)` while every existing test stayed
+      // green.
       it.each([
         ['eval (global wrapper)', "globalThis.eval('1+2');"],
         ['eval (global wrapper)', "window.eval('1+2');"],
         ['eval (global wrapper)', "self.eval('1+2');"],
+        ['eval (global wrapper)', "global.eval('1+2');"],
         ['eval (global wrapper)', "globalThis['eval']('1+2');"],
         ['Function (global wrapper)', "new globalThis.Function('return 1');"],
         ['Function (global wrapper)', "window.Function('a', 'return a');"],
+        ['Function (global wrapper)', "self.Function('a', 'return a');"],
+        ['Function (global wrapper)', "new global.Function('return 1');"],
         ['Function (global wrapper)', "globalThis['Function']('return 1');"],
       ])('flags %s — %s', (label, source) => {
         const findings = findingsOf(source);
@@ -203,11 +213,16 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
     });
 
     describe('computed global wrapper access (bypass defense)', () => {
+      // Same per-wrapper coverage discipline as the literal-subscript
+      // group above: every entry in `GLOBAL_WRAPPERS` is exercised at
+      // least once here so a regression that drops one (especially
+      // `global`, a Node.js-adjacent bypass surface) fails this group.
       it.each([
         "globalThis['ev' + 'al']('payload');",
         "window['Fun' + 'ction']('return 1');",
-        "globalThis[someKey]('payload');",
         "self[`ev${'al'}`]('payload');",
+        "global['ev' + 'al']('payload');",
+        "globalThis[someKey]('payload');",
         "globalThis[(condition ? 'eval' : 'noop')]('payload');",
       ])('flags computed wrapper access — `%s`', (source) => {
         const findings = findingsOf(
