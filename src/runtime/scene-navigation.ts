@@ -35,6 +35,7 @@ import type { CompositionRegistry } from './composition-registry';
 import {
   type AssetPreloader,
   type CompositionTimelineAdapter,
+  type ResolveCompositionOptions,
   resolveComposition,
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
@@ -72,6 +73,19 @@ export interface SceneNavigationCompositionContext {
    * mid-flight).
    */
   readonly sceneSlice: readonly SceneModule[];
+  /**
+   * Index of `manifestSlice[0]` in the ORIGINAL composition manifest.
+   * Zero for `kind: 'composition'` (slice starts at index 0); for
+   * `composition-scene` and `composition-index` it is the absolute
+   * position of the addressed entry. PUL-F029 / ADR-028 needs this so
+   * a scene failure diagnostic can name the absolute composition
+   * entry the failed scene lives at, not a slice-relative index that
+   * would point operators at the wrong manifest entry. Single-scene
+   * mode truncation (`applySingleSceneSlice`) preserves it so the
+   * diagnostic stays accurate even when the slice is truncated to
+   * the head entry.
+   */
+  readonly startIndex: number;
 }
 
 /**
@@ -241,6 +255,18 @@ export interface LoadSceneNavigationTargetOptions {
    * `cleanup(ctx)` runs. Absent for callers that do not need it.
    */
   readonly onSceneCleaned?: (sceneId: string) => void;
+  /**
+   * Per-scene failure sink (PUL-F029 / ADR-028). Forwarded to
+   * {@link resolveComposition} as `onSceneFailed`; the loader wires it
+   * to (a) append `<sceneId>:<phase>` to the per-navigation stage
+   * attribute `data-pulsar-scene-failures` and (b) surface a public
+   * diagnostic through the loader's `onError` sink without serializing
+   * the raw cause (ADR-028: no raw causes, stacks, scene objects,
+   * DOM, captions, headers, cookies, env, auth values). Absent for
+   * direct bridge callers that do not need scene-level error
+   * isolation.
+   */
+  readonly onSceneFailed?: (event: import('./composition-resolver').SceneFailureEvent) => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -314,7 +340,7 @@ function resolveCompositionFromStart(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, 0);
   const sceneSlice = snapshotSceneSlice(manifestSlice, 0, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex: 0 };
 }
 
 function resolveCompositionAndScene(
@@ -349,7 +375,7 @@ function resolveCompositionAndScene(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
   const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex };
 }
 
 function resolveCompositionAndIndex(
@@ -372,7 +398,7 @@ function resolveCompositionAndIndex(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, index);
   const sceneSlice = snapshotSceneSlice(manifestSlice, index, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex: index };
 }
 
 /**
@@ -425,6 +451,11 @@ function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): Scene
       id: target.composition.id,
       manifestSlice: Object.freeze([headEntry]),
       sceneSlice: Object.freeze([headScene]),
+      // PUL-F029 / ADR-028: preserve the absolute composition start
+      // index so a failure diagnostic still points operators at the
+      // right manifest entry even after the slice was truncated to
+      // its head by `mode=standalone|loop|paused|scrub|screenshot`.
+      startIndex: target.composition.startIndex,
     },
   };
 }
@@ -508,10 +539,18 @@ export function resolveSceneNavigation(
  *    Per-entry `range` and `behavior` overrides are preserved and
  *    forwarded to the runner adapter unchanged (ADR-011).
  *
- * Resolves when the lifecycle has run end-to-end; rejects with the
- * resolver's own wrapping error (`composition resolution failed: ...`)
- * when any phase throws. Cleanup runs whenever the scene was touched,
- * matching the resolver's own invariants.
+ * Resolves when the lifecycle has run end-to-end. Per PUL-F029 /
+ * ADR-028, per-scene `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)`
+ * throws are SCENE failures: when `onSceneFailed` is wired they
+ * isolate (the failing scene is eagerly cleaned up and dropped, the
+ * composition keeps playing through the surviving scenes) and the
+ * bridge resolves normally; when it is not wired they aggregate into
+ * an `AggregateError` at the end so direct callers don't lose the
+ * signal. Composition-wide failures (preload, manifest invalid,
+ * registry miss, timeline-adapter `run` rejection, signal-abort)
+ * still reject the bridge with the resolver's wrapping error
+ * (`composition resolution failed: ...`). Cleanup runs whenever the
+ * scene was touched, matching the resolver's own invariants.
  */
 export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
@@ -583,78 +622,58 @@ export async function loadSceneNavigationTarget(
     );
   }
 
-  await resolveComposition({
-    registry: createSceneRegistry(uniqueScenes),
+  await resolveComposition(
+    buildResolverOptions(createSceneRegistry(uniqueScenes), manifest, options),
+  );
+}
+
+/**
+ * Build the {@link ResolveCompositionOptions} the bridge hands to the
+ * resolver. Each optional input is spread only when supplied so a
+ * resolver that branches on `'<key>' in opts` sees absent rather than
+ * `undefined` — same idiom as the resolver's own `buildRunOptions`.
+ * Hoisted out of `loadSceneNavigationTarget` so the latter stays
+ * within Sonar's cognitive-complexity budget (S3776). Per ADR-015 /
+ * ADR-018 / ADR-019 / ADR-020 / ADR-021 / ADR-023 / ADR-004 / ADR-028
+ * each option is independent and gets its own conditional spread;
+ * `onBeatMissing` is the only paired surface (it's meaningless without
+ * `beat`), and `onPresenterError` is similarly paired with `presenter`.
+ */
+function buildResolverOptions(
+  registry: ReturnType<typeof createSceneRegistry>,
+  manifest: CompositionManifest,
+  options: LoadSceneNavigationTargetOptions,
+): ResolveCompositionOptions {
+  const beatPair =
+    options.beat === undefined
+      ? {}
+      : {
+          headBeat: options.beat,
+          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
+        };
+  const presenterPair =
+    options.presenter === undefined
+      ? {}
+      : {
+          presenter: options.presenter,
+          ...(options.onPresenterError === undefined
+            ? {}
+            : { onPresenterError: options.onPresenterError }),
+        };
+  return {
+    registry,
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
     timeline: options.timeline,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-    // `onBeatMissing` is paired with `beat` per ADR-015 — a callback
-    // without a label has no trigger condition, so dropping it when
-    // `beat` is absent prevents misuse-by-spread (e.g. a caller
-    // accidentally passing `onBeatMissing` with no `beat`).
-    ...(options.beat === undefined
-      ? {}
-      : {
-          headBeat: options.beat,
-          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
-        }),
-    // `repeat` is independent of `beat` per ADR-018: a URL like
-    // `?scene=x&mode=loop` (no beat) and `?scene=x&beat=hook&mode=loop`
-    // (beat + loop) are both valid. Spread `headRepeat` only when the
-    // caller supplied it so a runner that branches on `'repeat' in
-    // input` sees an absent key rather than `undefined`.
+    ...beatPair,
     ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
-    // `hold` is independent of `beat` and `repeat` per ADR-019: a URL
-    // like `?scene=x&mode=paused` (no beat, no loop) is valid, and so
-    // is `?scene=x&beat=hook&mode=paused` (the runner's policy
-    // decides which wins — ADR-019 records that `hold` wins over
-    // `beat` for paused mode). Spread `headHold` only when the
-    // caller supplied it so a runner that branches on `'hold' in
-    // input` sees an absent key rather than `undefined`.
     ...(options.hold === undefined ? {} : { headHold: options.hold }),
-    // `cueGate` is independent of `beat`, `repeat`, and `hold` per
-    // ADR-020: a URL like `?scene=x&mode=scrub` (no beat) is valid,
-    // and so is `?scene=x&beat=hook&mode=scrub` (the natural
-    // scrub-to-named-beat path PUL-F017's "to named beats" clause
-    // anticipates). Spread `headCueGate` only when the caller
-    // supplied it so a runner that branches on `'cueGate' in input`
-    // sees an absent key rather than `undefined`.
     ...(options.cueGate === undefined ? {} : { headCueGate: options.cueGate }),
-    // `screenshot` is independent of `beat`, `repeat`, `hold`, and
-    // `cueGate` per ADR-021: a URL like `?scene=x&mode=screenshot`
-    // (no beat) is valid (renders at first frame), and so is
-    // `?scene=x&beat=midpoint&mode=screenshot` (the natural
-    // deterministic-frame-capture-at-named-beat path PUL-F018
-    // names directly). Spread `headScreenshot` only when the
-    // caller supplied it so a runner that branches on
-    // `'screenshot' in input` sees an absent key rather than
-    // `undefined`.
     ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
-    // `presenter` is independent of `beat`, `repeat`, `hold`,
-    // `cueGate`, and `screenshot` per ADR-023: presenter input is
-    // only valid under `mode=present` (the loader scopes delivery),
-    // and that mode has no head-only structural promise to defend.
-    // Spread `presenter` only when the caller supplied it so a
-    // runner that branches on `'presenter' in input` sees an absent
-    // key rather than `undefined`. The resolver forwards it to
-    // EVERY scene's run input (NOT head-only) — mode=present runs
-    // the full slice and presenter commands act on whichever scene
-    // is active.
-    ...(options.presenter === undefined ? {} : { presenter: options.presenter }),
-    // `onPresenterError` is paired with `presenter` per ADR-023 —
-    // a sink without a controller has nothing to surface
-    // diagnostics from. Drop the sink when no presenter is
-    // supplied; otherwise spread it so the per-scene wrapper inside
-    // the resolver routes its boundary diagnostics through the
-    // loader's `onError` channel.
-    ...(options.presenter === undefined || options.onPresenterError === undefined
-      ? {}
-      : { onPresenterError: options.onPresenterError }),
-    // `onSceneCleaned` (PUL-F024 / ADR-004 — the audio group teardown
-    // hook) is forwarded as-is; the loader supplies it on every
-    // navigation that runs the resolver lifecycle.
+    ...presenterPair,
     ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),
-  });
+    ...(options.onSceneFailed === undefined ? {} : { onSceneFailed: options.onSceneFailed }),
+  };
 }

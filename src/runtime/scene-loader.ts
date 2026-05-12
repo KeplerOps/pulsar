@@ -38,7 +38,11 @@ import {
   noopAudioEngine,
 } from './audio';
 import type { CompositionRegistry } from './composition-registry';
-import type { AssetPreloader, CompositionTimelineAdapter } from './composition-resolver';
+import type {
+  AssetPreloader,
+  CompositionTimelineAdapter,
+  SceneFailureEvent,
+} from './composition-resolver';
 import { describeError } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
@@ -301,6 +305,11 @@ export interface SceneLoader {
 const ATTR_SCENE = 'data-pulsar-scene-target';
 const ATTR_COMPOSITION = 'data-pulsar-composition-target';
 const ATTR_ERROR = 'data-pulsar-navigation-error';
+// PUL-F029 / ADR-028: per-scene lifecycle failures land on a dedicated
+// attribute so the fatal `data-pulsar-navigation-error` surface keeps
+// its "composition aborted" semantics. The value is a comma-separated
+// list of `<sceneId>:<phase>` entries in encounter order.
+const ATTR_SCENE_FAILURES = 'data-pulsar-scene-failures';
 
 /**
  * Resolve when `signal` is aborted (or immediately if already
@@ -449,6 +458,85 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     clearStageAttr(ATTR_SCENE);
     clearStageAttr(ATTR_COMPOSITION);
     clearStageAttr(ATTR_ERROR);
+    clearStageAttr(ATTR_SCENE_FAILURES);
+  };
+
+  /**
+   * Build the per-navigation `onSceneFailed` handler (PUL-F029 /
+   * ADR-028). Each event arrives as a `{ phase, sceneId, entryIndex,
+   * message, cause }` tuple from the resolver. The loader augments
+   * the public diagnostic with `compositionId` and effective `mode`
+   * (the two extra context fields ADR-028's diagnostic contract
+   * requires beyond what the resolver knows) when rendering the
+   * `onError` message. `event.cause` itself stays programmatic and
+   * is never serialized to the stage or to `onError`'s argument (per
+   * ADR-028: no raw causes, stacks, scene objects, DOM, captions,
+   * headers, cookies, env, auth values).
+   *
+   * The handler accumulates `<sceneId>:<phase>` entries into a Set so
+   * a scene whose `create` AND `cleanup` both throw shows up once per
+   * (id, phase) tuple in encounter order, not twice for the same
+   * tuple.
+   *
+   * Two-tier suppression:
+   *  - **Stage attribute writes** are suppressed when the
+   *    navigation's `signal.aborted` (a superseded navigation must
+   *    not stomp on the new navigation's stage state) or when the
+   *    loader is `disposed`. This parallels `buildOnBeatMissing`.
+   *  - **`onError` calls** still fire on abort so a cleanup-phase
+   *    scene failure during an aborted lifecycle stays visible to
+   *    the workbench logger — the multi-fault visibility the pre-
+   *    PUL-F029 `AggregateError` surface provided. Suppressed only
+   *    when the loader is fully `disposed` (the workbench is
+   *    shutting down; there is no sink to surface to).
+   */
+  const buildOnSceneFailed = (
+    signal: AbortSignal,
+    mode: NavigationMode,
+    composition: { readonly id: string; readonly startIndex: number } | undefined,
+  ): ((event: SceneFailureEvent) => void) => {
+    const entries: string[] = [];
+    const seen = new Set<string>();
+    const renderMessage = (event: SceneFailureEvent): string => {
+      // Codex review cycle 2: render the ABSOLUTE composition entry
+      // index (slice start + resolver-level slice-relative index).
+      // The resolver's `event.entryIndex` is relative to the manifest
+      // slice it was handed; for `composition-scene` and
+      // `composition-index` navigations that slice starts mid-
+      // manifest, so a slice-relative index would point operators at
+      // the wrong entry.
+      const compositionSuffix =
+        composition === undefined
+          ? ''
+          : ` (composition "${composition.id}" entry [${composition.startIndex + event.entryIndex}])`;
+      return `scene "${event.sceneId}" failed during ${event.phase}${compositionSuffix} under mode "${mode}": ${event.message}`;
+    };
+    return (event: SceneFailureEvent): void => {
+      if (disposed) return;
+      if (!signal.aborted) {
+        const key = `${event.sceneId}:${event.phase}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          entries.push(key);
+          setStageAttr(ATTR_SCENE_FAILURES, entries.join(','));
+        }
+      }
+      // Public diagnostic: scene id + phase + composition context +
+      // mode + describeError rendering. Wrapped in an `Error` so
+      // existing `onError` consumers that call `err.message` keep
+      // working. `event.cause` deliberately stays inside the resolver
+      // — the loader never publishes it (ADR-028's "no raw causes"
+      // rule).
+      try {
+        onError(new Error(renderMessage(event)));
+      } catch {
+        // `onError` is caller-supplied; an exception from it must not
+        // propagate back through the resolver's `onSceneFailed`
+        // invocation (the resolver would then re-route via the
+        // composition-wide failure path and abort surviving scenes —
+        // exactly the wrong behavior for a diagnostic sink throw).
+      }
+    };
   };
 
   const abortAndAwait = async (): Promise<void> => {
@@ -784,6 +872,13 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // `hold` / `cueGate` / `screenshot` is non-undefined here.
     const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
     const { presenter, presenterAbort } = buildPresenterPipe(mode, controller, audio);
+    const onSceneFailed = buildOnSceneFailed(
+      controller.signal,
+      mode,
+      resolved.composition === undefined
+        ? undefined
+        : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
+    );
     return {
       controller,
       settled: loadSceneNavigationTarget(resolved, {
@@ -809,6 +904,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         // not author discipline. (`stopGroup` is a no-op when the group
         // is empty or the service is already disposed.)
         onSceneCleaned: (sceneId) => audio.stopGroup(sceneId),
+        // PUL-F029 / ADR-028: scene-level error isolation. Each
+        // isolated `create` / `timeline` / `cleanup` failure becomes
+        // a stage attribute entry + `onError` call without halting
+        // the active composition.
+        onSceneFailed,
       }),
       silent: false,
       audio,
@@ -916,6 +1016,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         id: resolved.composition.id,
         manifestSlice: Object.freeze([headEntry]),
         sceneSlice: Object.freeze([headScene]),
+        // PUL-F029 / ADR-028: preserve the absolute composition start
+        // index even when the slice is truncated to its head, so a
+        // failure diagnostic names the right manifest entry.
+        startIndex: resolved.composition.startIndex,
       },
     };
   };

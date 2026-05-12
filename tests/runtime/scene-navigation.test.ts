@@ -597,6 +597,14 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
   });
 
   it('still calls cleanup when create throws (mandatory-cleanup invariant)', async () => {
+    // PUL-F029 / ADR-028: a thrown `create(ctx)` is a per-scene
+    // failure, isolated by the resolver. The mandatory-cleanup
+    // invariant survives: the failing scene's `cleanup(ctx)` runs
+    // eagerly. When no `onSceneFailed` is wired (direct bridge
+    // callers, this test) the resolver still aggregates the scene
+    // failure into an AggregateError at the end so the caller never
+    // loses the signal — the individual wrapper inside `.errors[]`
+    // carries the legacy `scene "intro" create threw` envelope.
     const log: string[] = [];
     const intro = buildScene({
       id: 'intro',
@@ -613,13 +621,19 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
       compositions: createCompositionRegistry([]),
     }) as SceneNavigationTarget;
 
-    await expect(
-      loadSceneNavigationTarget(target, {
-        ctx: {},
-        preloadAssets: () => undefined,
-        timeline: recordingTimeline().adapter,
-      }),
-    ).rejects.toThrow(/composition resolution failed: scene "intro" create threw/);
+    let caught: unknown;
+    await loadSceneNavigationTarget(target, {
+      ctx: {},
+      preloadAssets: () => undefined,
+      timeline: recordingTimeline().adapter,
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeInstanceOf(AggregateError);
+    const messages = (caught as AggregateError).errors.map((e) => (e as Error).message);
+    expect(messages).toContain(
+      'composition resolution failed: scene "intro" create threw: create failed',
+    );
     expect(log).toEqual(['create', 'cleanup']);
   });
 

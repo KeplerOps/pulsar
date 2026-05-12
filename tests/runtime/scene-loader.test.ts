@@ -366,7 +366,14 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
       expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
     });
 
-    it('sets `data-pulsar-navigation-error` when a lifecycle phase throws', async () => {
+    it('routes a per-scene lifecycle throw to data-pulsar-scene-failures, NOT the fatal navigation-error attribute (PUL-F029)', async () => {
+      // PUL-F029 / ADR-028: a thrown `create(ctx)` / `timeline(ctx)` /
+      // `cleanup(ctx)` is a scene failure, not a fatal navigation
+      // failure. The composition keeps moving and the diagnostic
+      // lands on the per-scene stage attribute via `onSceneFailed`,
+      // not on `data-pulsar-navigation-error` (which stays for
+      // composition-wide failures: manifest, registry miss, preload,
+      // timeline adapter `run` rejection, abort wrapper).
       const stage = buildStage();
       const broken = buildScene({
         id: 'broken',
@@ -387,9 +394,8 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
       await loader.handle(sceneTarget('broken'));
 
       expect(stage.attrs.get('data-pulsar-scene-target')).toBe('broken');
-      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
-        /composition resolution failed: scene "broken" create threw/,
-      );
+      expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-scene-failures')).toBe('broken:create');
     });
 
     it('handleError(err) sets the error attribute and clears any stale scene attributes', async () => {
@@ -734,11 +740,16 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
     });
 
     it('surfaces cleanup failures even when the lifecycle was aborted (multi-fault visibility)', async () => {
-      // The resolver throws an `AggregateError` when an aborted
-      // lifecycle ALSO has a cleanup failure. The naive "any abort →
-      // suppress" rule would drop the cleanup half from both stage
-      // state and `onError`. The loader must surface AggregateErrors
-      // even when its own controller aborted the load.
+      // PUL-F029 / ADR-028 changes the surface here: the resolver no
+      // longer folds an aborted lifecycle + cleanup failure into an
+      // `AggregateError` the loader has to dissect. Instead, the
+      // resolver fans out the cleanup failure through the loader's
+      // `onSceneFailed` handler (which writes
+      // `data-pulsar-scene-failures` and a `scene "broken" failed
+      // during cleanup: …` Error to `onError`) and the abort wrapper
+      // itself is suppressed by `isPureAbort`. The naive "any abort →
+      // suppress" rule would still drop the cleanup half; the test
+      // here pins that the per-scene cleanup failure stays visible.
       const broken = buildScene({
         id: 'broken',
         cleanup: () => {
@@ -778,16 +789,10 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
       void loader.handle(sceneTarget('next'));
       await loader.idle();
 
-      // The cleanup failure on `broken` MUST have surfaced — it's a
-      // real bug the operator needs to see, not a routine abort. The
-      // resolver folds the abort and the cleanup failure into an
-      // AggregateError; the loader surfaces it (NOT suppressed because
-      // AggregateError is never a "pure abort"), and the cleanup error
-      // is in its `.errors` array.
+      // The cleanup failure on `broken` MUST have surfaced through
+      // `onError` (the loader's `onSceneFailed` handler routes there).
       expect(captured.length).toBeGreaterThanOrEqual(1);
-      const aggregate = captured.find((e): e is AggregateError => e instanceof AggregateError);
-      expect(aggregate).toBeDefined();
-      const cleanupError = aggregate?.errors.find(
+      const cleanupError = captured.find(
         (e) => e instanceof Error && /cleanup boom/.test((e as Error).message),
       );
       expect(cleanupError).toBeDefined();
@@ -849,5 +854,182 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
 
       expect(log).toEqual([]);
     });
+  });
+});
+
+describe('createSceneLoader — PUL-F029 scene-level error isolation', () => {
+  it('surfaces a `create` failure via onError and the scene-failures stage attribute without aborting the composition', async () => {
+    const onError = vi.fn();
+    const intro = buildScene({ id: 'intro' });
+    const broken = buildScene({
+      id: 'broken',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const outro = buildScene({ id: 'outro' });
+    const stage = buildStage();
+    const { adapter, calls } = recordingTimeline();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([intro, broken, outro]),
+      compositions: createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'broken', 'outro'] },
+      ]),
+      stage: stage.element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: adapter,
+      onError,
+    });
+
+    await loader.handle(compositionTarget('full-talk'));
+
+    // The composition did NOT halt — adapter ran with intro + outro segments.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.segments.map((s) => s.id)).toEqual(['intro', 'outro']);
+    // The fatal-navigation surface stayed clean (this was a per-scene failure).
+    expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+    // The per-scene failure shows up on the new attribute and via onError.
+    expect(stage.attrs.get('data-pulsar-scene-failures')).toBe('broken:create');
+    expect(onError).toHaveBeenCalledTimes(1);
+    const firstArg = onError.mock.calls[0]?.[0] as unknown;
+    expect(firstArg).toBeInstanceOf(Error);
+    expect((firstArg as Error).message).toContain('broken');
+    expect((firstArg as Error).message).toContain('create');
+  });
+
+  it('lists multiple scene failures on the stage attribute in encounter order', async () => {
+    const onError = vi.fn();
+    const intro = buildScene({ id: 'intro' });
+    const brokenCreate = buildScene({
+      id: 'broken-create',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const brokenCleanup = buildScene({
+      id: 'broken-cleanup',
+      cleanup: () => {
+        throw new Error('cleanup kaboom');
+      },
+    });
+    const stage = buildStage();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([intro, brokenCreate, brokenCleanup]),
+      compositions: createCompositionRegistry([
+        { id: 'mix', manifest: ['intro', 'broken-create', 'broken-cleanup'] },
+      ]),
+      stage: stage.element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      onError,
+    });
+
+    await loader.handle(compositionTarget('mix'));
+
+    // Both failures listed; encounter order is mount-then-cleanup.
+    expect(stage.attrs.get('data-pulsar-scene-failures')).toBe(
+      'broken-create:create,broken-cleanup:cleanup',
+    );
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it('enriches the onError message with composition id, entry index, and mode (ADR-028 diagnostic contract)', async () => {
+    const onError = vi.fn();
+    const intro = buildScene({ id: 'intro' });
+    const broken = buildScene({
+      id: 'broken',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([intro, broken]),
+      compositions: createCompositionRegistry([{ id: 'full-talk', manifest: ['intro', 'broken'] }]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      onError,
+    });
+
+    await loader.handle(compositionTarget('full-talk'));
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const arg = onError.mock.calls[0]?.[0] as Error;
+    expect(arg.message).toContain('scene "broken"');
+    expect(arg.message).toContain('failed during create');
+    expect(arg.message).toContain('composition "full-talk"');
+    expect(arg.message).toContain('entry [1]');
+    expect(arg.message).toContain('mode "present"');
+    expect(arg.message).toContain('create kaboom');
+  });
+
+  it('renders the absolute composition entry index when the slice started mid-manifest (codex review, cycle 2)', async () => {
+    // Codex review cycle 2 finding: for `composition-scene` /
+    // `composition-index` navigation the resolver receives a slice
+    // starting mid-manifest; rendering its slice-relative
+    // `entryIndex` as the public composition entry would send
+    // operators to the wrong entry. The loader must add the absolute
+    // start offset.
+    const onError = vi.fn();
+    const intro = buildScene({ id: 'intro' });
+    const middle = buildScene({ id: 'middle' });
+    const broken = buildScene({
+      id: 'broken',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([intro, middle, broken]),
+      compositions: createCompositionRegistry([
+        { id: 'full-talk', manifest: ['intro', 'middle', 'broken'] },
+      ]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      onError,
+    });
+
+    // Navigate starting at index 1: the resolver sees a slice
+    // [middle, broken]. The `broken` scene's slice-relative index is
+    // 1, but its absolute composition entry index is 2.
+    await loader.handle(compositionIndexTarget('full-talk', 1));
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const arg = onError.mock.calls[0]?.[0] as Error;
+    expect(arg.message).toContain('entry [2]');
+    expect(arg.message).not.toContain('entry [1]');
+  });
+
+  it('resets the scene-failures attribute on the next navigation', async () => {
+    const onError = vi.fn();
+    const intro = buildScene({ id: 'intro' });
+    const broken = buildScene({
+      id: 'broken',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const clean = buildScene({ id: 'clean' });
+    const stage = buildStage();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([intro, broken, clean]),
+      compositions: createCompositionRegistry([{ id: 'failing', manifest: ['intro', 'broken'] }]),
+      stage: stage.element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      onError,
+    });
+
+    await loader.handle(compositionTarget('failing'));
+    expect(stage.attrs.get('data-pulsar-scene-failures')).toBe('broken:create');
+
+    await loader.handle(sceneTarget('clean'));
+    expect(stage.attrs.has('data-pulsar-scene-failures')).toBe(false);
   });
 });
