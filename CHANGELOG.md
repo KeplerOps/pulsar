@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Present-mode audio unlock interaction — PUL-F030 / ADR-029 — in
+  `src/runtime/scene.ts`, `src/runtime/audio.ts`, `src/runtime/scene-loader.ts`,
+  and `src/main.ts`: a static `scene.audio: readonly string[]` field on
+  `SceneModule` (subset of `scene.assets`) and a matching
+  `sceneDeclaresAudio(scene)` predicate become the one source of truth
+  for "this scene declares audio." The audio engine gains an
+  `unlock(): Promise<void>` operation — Howler-backed in production
+  (`Howler.ctx?.resume()`), no-op for the silent fallback engine — that
+  the loader's new `AudioUnlockAdapter` seam invokes via the
+  composition-context-bound `gate.unlock()` callback. The scene loader
+  awaits the workbench-supplied adapter BEFORE preload, `create(ctx)`,
+  `timeline(ctx)`, and master playback whenever
+  `effectiveMode(target) === 'present'` AND the resolved target carries
+  a composition slice AND at least one scene in that slice declares
+  audio; non-present modes, single-scene present-mode loads, and
+  audio-less compositions bypass the gate. The gate's signal is the
+  navigation signal — supersession / dispose / popstate aborts the
+  adapter; an adapter rejection surfaces through the existing
+  `onError` + `data-pulsar-navigation-error` channel without starting
+  lifecycle work; a present-mode-audio composition with no adapter
+  wired fails loud through the same channel (the gate IS the
+  structural defense — an inert seam would silently violate the
+  requirement). The workbench bootstrap (`src/main.ts`) wires a real
+  adapter that mounts one `data-pulsar-audio-unlock="gesture"` button
+  on the stage, awaits the click, calls `gate.unlock()`, and removes
+  itself; the adapter receives only the bounded semantic context
+  ADR-029 records (`compositionId`, `sceneIds`, `signal`, `unlock`) —
+  never raw scene objects, source URLs, headers, cookies, or Howler
+  handles. The placeholder scene declares `audio: []`. The
+  `scene-loader-audio` test suite gains the PUL-F030 gate section
+  pinning the trigger predicate, bypass cases, supersession behavior,
+  adapter-rejection error envelope, the fail-loud unwired-adapter
+  path, and the engine-bound `unlock` callback round-trip. ADR-029
+  supersedes ADR-004's passive-Howler-`autoUnlock`-only clause for
+  present-mode audio-declaring compositions.
+
 ### Changed
 
 - Scene-level error isolation — PUL-F029 / ADR-028 — in

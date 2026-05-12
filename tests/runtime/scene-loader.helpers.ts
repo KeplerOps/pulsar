@@ -80,6 +80,7 @@ export interface BuildSceneOpts {
   readonly title?: string;
   readonly assets?: readonly string[];
   readonly captions?: readonly Caption[];
+  readonly audio?: readonly string[];
   readonly create?: SceneModule['create'];
   readonly timeline?: SceneModule['timeline'];
   readonly cleanup?: SceneModule['cleanup'];
@@ -92,6 +93,7 @@ export const buildScene = (opts: BuildSceneOpts): SceneModule => ({
   tags: [],
   assets: opts.assets ?? [],
   captions: opts.captions ?? [],
+  audio: opts.audio ?? [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,

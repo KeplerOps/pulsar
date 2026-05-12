@@ -14,6 +14,7 @@ const buildScene = (id: string, assets: readonly string[] = []): SceneModule => 
   tags: [],
   assets,
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: false,
   trailerSafe: false,

@@ -4,6 +4,7 @@ import {
   type SceneModule,
   assertSceneModule,
   isSceneModule,
+  sceneDeclaresAudio,
 } from '../../src/runtime/scene';
 
 const validScene = (): SceneModule => ({
@@ -13,6 +14,7 @@ const validScene = (): SceneModule => ({
   tags: ['act-i'],
   assets: [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,
@@ -28,6 +30,7 @@ const REQUIRED_FIELDS = [
   'tags',
   'assets',
   'captions',
+  'audio',
   'defaultNext',
   'standalone',
   'trailerSafe',
@@ -374,6 +377,7 @@ describe('SceneModule contract (PUL-F001)', () => {
           { at: 0, text: 'Opening hook.' },
           { at: 4000, text: 'First payoff.' },
         ],
+        audio: ['assets/audio/stinger.mp3'],
         defaultNext: 'scene-a',
         standalone: true,
         trailerSafe: true,
@@ -382,6 +386,87 @@ describe('SceneModule contract (PUL-F001)', () => {
         cleanup: () => undefined,
       };
       expect(() => assertSceneModule(scene)).not.toThrow();
+    });
+  });
+
+  // PUL-F030 / ADR-029: a static audio-declaration field on the scene
+  // schema. The loader/workbench unlock gate, the validation pass
+  // (PUL-F028), and future authoring lints all read this one
+  // predicate, so "this scene declares audio" never depends on file
+  // extension sniffing, MIME guesses, or runtime observation of
+  // `ctx.audio.load()`. Per the preflight, every entry must be in
+  // `scene.assets` so the preloader (PUL-F005) warms it and the audio
+  // service's allowlist accepts it (ADR-008 #5 — `scene.assets` is
+  // the only asset inventory).
+  describe('audio field (PUL-F030 / ADR-029)', () => {
+    it('accepts an empty audio array (scene declares no audio)', () => {
+      expect(() => assertSceneModule(withField('audio', []))).not.toThrow();
+    });
+
+    it('accepts audio entries that are members of scene.assets', () => {
+      const scene = {
+        ...validScene(),
+        assets: ['assets/audio/stinger.mp3', 'assets/img/title.png'],
+        audio: ['assets/audio/stinger.mp3'],
+      };
+      expect(() => assertSceneModule(scene)).not.toThrow();
+    });
+
+    it('rejects a non-array audio field', () => {
+      expect(() => assertSceneModule(withField('audio', 'assets/audio/stinger.mp3'))).toThrow(
+        /audio/,
+      );
+    });
+
+    it('rejects non-string elements in audio', () => {
+      expect(() => assertSceneModule(withField('audio', [42]))).toThrow(/audio/);
+    });
+
+    it('rejects an audio entry that is not in scene.assets', () => {
+      const scene = {
+        ...validScene(),
+        assets: ['assets/audio/stinger.mp3'],
+        audio: ['assets/audio/bed.mp3'],
+      };
+      expect(() => assertSceneModule(scene)).toThrow(/audio/);
+      expect(() => assertSceneModule(scene)).toThrow(/scene\.assets/);
+    });
+
+    it('reports the offending audio entry by index', () => {
+      const scene = {
+        ...validScene(),
+        assets: ['assets/audio/stinger.mp3'],
+        audio: ['assets/audio/stinger.mp3', 'assets/audio/missing.mp3'],
+      };
+      expect(() => assertSceneModule(scene)).toThrow(/audio\[1\]/);
+    });
+
+    it('requires audio to be present', () => {
+      expect(() => assertSceneModule(omitField('audio'))).toThrow(/\baudio\b/);
+    });
+  });
+
+  describe('sceneDeclaresAudio predicate (PUL-F030 / ADR-029)', () => {
+    it('returns false when audio is empty', () => {
+      expect(sceneDeclaresAudio({ ...validScene(), audio: [] })).toBe(false);
+    });
+
+    it('returns true when audio has one entry', () => {
+      const scene: SceneModule = {
+        ...validScene(),
+        assets: ['assets/audio/stinger.mp3'],
+        audio: ['assets/audio/stinger.mp3'],
+      };
+      expect(sceneDeclaresAudio(scene)).toBe(true);
+    });
+
+    it('returns true when audio has multiple entries', () => {
+      const scene: SceneModule = {
+        ...validScene(),
+        assets: ['assets/audio/stinger.mp3', 'assets/audio/bed.mp3'],
+        audio: ['assets/audio/stinger.mp3', 'assets/audio/bed.mp3'],
+      };
+      expect(sceneDeclaresAudio(scene)).toBe(true);
     });
   });
 

@@ -37,19 +37,22 @@
 //
 // Source URLs reuse PUL-F005's `resolveAssetUrl` scheme resolver — no
 // copied scheme rules — and every registered source must be in the
-// active composition slice's declared `scene.assets` (ADR-008 #5: the
-// only audio inventory is `scene.assets`; there is no `audio:` field on
-// `SceneModule`). The preloader (PUL-F005) warms those URLs before
-// `create(ctx)` runs. Sound ids and group names obey the kebab-case
-// rule every other Pulsar identifier obeys (ADR-008 #1).
+// active composition slice's declared `scene.audio` (PUL-F030 / ADR-029
+// — `scene.audio` is the audio-source allowlist; every entry must also
+// be a member of `scene.assets` so the preloader (PUL-F005) warmed it).
+// Sound ids and group names obey the kebab-case rule every other Pulsar
+// identifier obeys (ADR-008 #1).
 //
 // References:
 //  - ADR-004 — Howler as the audio engine, exposed through `ctx.audio`;
 //    runtime-guaranteed per-scene cleanup; master mute.
 //  - ADR-003 — timeline callbacks are how most audio cues fire (scenes
 //    hang `ctx.audio.play(...)` off their `ctx.gsap` timeline).
-//  - ADR-008 — agent-native authoring; #1 kebab ids, #5 the only asset
-//    inventory is `scene.assets`.
+//  - ADR-008 — agent-native authoring; #1 kebab ids, #5 `scene.assets`
+//    is the canonical asset inventory; PUL-F030 / ADR-029 narrows audio
+//    to a `scene.audio` subset of `scene.assets`.
+//  - ADR-029 / PUL-F030 — `scene.audio` is the audio-source allowlist
+//    AND the predicate the present-mode unlock gate consults.
 //  - PUL-F005 / ADR-012 — the asset preloader whose URL resolver this
 //    module reuses; declared audio sources are warmed before mount.
 
@@ -77,7 +80,9 @@ export class AudioGroupError extends AudioError {}
 
 /**
  * A sound source URL has a disallowed scheme, is malformed, or was not
- * declared in `scene.assets` (so the preloader never warmed it).
+ * declared in `scene.audio` (PUL-F030 / ADR-029 — the audio-source
+ * allowlist; every entry must also be in `scene.assets` so the
+ * preloader warms it).
  */
 export class AudioSourceError extends AudioError {}
 
@@ -143,6 +148,17 @@ export interface AudioEngine {
   setMasterMute(muted: boolean): void;
   /** Whether the engine is currently master-muted. */
   isMasterMuted(): boolean;
+  /**
+   * Resume the underlying audio context so subsequent playback satisfies
+   * browser autoplay policy (PUL-F030 / ADR-029). The loader/workbench
+   * unlock adapter calls this AFTER collecting an explicit user gesture
+   * and BEFORE present-mode composition lifecycle work begins. The
+   * Howler-backed engine forwards to `Howler.ctx.resume()` (a no-op when
+   * Howler runs in its no-audio fallback, e.g. Node tests). The no-op
+   * engine resolves immediately. Idempotent — successive calls after the
+   * context is running resolve without side effects.
+   */
+  unlock(): Promise<void>;
 }
 
 /* ------------------------------------------------------------------ *
@@ -222,6 +238,89 @@ export function createHowlerAudioEngine(): AudioEngine {
     isMasterMuted() {
       return masterMuted;
     },
+    // PUL-F030 / ADR-029: satisfy browser autoplay policy so the
+    // present-mode composition can play audio. The function MUST
+    // either actually unlock playback (resume Web Audio context OR
+    // exercise HTML5 audio under the active user gesture) OR REJECT,
+    // so the gate fails closed instead of "click resolved but the
+    // first cue is still suspended." The codex cycle-3 review named
+    // four success-without-unlock failure modes the previous code
+    // hit (`usingWebAudio === false` silently returning, seed-Howl
+    // setup throwing under a try/catch that resolved, ctx still
+    // missing after setup, ctx without a `resume()`). This rewrite
+    // closes each of them.
+    //
+    // The three success branches:
+    //
+    //  1. `noAudio === true` — Howler has no audio backend at all
+    //     (Node tests, browser with audio disabled). No autoplay
+    //     policy to satisfy; resolve. The composition's `ctx.audio`
+    //     calls are already no-ops in this engine.
+    //  2. `usingWebAudio === false` — Howler falls back to HTML5
+    //     audio. The HTML5 autoplay-policy unlock pattern is to
+    //     `play()` a silent `<audio>` during the user gesture, which
+    //     marks the document's HTML5 audio as user-activated.
+    //     Requires `globalThis.Audio`; if absent, reject.
+    //  3. Web Audio path — construct/resume an `AudioContext`. The
+    //     ctx must be created INSIDE the user-activation tick so the
+    //     browser marks it `running` not `suspended`; we trigger
+    //     Howler's own `_setup()` via a throwaway `new Howl()` so
+    //     `Howler.ctx` AND `Howler.masterGain` are created
+    //     consistently (cycle-2 review fix). If Howler's setup
+    //     throws, or the ctx remains null, or the ctx has no
+    //     `resume()`, REJECT. Idempotent: a second unlock with a
+    //     running ctx just calls `resume()` again (no-op when
+    //     already running).
+    async unlock() {
+      const howlerHandle = Howler as unknown as {
+        ctx: AudioContext | null | undefined;
+        noAudio: boolean | undefined;
+        usingWebAudio: boolean | undefined;
+      };
+      // Branch 1: explicit no-audio fallback.
+      if (howlerHandle.noAudio === true) return;
+      // 44-byte silent WAV used by both unlock branches.
+      const SILENT_WAV =
+        'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+      // Branch 2: HTML5 audio fallback. Howler will play sounds via
+      // `<audio>` elements, which are subject to autoplay policy too.
+      if (howlerHandle.usingWebAudio === false) {
+        type AudioCtor = new (src?: string) => HTMLAudioElement;
+        const AudioCtor = (globalThis as unknown as { Audio?: AudioCtor }).Audio;
+        if (AudioCtor === undefined) {
+          throw new Error(
+            'audio unlock: Howler is in HTML5 mode but globalThis.Audio is unavailable — cannot satisfy autoplay policy',
+          );
+        }
+        const probe = new AudioCtor(SILENT_WAV);
+        probe.muted = true;
+        await probe.play();
+        probe.pause();
+        return;
+      }
+      // Branch 3: Web Audio path. Trigger Howler's setup if needed.
+      if (howlerHandle.ctx === null || howlerHandle.ctx === undefined) {
+        try {
+          const seed = new Howl({ src: [SILENT_WAV] });
+          seed.unload();
+        } catch (cause) {
+          throw new Error(
+            `audio unlock: Howler setup failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+            { cause },
+          );
+        }
+      }
+      const ctx = howlerHandle.ctx;
+      if (ctx === null || ctx === undefined) {
+        throw new Error(
+          'audio unlock: Howler setup completed but Howler.ctx is still null — cannot resume audio',
+        );
+      }
+      if (typeof ctx.resume !== 'function') {
+        throw new TypeError('audio unlock: Howler.ctx.resume is not a function');
+      }
+      await ctx.resume();
+    },
   };
 }
 
@@ -249,6 +348,9 @@ export const noopAudioEngine: AudioEngine = (() => {
       masterMuted = muted;
     },
     isMasterMuted: () => masterMuted,
+    // PUL-F030 / ADR-029: a no-audio engine has no browser context to
+    // resume, so unlock is a deterministic resolved promise.
+    unlock: () => Promise.resolve(),
   };
 })();
 
@@ -260,9 +362,11 @@ export const noopAudioEngine: AudioEngine = (() => {
 export interface SoundDefinition {
   /**
    * Source URL, or URLs in codec-preference order. Every URL must be
-   * declared in the active composition slice's `scene.assets` so the
-   * preloader warms it (ADR-008 #5) and must pass the asset scheme
-   * allowlist ({@link import('./asset-preloader').DEFAULT_ALLOWED_SCHEMES}).
+   * declared in the active composition slice's `scene.audio` (PUL-F030
+   * / ADR-029 — the audio-source allowlist; every `scene.audio` entry
+   * is also a member of `scene.assets` so the preloader warms it,
+   * ADR-008 #5) and must pass the asset scheme allowlist
+   * ({@link import('./asset-preloader').DEFAULT_ALLOWED_SCHEMES}).
    * Re-registering an id with the same definition (same `src` list,
    * same `sprite` map) is idempotent — e.g. a shared transition SFX two
    * scenes both `load`; re-registering it with a different definition
@@ -434,10 +538,12 @@ export interface AudioServiceOptions {
   readonly onCue?: (entry: AudioCueLogEntry) => void;
   /**
    * The source URLs scenes may register. Every {@link SoundDefinition.src}
-   * URL must be in this set (ADR-008 #5 — audio is declared in
-   * `scene.assets`, which the preloader warms). Omit to skip the
-   * membership check (non-composition / test callers); scheme
-   * validation still applies.
+   * URL must be in this set (PUL-F030 / ADR-029 — `scene.audio` is the
+   * authoritative audio-source allowlist; the loader passes the union
+   * of every scene's `scene.audio` in the active slice. Every entry is
+   * also a member of `scene.assets`, which the preloader warms,
+   * ADR-008 #5). Omit to skip the membership check (non-composition /
+   * test callers); scheme validation still applies.
    */
   readonly allowedSources?: Iterable<string>;
   /** Sink for non-fatal async audio errors (load / play failure). Defaults to a no-op. */
@@ -830,15 +936,15 @@ export function createAudioService(
           `audio sound "${soundId}" source must be a non-empty URL string`,
         );
       }
-      // Defense-in-depth (codex review, cycle 3): even when
-      // `allowedSources` is provided (the slice's declared
-      // `scene.assets`, which the preloader warmed), the audio service
-      // also runs the same default scheme allowlist the preloader uses
-      // by default — so a no-op or weak preloader cannot let `file:` /
-      // `//host` URLs through. Threading the preloader's exact
-      // `baseUrl` / `allowedSchemes` policy into the audio service is a
-      // documented follow-up; for now the service is at least as
-      // restrictive as `DEFAULT_ALLOWED_SCHEMES`.
+      // Defense-in-depth: even when `allowedSources` is provided (the
+      // slice's declared `scene.audio`, every entry of which is also
+      // in `scene.assets` so the preloader warmed it), the audio
+      // service also runs the same default scheme allowlist the
+      // preloader uses by default — so a no-op or weak preloader
+      // cannot let `file:` / `//host` URLs through. Threading the
+      // preloader's exact `baseUrl` / `allowedSchemes` policy into
+      // the audio service is a documented follow-up; for now the
+      // service is at least as restrictive as `DEFAULT_ALLOWED_SCHEMES`.
       try {
         resolveAssetUrl(url, undefined, DEFAULT_ALLOWED_SCHEMES);
       } catch (cause) {
@@ -848,11 +954,14 @@ export function createAudioService(
         );
       }
       if (allowed !== null && !allowed.has(url)) {
-        // ADR-008 #5: the only audio inventory is `scene.assets`. A URL
-        // outside the slice's declared assets is not preloader-warmed
-        // and is rejected here regardless of scheme.
+        // PUL-F030 / ADR-029: `scene.audio` is the audio-source
+        // allowlist. A URL outside the slice's declared `scene.audio`
+        // is rejected — even if it happens to be in `scene.assets`.
+        // This is what makes the present-mode unlock gate predicate
+        // and the runtime audio-source allowlist agree: a scene
+        // cannot quietly register audio it did not also declare.
         throw new AudioSourceError(
-          `audio sound "${soundId}" source "${url}" is not a declared asset — list it in scene.assets so the preloader warms it (ADR-008 #5)`,
+          `audio sound "${soundId}" source "${url}" is not a declared audio source — list it in scene.audio (and ensure it is also in scene.assets so the preloader warms it) per PUL-F030 / ADR-029`,
         );
       }
     }

@@ -26,6 +26,7 @@
 import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
 import { createAssetPreloader } from './runtime/asset-preloader';
 import { type AudioService, createHowlerAudioEngine } from './runtime/audio';
+import { createDomAudioUnlockAdapter } from './runtime/audio-unlock-dom';
 import { createCompositionRegistry } from './runtime/composition-registry';
 import {
   type NavigationMode,
@@ -186,6 +187,26 @@ const renderPrompter: PrompterRenderer = () => undefined;
 // record the DRAFT → ACTIVE bar (presenter UI module + GSAP runner
 // that translates commands to transport calls — including playhead-
 // preserving pause/resume — + end-to-end tests).
+// PUL-F030 / ADR-029: present-mode audio unlock adapter. The loader
+// invokes this BEFORE preload + scene `create(ctx)` + scene
+// `timeline(ctx)` + master timeline playback when a present-mode
+// composition declares audio (any scene's `scene.audio` non-empty).
+// The factory in `./runtime/audio-unlock-dom` owns the click / abort /
+// cleanup contract; this wiring just supplies the stage and the
+// concrete `<button>` element. Tests cover the factory directly so a
+// regression in click handling, abort race, or cleanup surfaces in
+// `tests/runtime/audio-unlock-dom.test.ts` (codex review cycle 3).
+const audioUnlockAdapter = createDomAudioUnlockAdapter({
+  mount: stage === null ? null : (button) => stage.appendChild(button as unknown as Node),
+  createButton: () => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.pulsarAudioUnlock = 'gesture';
+    button.textContent = 'Start presentation';
+    return button;
+  },
+});
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -195,6 +216,7 @@ const loader = createSceneLoader({
   timeline,
   audioEngine,
   renderPrompter,
+  audioUnlockAdapter,
 });
 
 const onNavigate = (event: Event): void => {

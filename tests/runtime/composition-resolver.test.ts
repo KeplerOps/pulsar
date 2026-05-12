@@ -34,6 +34,7 @@ const scene = (id: string, hooks: HookOverrides = {}): SceneModule => ({
   tags: [],
   assets: [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,

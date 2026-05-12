@@ -10,6 +10,7 @@ const buildScene = (overrides: Partial<SceneModule> = {}): SceneModule => ({
   tags: [],
   assets: [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,

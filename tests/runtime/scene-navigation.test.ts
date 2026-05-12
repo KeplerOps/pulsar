@@ -44,6 +44,7 @@ const buildScene = (opts: BuildSceneOpts = {}): SceneModule => ({
   tags: [],
   assets: opts.assets ?? [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,
