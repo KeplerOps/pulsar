@@ -91,8 +91,13 @@ describe('workbench graph validation (PUL-P002)', () => {
     // a second scene with the same id forces `runDuplicateIdPhase` to
     // emit a finding. A regression that no-op'd that phase would
     // leave this test green only if THIS test were also silent — the
-    // ToContain check guarantees the finding code is actually
-    // present in the output.
+    // toContain check guarantees the finding code is actually
+    // present in the output. Asserting the message matches the
+    // documented `scene registry: duplicate id "<id>"` grammar (from
+    // `createIdRegistry`'s `onDuplicate` collector hook) catches a
+    // regression that emitted the finding with an empty message, a
+    // wrong quoted id, or a different label prefix — none of which
+    // the structured `sceneId` field alone would surface.
     const duplicate = wellFormedScene({ id: 'placeholder', title: 'Duplicate placeholder' });
     const scenes: readonly unknown[] = [...WORKBENCH_SCENES, duplicate];
     const findings = validateRuntime({
@@ -102,6 +107,7 @@ describe('workbench graph validation (PUL-P002)', () => {
     expect(findings.map((f) => f.code)).toContain('duplicate-scene-id');
     const offender = findings.find((f) => f.code === 'duplicate-scene-id');
     expect(offender?.sceneId).toBe('placeholder');
+    expect(offender?.message).toBe('scene registry: duplicate id "placeholder"');
   });
 
   it('surfaces clause (a) — unknown-scene-reference — when a composition names a missing scene', () => {
@@ -126,6 +132,13 @@ describe('workbench graph validation (PUL-P002)', () => {
     const offender = findings.find((f) => f.code === 'unknown-scene-reference');
     expect(offender?.compositionId).toBe('broken-comp');
     expect(offender?.sceneId).toBe('not-a-registered-scene');
+    // Asserts the resolver-aligned message envelope so a regression
+    // that emitted the finding without the composition id, entry
+    // index, or referenced scene id would fail here.
+    expect(offender?.message).toBe(
+      'composition "broken-comp" entry [0] references unknown scene id "not-a-registered-scene"',
+    );
+    expect(offender?.entryIndex).toBe(0);
   });
 
   it('surfaces the composition-manifest-invalid pre-condition for clause (a)', () => {
@@ -146,6 +159,13 @@ describe('workbench graph validation (PUL-P002)', () => {
     expect(findings.map((f) => f.code)).toContain('composition-manifest-invalid');
     const offender = findings.find((f) => f.code === 'composition-manifest-invalid');
     expect(offender?.compositionId).toBe('malformed-comp');
+    // Asserts the composition-id-prefixed message envelope from
+    // `checkCompositionShape`. The `must be an array` substring comes
+    // from `assertCompositionManifest`'s top-level shape check; a
+    // regression that prefixed the wrong id or dropped the prefix
+    // would fail here, distinguishing this finding from a sibling
+    // composition's identical error.
+    expect(offender?.message).toMatch(/^composition "malformed-comp": .*must be an array/);
   });
 
   it('surfaces clause (b) — asset-unresolvable — when a scene declares a bad asset URL', () => {
@@ -168,5 +188,12 @@ describe('workbench graph validation (PUL-P002)', () => {
     const offender = findings.find((f) => f.code === 'asset-unresolvable');
     expect(offender?.sceneId).toBe('bad-asset-fixture');
     expect(offender?.asset).toBe('file:///etc/passwd');
+    // The message is prepended with the scene id by
+    // `checkAssetResolvable` so two scenes pointing at the same bad
+    // URL stay distinguishable; the suffix comes from the shared
+    // `resolveAssetUrl` rejection grammar. Asserting the structured
+    // prefix catches a regression that dropped the scene id from the
+    // message.
+    expect(offender?.message).toMatch(/^scene "bad-asset-fixture": /);
   });
 });
