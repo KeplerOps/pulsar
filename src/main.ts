@@ -23,7 +23,6 @@
 //     does not stack duplicate listeners or strand a half-loaded
 //     scene.
 
-import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
 import { createAssetPreloader } from './runtime/asset-preloader';
 import { type AudioService, createHowlerAudioEngine } from './runtime/audio';
 import { createDomAudioUnlockAdapter } from './runtime/audio-unlock-dom';
@@ -40,7 +39,7 @@ import { createSceneRegistry } from './runtime/registry';
 import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loader';
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
-import { placeholderScene } from './scenes/placeholder';
+import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
 const stage = document.querySelector('#stage');
 stage?.setAttribute('data-pulsar', 'placeholder');
@@ -58,14 +57,20 @@ stage?.setAttribute('data-pulsar', 'placeholder');
 // the preloader, and the resolver never touch a broken graph. Empty
 // findings array → boot proceeds untouched.
 //
-// `scenes` and `compositionEntries` are declared ONCE and passed to
-// both the validator and the registry constructors. Splitting them
-// into per-call literals would let a future scene get added to the
-// registry path without being added to validation, leaving the
-// PUL-F028 gate looking active while running unvalidated inputs
-// (codex review cycle 3).
-const scenes = [placeholderScene];
-const compositionEntries = [{ id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition }];
+// `scenes` and `compositionEntries` are declared ONCE in
+// `./workbench-graph.ts` and passed to both the validator and the
+// registry constructors. Splitting them into per-call literals
+// would let a future scene get added to the registry path without
+// being added to validation, leaving the PUL-F028 gate looking
+// active while running unvalidated inputs (codex review cycle 3).
+// The canonical module is the same source the PUL-P002 CI gate
+// (`tests/runtime/workbench-graph.test.ts`) consumes — the browser
+// bootstrap and the CI validation run against identical inputs.
+// The module lives at the composition-root layer (next to
+// `main.ts`), not under `src/runtime/`, so the reusable runtime
+// engine does not import concrete scenes or compositions.
+const scenes = WORKBENCH_SCENES;
+const compositionEntries = WORKBENCH_COMPOSITIONS;
 
 // Clear the failure marker before every boot. In a same-document
 // lifecycle (Vite HMR or repeated `import` evaluation) a previous
