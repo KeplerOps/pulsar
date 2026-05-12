@@ -874,6 +874,36 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       });
   };
 
+  /**
+   * PUL-F030 / ADR-029: decide whether the present-mode audio unlock
+   * gate applies to this navigation, and if so build the gate. Returns
+   * one of:
+   *
+   *  - `null` — the gate does not apply (mode is not present, no
+   *    composition slice, or no scene in the slice declares audio).
+   *    The lifecycle runs without a prelude.
+   *  - `'fail-loud'` — the gate applies but no `audioUnlockAdapter`
+   *    is supplied. The caller surfaces a navigation-level error and
+   *    skips the lifecycle.
+   *  - `UnlockGate` — a closure that invokes the workbench adapter
+   *    with the composition context. The lifecycle awaits it before
+   *    preload / `create(ctx)` / `timeline(ctx)` / master playback.
+   *
+   * Hoisted out of `runTarget` so the latter stays within Sonar's
+   * cognitive-complexity budget (S3776).
+   */
+  const resolveUnlockGate = (
+    target: NavigationTarget,
+    resolved: SceneNavigationTarget,
+  ): UnlockGate | 'fail-loud' | null => {
+    if (effectiveMode(target) !== 'present') return null;
+    const composition = resolved.composition;
+    if (composition === undefined) return null;
+    if (!composition.sceneSlice.some(sceneDeclaresAudio)) return null;
+    if (options.audioUnlockAdapter === undefined) return 'fail-loud';
+    return buildUnlockGate(options.audioUnlockAdapter, composition);
+  };
+
   const buildLoad = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
@@ -1299,19 +1329,14 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       load = buildPrompterLoad(resolved);
     } else {
       const runnable = applySingleSceneSlice(resolved, target);
-      // PUL-F030 / ADR-029: decide whether the present-mode audio
-      // unlock gate applies to this navigation and resolve the adapter
-      // up front. The gate triggers only when (a) the effective mode
-      // is 'present', (b) the resolved target carries a composition
-      // slice, and (c) at least one scene in that slice declares
-      // audio. When the gate applies but no adapter is supplied, the
-      // loader fails loud — the gate IS the structural defense for
-      // PUL-F030, so an unwired gate is a workbench-bootstrap defect.
-      const gateApplies =
-        effectiveMode(target) === 'present' &&
-        resolved.composition !== undefined &&
-        resolved.composition.sceneSlice.some(sceneDeclaresAudio);
-      if (gateApplies && options.audioUnlockAdapter === undefined) {
+      // PUL-F030 / ADR-029: resolve the present-mode audio unlock
+      // gate up front. The helper returns `'fail-loud'` when the gate
+      // applies but no adapter is supplied (workbench-bootstrap
+      // defect — the gate IS the structural defense), `null` when
+      // the gate does not apply or there is no composition, and a
+      // built unlock gate otherwise.
+      const gateOrFailure = resolveUnlockGate(target, resolved);
+      if (gateOrFailure === 'fail-loud') {
         resetStageAttrs();
         surfaceError(
           new Error(
@@ -1320,13 +1345,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         );
         return;
       }
-      const unlockGate: UnlockGate | null =
-        gateApplies &&
-        options.audioUnlockAdapter !== undefined &&
-        resolved.composition !== undefined
-          ? buildUnlockGate(options.audioUnlockAdapter, resolved.composition)
-          : null;
-      load = buildLoad(runnable, target, unlockGate);
+      load = buildLoad(runnable, target, gateOrFailure);
     }
     if (load === null) return;
     inFlight = load;

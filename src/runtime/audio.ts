@@ -285,9 +285,8 @@ export function createHowlerAudioEngine(): AudioEngine {
       // Branch 2: HTML5 audio fallback. Howler will play sounds via
       // `<audio>` elements, which are subject to autoplay policy too.
       if (howlerHandle.usingWebAudio === false) {
-        const AudioCtor = (
-          globalThis as unknown as { Audio?: { new (src?: string): HTMLAudioElement } }
-        ).Audio;
+        type AudioCtor = new (src?: string) => HTMLAudioElement;
+        const AudioCtor = (globalThis as unknown as { Audio?: AudioCtor }).Audio;
         if (AudioCtor === undefined) {
           throw new Error(
             'audio unlock: Howler is in HTML5 mode but globalThis.Audio is unavailable — cannot satisfy autoplay policy',
@@ -318,7 +317,7 @@ export function createHowlerAudioEngine(): AudioEngine {
         );
       }
       if (typeof ctx.resume !== 'function') {
-        throw new Error('audio unlock: Howler.ctx.resume is not a function');
+        throw new TypeError('audio unlock: Howler.ctx.resume is not a function');
       }
       await ctx.resume();
     },

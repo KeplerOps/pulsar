@@ -201,7 +201,7 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
   createButton: () => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.setAttribute('data-pulsar-audio-unlock', 'gesture');
+    button.dataset.pulsarAudioUnlock = 'gesture';
     button.textContent = 'Start presentation';
     return button;
   },

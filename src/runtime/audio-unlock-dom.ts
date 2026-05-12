@@ -90,6 +90,63 @@ export interface DomAudioUnlockHost {
  *  - The adapter never receives raw scene objects, source URLs, or
  *    Howler handles — only the bounded {@link AudioUnlockContext}.
  */
+/**
+ * Per-invocation state the gate keeps so the click/abort race stays
+ * coherent across the async `gate.unlock()` await. Hoisted to module
+ * scope so the gate adapter's nested-function depth stays under
+ * Sonar's S2004 4-level limit.
+ */
+interface GateState {
+  readonly button: UnlockButtonElement;
+  readonly gate: AudioUnlockContext;
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+  readonly onClick: () => void;
+  readonly onAbort: () => void;
+  settled: boolean;
+}
+
+function cleanup(state: GateState): void {
+  state.button.removeEventListener('click', state.onClick);
+  state.gate.signal.removeEventListener('abort', state.onAbort);
+  state.button.remove();
+}
+
+function onUnlockResolved(state: GateState): void {
+  if (state.settled) return;
+  state.settled = true;
+  cleanup(state);
+  state.resolve();
+}
+
+function onUnlockRejected(state: GateState, err: unknown): void {
+  if (state.settled) return;
+  state.settled = true;
+  cleanup(state);
+  state.reject(err instanceof Error ? err : new Error(String(err)));
+}
+
+function onAbortFired(state: GateState): void {
+  if (state.settled) return;
+  state.settled = true;
+  cleanup(state);
+  state.reject(new Error('audio unlock gate: navigation aborted before unlock completed'));
+}
+
+// Codex review cycle 1 (one-off "abort after the click no longer
+// cancels the unlock adapter"): do NOT set `settled = true` inside
+// `onClick` — keep the abort race active across the `gate.unlock()`
+// await so a supersession during `AudioContext.resume()` rejects
+// promptly. The unlock resolution callback bails on `settled` and
+// never resolves the navigation that has already been superseded.
+function onClickFired(state: GateState): void {
+  if (state.settled) return;
+  state.gate.unlock().then(
+    () => onUnlockResolved(state),
+    (err: unknown) => onUnlockRejected(state, err),
+  );
+}
+
 export function createDomAudioUnlockAdapter(host: DomAudioUnlockHost): AudioUnlockAdapter {
   return (gate: AudioUnlockContext) =>
     new Promise<void>((resolve, reject) => {
@@ -104,44 +161,17 @@ export function createDomAudioUnlockAdapter(host: DomAudioUnlockHost): AudioUnlo
         return;
       }
       const button = host.createButton();
-      let settled = false;
-      const cleanup = (): void => {
-        button.removeEventListener('click', onClick);
-        gate.signal.removeEventListener('abort', onAbort);
-        button.remove();
+      const state: GateState = {
+        button,
+        gate,
+        resolve,
+        reject,
+        settled: false,
+        onClick: () => onClickFired(state),
+        onAbort: () => onAbortFired(state),
       };
-      // Codex review cycle 1 (one-off "abort after the click no longer
-      // cancels the unlock adapter"): do NOT set `settled = true`
-      // inside `onClick` — keep the abort race active across the
-      // `gate.unlock()` await so a supersession during
-      // `AudioContext.resume()` rejects promptly. The unlock
-      // resolution then-callback bails on `settled` and never resolves
-      // the navigation that has already been superseded.
-      function onClick(): void {
-        if (settled) return;
-        gate.unlock().then(
-          () => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve();
-          },
-          (err: unknown) => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            reject(err instanceof Error ? err : new Error(String(err)));
-          },
-        );
-      }
-      function onAbort(): void {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error('audio unlock gate: navigation aborted before unlock completed'));
-      }
-      button.addEventListener('click', onClick, { once: true });
-      gate.signal.addEventListener('abort', onAbort, { once: true });
+      button.addEventListener('click', state.onClick, { once: true });
+      gate.signal.addEventListener('abort', state.onAbort, { once: true });
       host.mount(button);
     });
 }
