@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Screenshot determinism contract — PUL-Q001 / ADR-007 — in
+  `docs/adrs/007-browser-workbench.md`, `.gc/plan-rules.md`, and
+  `tests/runtime/screenshot-determinism-source.test.ts`: ADR-007 gains
+  a `### Screenshot determinism contract` section recording the
+  runtime-level byte-identical-rendering rule for `mode=screenshot`
+  (URL-parsing and mode validation stay in the workbench/runtime
+  layer, scenes do not parse query strings or invent screenshot-mode
+  flags, scene/composition/beat/asset/cleanup contracts come from
+  ADR-002, timeline state runs through ADR-003's GSAP integration
+  with screenshot freezing at the addressed frame, audio stays silent
+  through ADR-004's service, assets and fonts must be declared and
+  loaded before the capture-ready signal, and entropy sources —
+  `Date`, `Math.random`, `crypto.getRandomValues`, `performance.now`,
+  `requestAnimationFrame` time, storage, cookies, environment
+  variables, process arguments — are runtime-mediated or forbidden);
+  `.gc/plan-rules.md` adopts the same constraints as mandatory plan
+  rules; and a new structural-gate vitest suite (TypeScript-AST-based)
+  walks every `.ts` file under `src/` and fails when any of the
+  forbidden primitives are introduced without an inline
+  `// PUL-Q001-allow: <reason>` exemption (with a non-empty rationale)
+  on the same line. Detection is semantic and root-anchored, not
+  regex-over-text: destructuring (`const { random } = Math; …`),
+  bracket access (`Date['now']()`), global wrappers
+  (`globalThis.Math.random`, `window.localStorage`, `self.setTimeout`),
+  file-local aliases (`const m = Math; m.random()`, `const Clock =
+  Date; new Clock()`), TS wrappers (`(Math).random()`,
+  `(Date as DateCtor).now()`, `performance!.now()`), optional
+  chaining, and object-shorthand reads are caught the same way as
+  the direct spelling. Ordinary data graphs whose property chain
+  ends in a forbidden name but whose root is not an ambient global
+  (e.g., `snapshot.history.state`) do not produce false positives.
+  The scanner uses TS's tokenizer so a marker hidden inside a
+  string literal does not bypass the scan.
+  PUL-Q001
+  stays DRAFT — ADR-003's GSAP master timeline (`src/runtime/
+  timeline.ts` seeks-and-pauses under `opts.headScreenshot ===
+  'capture'`) and ADR-004's audio service (`src/runtime/scene-
+  loader.ts` builds the audio service silent under `mode=screenshot`
+  via `audioOutputPolicyFor`) have already landed, so the remaining
+  gap is the scene-side deterministic-randomness convention (a seed
+  surface on `ctx` consumed via the existing `ctx.mode ===
+  'screenshot'` seam) plus an end-to-end byte-identical-capture test
+  against rendered output. The same gap ADR-021 records as
+  condition 3 of PUL-F018's DRAFT → ACTIVE.
+
 - Present-mode audio unlock interaction — PUL-F030 / ADR-029 — in
   `src/runtime/scene.ts`, `src/runtime/audio.ts`, `src/runtime/scene-loader.ts`,
   and `src/main.ts`: a static `scene.audio: readonly string[]` field on
