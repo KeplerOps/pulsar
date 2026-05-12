@@ -35,6 +35,7 @@ import type { CompositionRegistry } from './composition-registry';
 import {
   type AssetPreloader,
   type CompositionTimelineAdapter,
+  type ResolveCompositionOptions,
   resolveComposition,
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
@@ -621,83 +622,58 @@ export async function loadSceneNavigationTarget(
     );
   }
 
-  await resolveComposition({
-    registry: createSceneRegistry(uniqueScenes),
+  await resolveComposition(
+    buildResolverOptions(createSceneRegistry(uniqueScenes), manifest, options),
+  );
+}
+
+/**
+ * Build the {@link ResolveCompositionOptions} the bridge hands to the
+ * resolver. Each optional input is spread only when supplied so a
+ * resolver that branches on `'<key>' in opts` sees absent rather than
+ * `undefined` — same idiom as the resolver's own `buildRunOptions`.
+ * Hoisted out of `loadSceneNavigationTarget` so the latter stays
+ * within Sonar's cognitive-complexity budget (S3776). Per ADR-015 /
+ * ADR-018 / ADR-019 / ADR-020 / ADR-021 / ADR-023 / ADR-004 / ADR-028
+ * each option is independent and gets its own conditional spread;
+ * `onBeatMissing` is the only paired surface (it's meaningless without
+ * `beat`), and `onPresenterError` is similarly paired with `presenter`.
+ */
+function buildResolverOptions(
+  registry: ReturnType<typeof createSceneRegistry>,
+  manifest: CompositionManifest,
+  options: LoadSceneNavigationTargetOptions,
+): ResolveCompositionOptions {
+  const beatPair =
+    options.beat === undefined
+      ? {}
+      : {
+          headBeat: options.beat,
+          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
+        };
+  const presenterPair =
+    options.presenter === undefined
+      ? {}
+      : {
+          presenter: options.presenter,
+          ...(options.onPresenterError === undefined
+            ? {}
+            : { onPresenterError: options.onPresenterError }),
+        };
+  return {
+    registry,
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
     timeline: options.timeline,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-    // `onBeatMissing` is paired with `beat` per ADR-015 — a callback
-    // without a label has no trigger condition, so dropping it when
-    // `beat` is absent prevents misuse-by-spread (e.g. a caller
-    // accidentally passing `onBeatMissing` with no `beat`).
-    ...(options.beat === undefined
-      ? {}
-      : {
-          headBeat: options.beat,
-          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
-        }),
-    // `repeat` is independent of `beat` per ADR-018: a URL like
-    // `?scene=x&mode=loop` (no beat) and `?scene=x&beat=hook&mode=loop`
-    // (beat + loop) are both valid. Spread `headRepeat` only when the
-    // caller supplied it so a runner that branches on `'repeat' in
-    // input` sees an absent key rather than `undefined`.
+    ...beatPair,
     ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
-    // `hold` is independent of `beat` and `repeat` per ADR-019: a URL
-    // like `?scene=x&mode=paused` (no beat, no loop) is valid, and so
-    // is `?scene=x&beat=hook&mode=paused` (the runner's policy
-    // decides which wins — ADR-019 records that `hold` wins over
-    // `beat` for paused mode). Spread `headHold` only when the
-    // caller supplied it so a runner that branches on `'hold' in
-    // input` sees an absent key rather than `undefined`.
     ...(options.hold === undefined ? {} : { headHold: options.hold }),
-    // `cueGate` is independent of `beat`, `repeat`, and `hold` per
-    // ADR-020: a URL like `?scene=x&mode=scrub` (no beat) is valid,
-    // and so is `?scene=x&beat=hook&mode=scrub` (the natural
-    // scrub-to-named-beat path PUL-F017's "to named beats" clause
-    // anticipates). Spread `headCueGate` only when the caller
-    // supplied it so a runner that branches on `'cueGate' in input`
-    // sees an absent key rather than `undefined`.
     ...(options.cueGate === undefined ? {} : { headCueGate: options.cueGate }),
-    // `screenshot` is independent of `beat`, `repeat`, `hold`, and
-    // `cueGate` per ADR-021: a URL like `?scene=x&mode=screenshot`
-    // (no beat) is valid (renders at first frame), and so is
-    // `?scene=x&beat=midpoint&mode=screenshot` (the natural
-    // deterministic-frame-capture-at-named-beat path PUL-F018
-    // names directly). Spread `headScreenshot` only when the
-    // caller supplied it so a runner that branches on
-    // `'screenshot' in input` sees an absent key rather than
-    // `undefined`.
     ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
-    // `presenter` is independent of `beat`, `repeat`, `hold`,
-    // `cueGate`, and `screenshot` per ADR-023: presenter input is
-    // only valid under `mode=present` (the loader scopes delivery),
-    // and that mode has no head-only structural promise to defend.
-    // Spread `presenter` only when the caller supplied it so a
-    // runner that branches on `'presenter' in input` sees an absent
-    // key rather than `undefined`. The resolver forwards it to
-    // EVERY scene's run input (NOT head-only) — mode=present runs
-    // the full slice and presenter commands act on whichever scene
-    // is active.
-    ...(options.presenter === undefined ? {} : { presenter: options.presenter }),
-    // `onPresenterError` is paired with `presenter` per ADR-023 —
-    // a sink without a controller has nothing to surface
-    // diagnostics from. Drop the sink when no presenter is
-    // supplied; otherwise spread it so the per-scene wrapper inside
-    // the resolver routes its boundary diagnostics through the
-    // loader's `onError` channel.
-    ...(options.presenter === undefined || options.onPresenterError === undefined
-      ? {}
-      : { onPresenterError: options.onPresenterError }),
-    // `onSceneCleaned` (PUL-F024 / ADR-004 — the audio group teardown
-    // hook) is forwarded as-is; the loader supplies it on every
-    // navigation that runs the resolver lifecycle.
+    ...presenterPair,
     ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),
-    // `onSceneFailed` (PUL-F029 / ADR-028) is forwarded as-is so the
-    // resolver's per-scene isolation surfaces every create / timeline
-    // / cleanup failure through the loader's stage + onError plumbing
-    // without halting the active composition.
     ...(options.onSceneFailed === undefined ? {} : { onSceneFailed: options.onSceneFailed }),
-  });
+  };
 }
