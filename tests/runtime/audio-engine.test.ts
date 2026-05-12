@@ -100,6 +100,43 @@ describe('createHowlerAudioEngine (Howler boundary)', () => {
       await expect(engine.unlock()).resolves.toBeUndefined();
     });
 
+    // Idempotency on the Web Audio branch: a real-context fake records
+    // every `resume()` call. The Node `noAudio` early-return wouldn't
+    // catch a regression that breaks the Web Audio path on the second
+    // invocation, so we exercise the branch directly here.
+    it('calls AudioContext.resume() on every invocation when a Web Audio context exists', async () => {
+      const { Howler } = await import('howler');
+      const howlerHandle = Howler as unknown as {
+        ctx: AudioContext | null | undefined;
+        usingWebAudio: boolean | undefined;
+        noAudio: boolean | undefined;
+      };
+      const originalCtx = howlerHandle.ctx;
+      const originalUsing = howlerHandle.usingWebAudio;
+      const originalNo = howlerHandle.noAudio;
+      let resumeCalled = 0;
+      const fakeCtx: AudioContext = {
+        resume: () => {
+          resumeCalled += 1;
+          return Promise.resolve();
+        },
+      } as unknown as AudioContext;
+      howlerHandle.ctx = fakeCtx;
+      howlerHandle.usingWebAudio = true;
+      howlerHandle.noAudio = false;
+      try {
+        const engine = createHowlerAudioEngine();
+        await engine.unlock();
+        await engine.unlock();
+        await engine.unlock();
+        expect(resumeCalled).toBe(3);
+      } finally {
+        howlerHandle.ctx = originalCtx;
+        howlerHandle.usingWebAudio = originalUsing;
+        howlerHandle.noAudio = originalNo;
+      }
+    });
+
     // Codex review cycle 2 (one-off "Direct Howler.ctx assignment
     // bypasses Howler setup"): the cycle-1 fix pre-set `Howler.ctx`
     // directly and skipped Howler's `_setup()`, which left

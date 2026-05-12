@@ -796,6 +796,11 @@ const presentCompositionTarget = (composition: string): NavigationTarget => ({
   mode: 'present',
 });
 
+const presentCompositionSceneTarget = (composition: string, scene: string): NavigationTarget => ({
+  locator: { kind: 'composition-scene', composition, scene },
+  mode: 'present',
+});
+
 describe('scene loader — PUL-F030 audio unlock gate (ADR-029)', () => {
   describe('gate triggers', () => {
     it('awaits the unlock adapter BEFORE preload/create/timeline run, then runs lifecycle in order once the gate resolves', async () => {
@@ -1116,7 +1121,33 @@ describe('scene loader — PUL-F030 audio unlock gate (ADR-029)', () => {
       await loader.idle();
       expect(calls).toHaveLength(1);
     });
+
+    // Pin every present-mode composition-navigation shape: bare
+    // `?composition=...&mode=present`, `?composition=...&scene=...&mode=present`
+    // (id-locator), and `?composition=...&index=...&mode=present`
+    // (positional). All three should trigger the gate when the
+    // resolved slice declares audio.
+    it.each<['composition' | 'composition-scene' | 'composition-index', NavigationTarget]>([
+      ['composition', presentCompositionTarget('show')],
+      ['composition-scene', presentCompositionSceneTarget('show', 'a')],
+      ['composition-index', presentTarget('show', 0)],
+    ])('invokes the adapter for present-mode locator kind=%s', async (_kind, target) => {
+      const audio = recordingAudioEngine();
+      const a = audioScene('a');
+      const { adapter, calls } = buildRecordingUnlockAdapter('resolve');
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([a]),
+        compositions: createCompositionRegistry([{ id: 'show', manifest: ['a'] }]),
+        stage: null,
+        buildCtx: stubCtx,
+        createPreloader: () => () => Promise.resolve(),
+        timeline: noopTimeline,
+        audioEngine: audio.engine,
+        audioUnlockAdapter: adapter,
+      });
+      await loader.handle(target);
+      await loader.idle();
+      expect(calls).toHaveLength(1);
+    });
   });
 });
-// Reference presentTarget so it's exercised by composition-index path tests if added later.
-void presentTarget;
