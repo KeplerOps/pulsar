@@ -84,6 +84,47 @@ The runtime supports the following modes:
 Modes are explicit, addressable, and orthogonal to navigation: any
 scene + beat target works in any mode that makes sense for that target.
 
+### Screenshot determinism contract
+
+`mode=screenshot` is a runtime-level capture contract. For a fixed code
+revision and normalized workbench URL, reloads on the same browser engine
+and platform must produce byte-identical rendered output.
+
+The runtime owns that guarantee:
+
+- URL parsing, target resolution, mode validation, and error surfacing
+  stay in the workbench/runtime layer. Scenes must not parse query
+  strings or invent screenshot-mode flags.
+- Scene identity, composition entries, beats, assets, captions, and
+  cleanup keep using the scene/composition contracts from
+  [ADR-002](002-scene-registry-and-compositions.md).
+- Timeline state is driven through the runtime's GSAP integration from
+  [ADR-003](003-gsap-timeline-engine.md). Screenshot mode freezes at the
+  addressed frame; it does not wait for wall-clock animation.
+- Audio is silent through the runtime audio service from
+  [ADR-004](004-howler-audio-engine.md). Scenes do not special-case raw
+  `<audio>` playback for screenshots.
+- Assets, including fonts, must be declared and loaded through the
+  runtime preflight before the capture-ready signal. Remote mutable
+  assets, cache-race-dependent ordering, and undeclared font loading are
+  not compatible with byte-identical output.
+- Entropy sources are runtime-mediated. Scene code must not read
+  `Date`, `Math.random`, `crypto.getRandomValues`, `performance.now`,
+  `requestAnimationFrame` time, storage state, cookies, environment
+  variables, or process arguments to influence screenshot output.
+- Any deterministic seed is derived only from the normalized target and
+  explicit screenshot options. It is not stored in local storage,
+  cookies, or ambient process state.
+- Runtime diagnostics use the existing navigation/error surface. Error
+  messages must identify invalid public inputs without echoing secrets,
+  environment values, cookies, headers, full URLs containing credentials,
+  or raw scene payloads.
+
+If screenshot variants are needed later (viewport profile, density,
+theme, locale, capture frame), add them as validated screenshot options
+beside the existing workbench URL grammar. Do not add per-scene capture
+switches or a second screenshot schema.
+
 ### Agent contract
 
 Coding agents can rely on the URL grammar and modes as a stable
