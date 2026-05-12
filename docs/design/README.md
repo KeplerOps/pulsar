@@ -9,6 +9,9 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [positioning-and-landscape.md](positioning-and-landscape.md) | Category, adjacent OSS projects, differentiation, strategic risks. |
 | [pul-p002-validation-ci-preflight.md](pul-p002-validation-ci-preflight.md) | Guardrails for gating pull-request CI on the canonical runtime validation pass. |
 | [pul-p003-adr-format-preflight.md](pul-p003-adr-format-preflight.md) | Guardrails for keeping ADR markdown and Ground Control ADR records aligned without duplicate schemas or workflow logic. |
+| [pul-a001-timeline-library-encapsulation-preflight.md](pul-a001-timeline-library-encapsulation-preflight.md) | Guardrails for statically enforcing scene timeline-library encapsulation through the runtime adapter and scene context. |
+| [pul-a002-a006-import-bans-preflight.md](pul-a002-a006-import-bans-preflight.md) | Cluster-level guardrails for the PUL-A002..A006 source-policy gates (audio, rendering, export, slide-framework bans plus the PUL-A005 declarative-manifest shape rule). |
+| [pul-q007-runtime-code-execution-preflight.md](pul-q007-runtime-code-execution-preflight.md) | Guardrails for statically banning runtime code execution outside the published bundle. |
 | [pul-f013-present-mode-preflight.md](pul-f013-present-mode-preflight.md) | Guardrails for implementing default `mode=present` behavior. |
 | [pul-f014-standalone-mode-preflight.md](pul-f014-standalone-mode-preflight.md) | Guardrails for implementing isolated `mode=standalone` behavior. |
 | [pul-f015-loop-mode-preflight.md](pul-f015-loop-mode-preflight.md) | Guardrails for implementing repeated `mode=loop` scene-timeline playback. |
