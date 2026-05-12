@@ -232,13 +232,18 @@ describe('PUL-A002 — audio library encapsulation (source scan)', () => {
       expect(scanForA002(src, 'src/scenes/x.ts')).toEqual([]);
     });
 
-    it('does NOT flag a local class or function named `Audio`', () => {
+    it('still flags `new Audio()` when a local class `Audio` shadows the global (known false positive — name-based resolution)', () => {
+      // A local `Audio` shadows the global at runtime, but the scanner
+      // resolves identifiers by name, not by symbol — so the AST visit
+      // still matches `new Audio()`. This test pins that behavior
+      // explicitly: the scanner DOES emit a finding for the local-
+      // class case. The false-positive surface is bounded (nobody
+      // writes a class named `Audio` in a Pulsar scene); the
+      // line-scoped exemption marker is the documented escape hatch
+      // if this edge case fires. The test name reflects what the
+      // assertion actually verifies, not what an ideal symbol-aware
+      // scanner would do.
       const src = 'class Audio { play() {} }; const x = new Audio();';
-      // A local `Audio` shadows the global; AST visit will still match
-      // `new Audio()` because we resolve by name, not by symbol. The
-      // false-positive surface here is bounded: nobody writes a class
-      // named `Audio` in a Pulsar scene. The exemption marker is the
-      // documented escape hatch when this edge case fires.
       expect(scanForA002(src, 'src/scenes/x.ts').map((f) => f.label)).toContain(
         'new Audio() (scene constructs HTMLAudioElement)',
       );
