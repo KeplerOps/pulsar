@@ -59,6 +59,8 @@ describe('PUL-A001 — timeline library encapsulation (source scan)', () => {
       ["import type { Tween } from 'gsap';", '(type-only import)'],
       ["export { gsap } from 'gsap';", '(re-export)'],
       ["export * from 'gsap';", '(re-export)'],
+      ["import gsap = require('gsap');", '(import equals require)'],
+      ["import gsap = require('gsap/Draggable');", '(import equals require)'],
     ])('flags `%s` %s', (source, suffix) => {
       const findings = scanForA001(source, 'src/scenes/x.ts');
       expect(findings).toHaveLength(1);

