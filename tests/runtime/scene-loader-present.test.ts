@@ -1021,6 +1021,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
           muted = m;
         },
         isMasterMuted: () => muted,
+        unlock: () => Promise.resolve(),
       };
     };
 

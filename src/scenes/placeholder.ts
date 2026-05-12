@@ -79,6 +79,7 @@ export const placeholderScene: SceneModule = {
   tags: ['placeholder'],
   assets: [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,

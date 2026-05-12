@@ -59,6 +59,7 @@ import {
   buildPrompterScript,
 } from './prompter';
 import type { SceneRegistry } from './registry';
+import { sceneDeclaresAudio } from './scene';
 import {
   type SceneNavigationTarget,
   loadSceneNavigationTarget,
@@ -281,7 +282,84 @@ export interface SceneLoaderOptions {
    * via `data-pulsar-navigation-error` regardless of this hook.
    */
   readonly onError?: (err: unknown) => void;
+  /**
+   * PUL-F030 / ADR-029: workbench-supplied unlock adapter that collects
+   * one explicit user gesture and resolves once browser autoplay policy
+   * is satisfied for a present-mode composition that declares audio.
+   * The loader invokes the adapter BEFORE asset preload, scene
+   * `create(ctx)`, scene `timeline(ctx)`, and master timeline playback
+   * — so a present-mode composition cannot begin with a suspended
+   * `AudioContext` mid-cue. Gate semantics:
+   *
+   *  - Triggered when `effectiveMode(target) === 'present'` AND the
+   *    resolved target carries a composition slice (composition
+   *    navigation, not a direct `?scene=...&mode=present`) AND at
+   *    least one scene in `sceneSlice` declares audio statically via
+   *    {@link import('./scene').sceneDeclaresAudio} (`scene.audio`
+   *    list non-empty).
+   *  - Bypassed for every non-`present` mode (rehearsal / screenshot /
+   *    paused / scrub / loop / standalone / prompter) and for present-
+   *    mode loads that don't carry audio.
+   *  - Bound to the navigation's `AbortSignal`: supersession /
+   *    `dispose()` / popstate aborts the gate, the adapter observes
+   *    `signal.aborted`, and the lifecycle never starts.
+   *  - Adapter receives bounded semantic context only (composition id,
+   *    scene ids, signal) plus a one-shot `unlock()` callback bound to
+   *    the audio engine — never raw scene objects, source URLs,
+   *    headers, cookies, or Howler handles.
+   *  - An adapter rejection is surfaced through the existing
+   *    `onError` + `data-pulsar-navigation-error` channel without
+   *    starting lifecycle work.
+   *  - When the gate triggers but no adapter is supplied, the loader
+   *    fails loud through the same diagnostic channel — the gate IS
+   *    the structural defense PUL-F030 records, so an unwired gate is
+   *    a workbench-bootstrap defect, not an inert seam.
+   */
+  readonly audioUnlockAdapter?: AudioUnlockAdapter;
 }
+
+/**
+ * PUL-F030 / ADR-029: semantic context handed to the workbench-supplied
+ * unlock adapter. The adapter MUST NOT receive raw scene objects, source
+ * URLs, scheme parsers, Howler handles, request headers, cookies, or
+ * any payload outside this shape — the gate is the structural defense,
+ * and the workbench gesture surface only needs bounded identifiers and
+ * a callback into the audio boundary.
+ */
+export interface AudioUnlockContext {
+  /** Composition id (from the resolved navigation target). */
+  readonly compositionId: string;
+  /**
+   * Scene ids in the resolved composition slice, in playback order.
+   * Lets the workbench prompt copy (when it lands) reflect what is
+   * about to play without exposing scene objects or URLs.
+   */
+  readonly sceneIds: readonly string[];
+  /**
+   * Navigation `AbortSignal`. Adapters that show a gesture surface
+   * MUST listen for abort and reject (or resolve cleanly without
+   * starting playback) so a superseded navigation does not start the
+   * old composition after the user finally clicks.
+   */
+  readonly signal: AbortSignal;
+  /**
+   * Audio-boundary unlock callback bound to the runtime audio engine.
+   * The adapter calls this AFTER collecting the user gesture; the
+   * engine resumes its `AudioContext` so subsequent playback satisfies
+   * browser autoplay policy. Idempotent.
+   */
+  readonly unlock: () => Promise<void>;
+}
+
+/**
+ * PUL-F030 / ADR-029: signature of the workbench-supplied unlock
+ * adapter. Resolves when the gate is satisfied (engine unlocked, the
+ * navigation may proceed); rejects when the user dismissed the gesture
+ * or another error prevents unlock. The loader awaits the returned
+ * promise BEFORE running asset preload / scene lifecycle for the
+ * present-mode composition.
+ */
+export type AudioUnlockAdapter = (gate: AudioUnlockContext) => Promise<void>;
 
 /**
  * Returned by {@link createSceneLoader}. Each call to `handle(target)`
@@ -348,18 +426,27 @@ function isPureAbort(err: unknown, signal: AbortSignal): boolean {
 
 /**
  * The audio source URLs the resolved (possibly head-truncated) slice
- * declared — every scene's `assets` in the slice (just the head scene's
- * for a bare `kind: 'scene'` target, the full composition slice's for
- * `mode=present`). The per-navigation audio service uses this so
- * `ctx.audio.load()` can only register a URL the preloader (PUL-F005)
- * already warmed — ADR-008 #5: the only audio inventory is
- * `scene.assets`. Pure function (no closure captures), hoisted to
- * module scope so the loader factory does not recreate it per instance.
+ * declared as audio — every scene's static {@link import('./scene').SceneModule.audio}
+ * list in the slice (just the head scene's for a bare `kind: 'scene'`
+ * target, the full composition slice's for composition targets). The
+ * per-navigation audio service uses this so `ctx.audio.load()` can
+ * only register URLs the scene EXPLICITLY declared as audio — not any
+ * URL that happens to be in `scene.assets`. This makes the PUL-F030 /
+ * ADR-029 unlock-gate predicate ({@link import('./scene').sceneDeclaresAudio})
+ * AND the audio-service allowlist consistent: a scene that registers
+ * audio MUST declare it in `scene.audio`, so the present-mode unlock
+ * gate cannot be bypassed by a scene that hides its audio in `assets`
+ * (codex review, cycle 1 — class finding "audio gate can be bypassed
+ * by undeclared ctx.audio loads"). `scene.audio` is validated at the
+ * schema boundary to be a subset of `scene.assets`, so the preloader
+ * still warms every declared audio URL. Pure function (no closure
+ * captures), hoisted to module scope so the loader factory does not
+ * recreate it per instance.
  */
 function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
   return target.composition === undefined
-    ? target.scene.assets
-    : target.composition.sceneSlice.flatMap((scene) => scene.assets);
+    ? target.scene.audio
+    : target.composition.sceneSlice.flatMap((scene) => scene.audio);
 }
 
 /**
@@ -427,6 +514,21 @@ interface InFlightLoad {
 type NavigationEvent =
   | { readonly kind: 'target'; readonly target: NavigationTarget }
   | { readonly kind: 'error'; readonly err: unknown };
+
+/**
+ * PUL-F030 / ADR-029: the internal gate-prelude callback `buildLoad`
+ * invokes BEFORE the resolver lifecycle. Distinct from the public
+ * {@link AudioUnlockAdapter}: the public adapter receives a semantic
+ * composition context (composition id, scene ids, signal, unlock);
+ * this internal helper is what `buildLoad` actually awaits, with the
+ * composition context already partially-applied by `buildUnlockGate`.
+ * The adapter is workbench-supplied; the helper is the loader's
+ * internal closure over it.
+ */
+type UnlockGate = (env: {
+  readonly signal: AbortSignal;
+  readonly unlock: () => Promise<void>;
+}) => Promise<void>;
 
 export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   const { stage } = options;
@@ -741,9 +843,41 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * should bail. Hoisted out of `runTarget` so the latter stays
    * within Sonar's cognitive-complexity budget.
    */
+  /**
+   * PUL-F030 / ADR-029: build the per-navigation closure that calls
+   * the workbench-supplied unlock adapter with the composition context
+   * captured here and the navigation-bound signal + engine-bound
+   * unlock callback supplied at gate-invocation time by `buildLoad`.
+   * Partial application keeps the composition context out of the
+   * `buildLoad` body so the latter stays within Sonar's cognitive-
+   * complexity budget.
+   *
+   * Pure factory — captures only `adapter` and `composition`. The
+   * adapter receives bounded semantic context: composition id, scene
+   * ids in playback order, the navigation `AbortSignal`, and the
+   * engine-bound `unlock()` callback. It does NOT receive scene
+   * objects, source URLs, asset payloads, or Howler handles (per
+   * ADR-029's "workbench gesture surface" guardrail).
+   */
+  const buildUnlockGate = (
+    adapter: AudioUnlockAdapter,
+    composition: SceneNavigationTarget['composition'] & object,
+  ): UnlockGate => {
+    const compositionId = composition.id;
+    const sceneIds = Object.freeze(composition.sceneSlice.map((scene) => scene.id));
+    return ({ signal, unlock }) =>
+      adapter({
+        compositionId,
+        sceneIds,
+        signal,
+        unlock,
+      });
+  };
+
   const buildLoad = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
+    unlockGate: UnlockGate | null,
   ): InFlightLoad | null => {
     const controller = new AbortController();
     // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core seam.
@@ -771,8 +905,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // PUL-F024 / PUL-F026 / ADR-004: the per-navigation audio service.
     // Built over `audioEngine`, scoped to `controller.signal` (abort ⇒
     // every sound stopped + unloaded), restricted to the URLs the slice
-    // declared in `scene.assets` (ADR-008 #5 — the preloader warmed
-    // them), and with a per-mode `AudioOutputPolicy`:
+    // declared in `scene.audio` (PUL-F030 / ADR-029 — every audio entry
+    // must also be in `scene.assets` so the preloader warmed it), and
+    // with a per-mode `AudioOutputPolicy`:
     //  - `'silent'`   under `mode=screenshot` / `mode=paused` (audible
     //                 playback suppressed — ADR-019 / ADR-021).
     //  - `'log-cues'` under `mode=rehearsal` (audible playback
@@ -879,9 +1014,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ? undefined
         : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
     );
-    return {
-      controller,
-      settled: loadSceneNavigationTarget(resolved, {
+    const runLifecycle = (): Promise<void> =>
+      loadSceneNavigationTarget(resolved, {
         ctx,
         preloadAssets,
         timeline: options.timeline,
@@ -909,7 +1043,32 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         // a stage attribute entry + `onError` call without halting
         // the active composition.
         onSceneFailed,
-      }),
+      });
+    // PUL-F030 / ADR-029: when the gate applies, the settled promise
+    // begins with the adapter await — the lifecycle runs only after
+    // unlock succeeds AND the navigation has not been aborted. The
+    // gate's signal IS the navigation signal, so supersession /
+    // dispose / popstate aborts the gate; adapters that respect the
+    // signal can reject deterministically. The audio service / ctx /
+    // preloader are constructed BEFORE the gate (above), but none of
+    // them touches the network or DOM until `loadSceneNavigationTarget`
+    // calls `preloadAssets(scene)` and `create(ctx)` — so the gate
+    // running first preserves the structural invariant "no lifecycle
+    // work before unlock."
+    const settled =
+      unlockGate === null
+        ? runLifecycle()
+        : (async (): Promise<void> => {
+            await unlockGate({
+              signal: controller.signal,
+              unlock: () => audioEngine.unlock(),
+            });
+            if (controller.signal.aborted) return;
+            return runLifecycle();
+          })();
+    return {
+      controller,
+      settled,
       silent: false,
       audio,
       presenterAbort,
@@ -1140,7 +1299,34 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       load = buildPrompterLoad(resolved);
     } else {
       const runnable = applySingleSceneSlice(resolved, target);
-      load = buildLoad(runnable, target);
+      // PUL-F030 / ADR-029: decide whether the present-mode audio
+      // unlock gate applies to this navigation and resolve the adapter
+      // up front. The gate triggers only when (a) the effective mode
+      // is 'present', (b) the resolved target carries a composition
+      // slice, and (c) at least one scene in that slice declares
+      // audio. When the gate applies but no adapter is supplied, the
+      // loader fails loud — the gate IS the structural defense for
+      // PUL-F030, so an unwired gate is a workbench-bootstrap defect.
+      const gateApplies =
+        effectiveMode(target) === 'present' &&
+        resolved.composition !== undefined &&
+        resolved.composition.sceneSlice.some(sceneDeclaresAudio);
+      if (gateApplies && options.audioUnlockAdapter === undefined) {
+        resetStageAttrs();
+        surfaceError(
+          new Error(
+            'audio unlock gate: present-mode composition declares audio but no audioUnlockAdapter was supplied — workbench bootstrap must wire one to satisfy PUL-F030 / ADR-029',
+          ),
+        );
+        return;
+      }
+      const unlockGate: UnlockGate | null =
+        gateApplies &&
+        options.audioUnlockAdapter !== undefined &&
+        resolved.composition !== undefined
+          ? buildUnlockGate(options.audioUnlockAdapter, resolved.composition)
+          : null;
+      load = buildLoad(runnable, target, unlockGate);
     }
     if (load === null) return;
     inFlight = load;

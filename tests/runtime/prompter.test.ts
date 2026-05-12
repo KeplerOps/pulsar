@@ -25,6 +25,7 @@ const buildScene = (opts: BuildSceneOpts): SceneModule => ({
   tags: [],
   assets: [],
   captions: opts.captions ?? [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,

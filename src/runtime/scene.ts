@@ -75,6 +75,26 @@ export interface SceneModule {
   tags: readonly string[];
   assets: readonly string[];
   captions: readonly Caption[];
+  /**
+   * Static audio-declaration list (PUL-F030 / ADR-029). Names the
+   * subset of `assets` that are audio sources. An empty array means
+   * "this scene declares no audio" — the loader/workbench unlock
+   * gate, the validation pass (PUL-F028), and future authoring lints
+   * all consult the same {@link sceneDeclaresAudio} predicate built
+   * over this field, so "declares audio" never depends on file
+   * extension sniffing, MIME guesses, asset URL substrings, or
+   * runtime observation of `ctx.audio.load()`.
+   *
+   * Every entry MUST be a member of `assets` so the preloader
+   * (PUL-F005) warms it. `scene.audio` itself IS the runtime
+   * audio-source allowlist for `ctx.audio.load()` — a scene cannot
+   * register audio it did not declare here. ADR-008 #5 keeps
+   * `scene.assets` as the canonical asset inventory; PUL-F030 /
+   * ADR-029 narrows audio to this `scene.audio` subset so the
+   * present-mode unlock-gate predicate and the runtime allowlist
+   * agree on one source of truth.
+   */
+  audio: readonly string[];
   defaultNext: string | null;
   standalone: boolean;
   trailerSafe: boolean;
@@ -90,6 +110,7 @@ const REQUIRED_FIELDS = [
   'tags',
   'assets',
   'captions',
+  'audio',
   'defaultNext',
   'standalone',
   'trailerSafe',
@@ -192,6 +213,11 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
     condition: 'must be an array',
   },
   {
+    field: 'audio',
+    check: (v) => isStringArray(v.audio),
+    condition: 'must be an array of strings',
+  },
+  {
     field: 'defaultNext',
     check: (v) => isSceneIdOrNull(v.defaultNext),
     condition: `must be a kebab-case scene id (${KEBAB_IDENTIFIER_FORM}) or null`,
@@ -270,6 +296,39 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
       throw new Error(`scene ${idLabel} is invalid: ${fault}`);
     }
   }
+
+  // PUL-F030 / ADR-029 cross-field invariant: every `audio` entry must
+  // be a member of `assets`. The shape guard above accepts an
+  // arbitrary string array; this loop enforces the "audio sources
+  // reference scene.assets" rule the preflight names, so the
+  // preloader (PUL-F005) warms every declared audio URL and the audio
+  // service's allowlist accepts it (ADR-008 #5). Reported by index so
+  // a multi-entry scene's bad declaration is locatable, mirroring the
+  // caption validator's `captions[N]` envelope.
+  const assetsSet = new Set(value.assets as readonly string[]);
+  const audioList = value.audio as readonly string[];
+  for (let i = 0; i < audioList.length; i++) {
+    const entry = audioList[i] as string;
+    if (!assetsSet.has(entry)) {
+      throw new Error(
+        `scene ${idLabel} is invalid: audio[${i}] "${entry}" must be a member of scene.assets (PUL-F030 / ADR-029)`,
+      );
+    }
+  }
+}
+
+/**
+ * PUL-F030 / ADR-029: predicate the loader/workbench unlock gate, the
+ * validation pass, and future authoring lints all consult so "this
+ * scene declares audio" has one source of truth. True when the
+ * scene's static {@link SceneModule.audio} list has at least one
+ * entry. The shape and membership invariants of `audio` are
+ * established by {@link assertSceneModule} — this predicate only
+ * reads the field length, so it is safe to call on any
+ * already-validated scene module.
+ */
+export function sceneDeclaresAudio(scene: SceneModule): boolean {
+  return scene.audio.length > 0;
 }
 
 /**

@@ -94,6 +94,7 @@ const fakeEngine = (): FakeEngine => {
         masterMuted = muted;
       },
       isMasterMuted: () => masterMuted,
+      unlock: () => Promise.resolve(),
     },
   };
 };
@@ -244,7 +245,7 @@ describe('createAudioService — load (C2 register a sound)', () => {
     expect(() => service.load('d', { src: 'data:audio/wav;base64,AAAA' })).not.toThrow();
   });
 
-  describe('allowedSources — ADR-008 #5 (audio is declared in scene.assets)', () => {
+  describe('allowedSources — PUL-F030 / ADR-029 (audio is declared in scene.audio)', () => {
     it('rejects a source not in allowedSources', () => {
       const { service } = buildService({ allowedSources: ['/audio/bed.mp3'] });
       expect(() => service.load('bed', { src: '/audio/bed.mp3' })).not.toThrow();
@@ -260,7 +261,7 @@ describe('createAudioService — load (C2 register a sound)', () => {
 
     it('still applies the default scheme allowlist even when in allowedSources (defense-in-depth)', () => {
       // A weak / no-op preloader could declare a non-default-scheme URL
-      // in `scene.assets`; audio refuses it regardless because the
+      // in `scene.audio`; audio refuses it regardless because the
       // audio service runs its own scheme check on top of membership.
       const { service } = buildService({ allowedSources: ['file:///etc/passwd.mp3'] });
       expect(() => service.load('x', { src: 'file:///etc/passwd.mp3' })).toThrow(AudioSourceError);

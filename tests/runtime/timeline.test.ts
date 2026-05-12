@@ -73,6 +73,7 @@ const stubScene = (
   tags: [],
   assets: [],
   captions: [],
+  audio: [],
   defaultNext: null,
   standalone: true,
   trailerSafe: false,
