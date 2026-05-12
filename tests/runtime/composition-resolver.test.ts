@@ -15,6 +15,7 @@ import type { CompositionManifest } from '../../src/runtime/composition';
 import {
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
+  type SceneFailureEvent,
   type SceneTimelineSegment,
   resolveComposition,
 } from '../../src/runtime/composition-resolver';
@@ -121,6 +122,7 @@ interface ResolveArgs {
   readonly headCueGate?: 'monotonic-forward';
   readonly headScreenshot?: 'capture';
   readonly onSceneCleaned?: (sceneId: string) => void;
+  readonly onSceneFailed?: (event: SceneFailureEvent) => void;
 }
 
 const run = (args: ResolveArgs): Promise<void> =>
@@ -138,6 +140,7 @@ const run = (args: ResolveArgs): Promise<void> =>
     ...(args.headCueGate === undefined ? {} : { headCueGate: args.headCueGate }),
     ...(args.headScreenshot === undefined ? {} : { headScreenshot: args.headScreenshot }),
     ...(args.onSceneCleaned === undefined ? {} : { onSceneCleaned: args.onSceneCleaned }),
+    ...(args.onSceneFailed === undefined ? {} : { onSceneFailed: args.onSceneFailed }),
   });
 
 const aborted = (reason?: unknown): AbortSignal => {
@@ -253,25 +256,70 @@ describe('resolveComposition — mount phase', () => {
     expect(log).toEqual(['preload:a', 'create:a', 'cleanup:a']);
   });
 
-  it('aborts and tears down every mounted scene (including the failing one) when a create throws', async () => {
+  it('isolates a create failure: cleans the failing scene, mounts the rest, surfaces via onSceneFailed (PUL-F029)', async () => {
     const log: string[] = [];
-    await expect(
-      run({
-        scenes: [
-          recordingScene('a', log),
-          recordingScene('b', log, {
-            create: () => {
-              log.push('create:b');
-              throw new Error('create kaboom');
-            },
-          }),
-          recordingScene('c', log),
-        ],
-        manifest: ['a', 'b', 'c'],
-      }),
-    ).rejects.toThrow('composition resolution failed: scene "b" create threw: create kaboom');
-    // a + b mounted (b's create attempted) → cleaned in reverse; c never touched.
-    expect(log).toEqual(['create:a', 'create:b', 'cleanup:b', 'cleanup:a']);
+    const failed: SceneFailureEvent[] = [];
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          create: () => {
+            log.push('create:b');
+            throw new Error('create kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneFailed: (event) => failed.push(event),
+    });
+    // a creates → b create attempted then throws → b cleaned immediately →
+    // c creates → timelines for a and c → run → cleanup c, a.
+    expect(log).toEqual([
+      'create:a',
+      'create:b',
+      'cleanup:b',
+      'create:c',
+      'timeline:a',
+      'timeline:c',
+      'cleanup:c',
+      'cleanup:a',
+    ]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      phase: 'create',
+      sceneId: 'b',
+      message: 'create kaboom',
+    });
+    expect(failed[0]?.cause).toBeInstanceOf(Error);
+  });
+
+  it('rejects with an AggregateError of scene failures when no onSceneFailed callback was supplied (PUL-F029)', async () => {
+    // Back-compat path: callers that don't wire `onSceneFailed` still
+    // get a deterministic surface (instead of silent isolation) at the
+    // end of the lifecycle, so a caller never loses information.
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          create: () => {
+            throw new Error('create kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(((caught as AggregateError).errors[0] as Error).message).toBe(
+      'composition resolution failed: scene "b" create threw: create kaboom',
+    );
+    expect((caught as Error).message).toContain('1 scene failure(s)');
   });
 
   it('does not start the composition when the signal is already aborted', async () => {
@@ -367,34 +415,68 @@ describe('resolveComposition — compose phase', () => {
     expect(calls[0]?.segments).toEqual([{ id: 'a', timeline: neverSettles }]);
   });
 
-  it('aborts and tears down every mounted scene when a timeline factory throws', async () => {
+  it('isolates a timeline-factory failure: cleans the failing scene, skips its segment, plays the rest (PUL-F029)', async () => {
     const log: string[] = [];
-    await expect(
-      run({
-        scenes: [
-          recordingScene('a', log),
-          recordingScene('b', log, {
-            timeline: () => {
-              log.push('timeline:b');
-              throw new Error('timeline kaboom');
-            },
-          }),
-          recordingScene('c', log),
-        ],
-        manifest: ['a', 'b', 'c'],
-      }),
-    ).rejects.toThrow('composition resolution failed: scene "b" timeline threw: timeline kaboom');
-    // all three mounted (mount phase completed) → cleaned in reverse.
+    const failed: SceneFailureEvent[] = [];
+    const { adapter, calls } = recordingTimeline();
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          timeline: () => {
+            log.push('timeline:b');
+            throw new Error('timeline kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      timeline: adapter,
+      onSceneFailed: (event) => failed.push(event),
+    });
+    // All three mounted, b's timeline throws → b cleaned at compose time →
+    // a and c contribute segments → run → cleanup c, a (b already cleaned).
     expect(log).toEqual([
       'create:a',
       'create:b',
       'create:c',
       'timeline:a',
       'timeline:b',
-      'cleanup:c',
       'cleanup:b',
+      'timeline:c',
+      'cleanup:c',
       'cleanup:a',
     ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.segments.map((s) => s.id)).toEqual(['a', 'c']);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      phase: 'timeline',
+      sceneId: 'b',
+      message: 'timeline kaboom',
+    });
+  });
+
+  it('rejects with an AggregateError when a timeline factory throws and no onSceneFailed is supplied (PUL-F029)', async () => {
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          timeline: () => {
+            throw new Error('timeline kaboom');
+          },
+        }),
+      ],
+      manifest: ['a', 'b'],
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect(((caught as AggregateError).errors[0] as Error).message).toBe(
+      'composition resolution failed: scene "b" timeline threw: timeline kaboom',
+    );
   });
 });
 
@@ -501,7 +583,12 @@ describe('resolveComposition — cleanup phase', () => {
     expect(log.slice(-3)).toEqual(['cleanup:c', 'cleanup:b', 'cleanup:a']);
   });
 
-  it('runs every scene cleanup even if an earlier one throws, then re-raises an AggregateError', async () => {
+  it('runs every scene cleanup even if an earlier one throws, then re-raises an AggregateError (PUL-F029: cleanup failures are scene failures)', async () => {
+    // Pre-PUL-F029 the resolver lumped scene-cleanup throws and
+    // `onSceneCleaned` hook throws together as "cleanup hooks
+    // threw"; ADR-028 splits them — a scene's own `cleanup(ctx)` is a
+    // scene failure (phase: 'cleanup'), and only `onSceneCleaned`
+    // hook throws are "cleanup hook(s)" in the resolver's surface.
     const log: string[] = [];
     let caught: unknown;
     await run({
@@ -522,16 +609,14 @@ describe('resolveComposition — cleanup phase', () => {
     // c, b, a all cleaned (b threw but a still ran).
     expect(log.slice(-3)).toEqual(['cleanup:c', 'cleanup:b', 'cleanup:a']);
     expect(caught).toBeInstanceOf(AggregateError);
-    expect((caught as Error).message).toContain(
-      'composition completed but 1 cleanup hook(s) threw',
-    );
+    expect((caught as Error).message).toContain('composition completed with 1 scene failure(s)');
     expect((caught as AggregateError).errors).toHaveLength(1);
     expect(((caught as AggregateError).errors[0] as Error).message).toBe(
       'composition resolution failed: scene "b" cleanup threw: cleanup-b kaboom',
     );
   });
 
-  it('aggregates the phase error and the cleanup error(s) when both fail (phase error first)', async () => {
+  it('aggregates an isolated timeline failure and a final-cleanup failure when no onSceneFailed is supplied (PUL-F029)', async () => {
     const log: string[] = [];
     let caught: unknown;
     await run({
@@ -556,13 +641,15 @@ describe('resolveComposition — cleanup phase', () => {
     expect(caught).toBeInstanceOf(AggregateError);
     const errors = (caught as AggregateError).errors;
     expect(errors).toHaveLength(2);
-    expect((errors[0] as Error).message).toBe(
+    // The order is "scene failures first (mount/timeline), then final-phase cleanup errors."
+    const messages = errors.map((e) => (e as Error).message);
+    expect(messages).toContain(
       'composition resolution failed: scene "b" timeline threw: timeline-b kaboom',
     );
-    expect((errors[1] as Error).message).toBe(
+    expect(messages).toContain(
       'composition resolution failed: scene "a" cleanup threw: cleanup-a kaboom',
     );
-    // both scenes' cleanup attempted.
+    // Both scenes' cleanups ran — b's at compose-time, a's at the end.
     expect(log.filter((e) => e.startsWith('cleanup:')).sort()).toEqual(['cleanup:a', 'cleanup:b']);
   });
 
@@ -655,5 +742,335 @@ describe('resolveComposition — cleanup phase', () => {
     expect(messages).toContain(
       'composition resolution failed: scene "a" onSceneCleaned threw: hook-a kaboom',
     );
+  });
+});
+
+describe('resolveComposition — PUL-F029 scene-level error isolation', () => {
+  it('cascades a create failure: scene cleanup ALSO throws, both events surface via onSceneFailed', async () => {
+    const log: string[] = [];
+    const failed: SceneFailureEvent[] = [];
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          create: () => {
+            throw new Error('create kaboom');
+          },
+          cleanup: () => {
+            throw new Error('cleanup-b kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneFailed: (event) => failed.push(event),
+    });
+    // The composition still completed for a and c.
+    expect(log).toEqual([
+      'create:a',
+      // b.create threw, b.cleanup throws too (no log push from the spy),
+      'create:c',
+      'timeline:a',
+      'timeline:c',
+      'cleanup:c',
+      'cleanup:a',
+    ]);
+    expect(failed).toHaveLength(2);
+    expect(failed[0]).toMatchObject({ phase: 'create', sceneId: 'b', message: 'create kaboom' });
+    expect(failed[1]).toMatchObject({
+      phase: 'cleanup',
+      sceneId: 'b',
+      message: 'cleanup-b kaboom',
+    });
+  });
+
+  it('surfaces a final-cleanup failure via onSceneFailed and does NOT reject the resolver (PUL-F029)', async () => {
+    // PUL-F029 / ADR-028: when `onSceneFailed` is wired, the resolver
+    // fans out every per-scene failure (mount / compose / cleanup)
+    // through the callback and completes normally. Re-throwing the
+    // same information through `resolveComposition`'s return value
+    // would route the loader into its fatal navigation-error surface,
+    // which is the very behavior PUL-F029 forbids.
+    const log: string[] = [];
+    const failed: SceneFailureEvent[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log, {
+          cleanup: () => {
+            log.push('cleanup:a');
+            throw new Error('cleanup-a kaboom');
+          },
+        }),
+      ],
+      manifest: ['a'],
+      onSceneFailed: (event) => failed.push(event),
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBeUndefined();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      phase: 'cleanup',
+      sceneId: 'a',
+      message: 'cleanup-a kaboom',
+    });
+  });
+
+  it('runs the composition with zero segments when every scene fails to create (no rejection if callback wired)', async () => {
+    const log: string[] = [];
+    const failed: SceneFailureEvent[] = [];
+    const { adapter, calls } = recordingTimeline();
+    await run({
+      scenes: [
+        recordingScene('a', log, {
+          create: () => {
+            throw new Error('a kaboom');
+          },
+        }),
+        recordingScene('b', log, {
+          create: () => {
+            throw new Error('b kaboom');
+          },
+        }),
+      ],
+      manifest: ['a', 'b'],
+      timeline: adapter,
+      onSceneFailed: (event) => failed.push(event),
+    });
+    // Both scenes failed to create; adapter still runs with an empty slice;
+    // no scenes need final cleanup.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.segments).toEqual([]);
+    expect(failed.map((e) => e.sceneId)).toEqual(['a', 'b']);
+    expect(failed.every((e) => e.phase === 'create')).toBe(true);
+  });
+
+  it('preserves the cause via Error.cause on the SceneFailureEvent', async () => {
+    const cause = new Error('create kaboom');
+    const failed: SceneFailureEvent[] = [];
+    await run({
+      scenes: [
+        scene('a', {
+          create: () => {
+            throw cause;
+          },
+        }),
+      ],
+      manifest: ['a'],
+      onSceneFailed: (event) => failed.push(event),
+    });
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.cause).toBe(cause);
+  });
+
+  it('invokes onSceneCleaned for an eagerly-cleaned scene whose create threw (audio teardown invariant)', async () => {
+    // Codex review cycle 1 finding: when create/timeline throws and
+    // the resolver eagerly cleans the failing scene, the per-scene
+    // post-cleanup hook (which the loader wires to
+    // `audio.stopGroup(sceneId)` per ADR-004) MUST still fire — a
+    // scene that played grouped audio during `create` before throwing
+    // would otherwise leak that group while the surviving composition
+    // continues.
+    const log: string[] = [];
+    const cleaned: string[] = [];
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          create: () => {
+            throw new Error('boom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneCleaned: (id) => cleaned.push(id),
+      onSceneFailed: () => undefined,
+    });
+    // b was eagerly cleaned (its `cleanup` ran AND `onSceneCleaned`
+    // fired) → c was mounted and ran → final cleanup of c, a in
+    // reverse mount order. b's hook firing in the middle of the
+    // mount loop is the new invariant.
+    expect(cleaned).toEqual(['b', 'c', 'a']);
+  });
+
+  it('invokes onSceneCleaned for an eagerly-cleaned scene whose timeline threw', async () => {
+    const log: string[] = [];
+    const cleaned: string[] = [];
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          timeline: () => {
+            throw new Error('boom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneCleaned: (id) => cleaned.push(id),
+      onSceneFailed: () => undefined,
+    });
+    // All three mounted; b's timeline throws at compose-time → b is
+    // eagerly cleaned AND its hook fires → c contributes a segment →
+    // adapter runs → final cleanup of c, a (b already cleaned).
+    expect(cleaned).toEqual(['b', 'c', 'a']);
+  });
+
+  it('aggregates onSceneCleaned hook throws even when onSceneFailed is wired (hook errors are workbench bugs, not scene failures)', async () => {
+    // Codex review cycle 1 finding: when onSceneFailed is wired, the
+    // resolver fans out per-scene failures through the callback and
+    // returns normally — but a throw from `onSceneCleaned` (the
+    // workbench-supplied audio teardown hook) is NOT a scene failure
+    // and must NOT be swallowed. It aggregates into the resolver's
+    // throw regardless of `onSceneFailed`.
+    const failed: SceneFailureEvent[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [scene('a')],
+      manifest: ['a'],
+      onSceneCleaned: () => {
+        throw new Error('hook kaboom');
+      },
+      onSceneFailed: (event) => failed.push(event),
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    expect(failed).toEqual([]); // hook errors don't go through onSceneFailed
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as Error).message).toContain('1 cleanup hook(s) threw');
+    expect((caught as AggregateError).errors).toHaveLength(1);
+    expect(((caught as AggregateError).errors[0] as Error).message).toBe(
+      'composition resolution failed: scene "a" onSceneCleaned threw: hook kaboom',
+    );
+  });
+
+  it('SceneFailureEvent carries the manifest entry index (ADR-028 diagnostic contract)', async () => {
+    const failed: SceneFailureEvent[] = [];
+    await run({
+      scenes: [
+        scene('a'),
+        scene('b', {
+          create: () => {
+            throw new Error('b kaboom');
+          },
+        }),
+        scene('c', {
+          timeline: () => {
+            throw new Error('c kaboom');
+          },
+        }),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneFailed: (event) => failed.push(event),
+    });
+    const byId = new Map(failed.map((e) => [e.sceneId, e.entryIndex] as const));
+    expect(byId.get('b')).toBe(1);
+    expect(byId.get('c')).toBe(2);
+  });
+
+  it('catches a throw from onSceneFailed so it cannot break mandatory cleanup (codex review, cycle 2)', async () => {
+    // Codex review cycle 2 finding: if the diagnostic sink throws,
+    // the resolver MUST NOT let that interrupt the cleanup-then-
+    // continue invariant — a buggy logger could otherwise strand
+    // surviving scenes uncleaned. The throw is collected as a hook
+    // error (workbench bug, same shape as `onSceneCleaned` throws)
+    // and the lifecycle continues.
+    const log: string[] = [];
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log),
+        recordingScene('b', log, {
+          create: () => {
+            throw new Error('create kaboom');
+          },
+        }),
+        recordingScene('c', log),
+      ],
+      manifest: ['a', 'b', 'c'],
+      onSceneFailed: () => {
+        throw new Error('logger kaboom');
+      },
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    // The composition still completed for a and c.
+    expect(log).toEqual([
+      'create:a',
+      // b.create threw, b.cleanup ran eagerly (logging cleanup:b),
+      'cleanup:b',
+      'create:c',
+      'timeline:a',
+      'timeline:c',
+      'cleanup:c',
+      'cleanup:a',
+    ]);
+    // The logger throw aggregates as a hook error.
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as Error).message).toContain('cleanup hook(s) threw');
+    expect(
+      (caught as AggregateError).errors.some(
+        (e) =>
+          e instanceof Error && /onSceneFailed threw: logger kaboom/.test((e as Error).message),
+      ),
+    ).toBe(true);
+  });
+
+  it('re-checks the abort signal after eager cleanup so a superseded navigation does not preload the next scene (codex review, cycle 2)', async () => {
+    // Codex review cycle 2 finding: without a post-eager-cleanup abort
+    // checkpoint, a navigation aborted DURING the failed scene's
+    // cleanup would still kick off the next scene's preload + create —
+    // breaking cleanup-before-handoff. This test simulates an abort
+    // happening inside `cleanup` and pins that the next scene's
+    // preload is NOT called.
+    const log: string[] = [];
+    const controller = new AbortController();
+    const preloadAssets = (s: SceneModule): void => {
+      log.push(`preload:${s.id}`);
+    };
+    let caught: unknown;
+    await run({
+      scenes: [
+        recordingScene('a', log, {
+          create: () => {
+            throw new Error('create kaboom');
+          },
+          cleanup: () => {
+            controller.abort('navigated away');
+          },
+        }),
+        recordingScene('b', log),
+      ],
+      manifest: ['a', 'b'],
+      preloadAssets,
+      signal: controller.signal,
+    }).catch((err: unknown) => {
+      caught = err;
+    });
+    // a's preload ran; a's cleanup ran (and aborted); b's preload did NOT run.
+    expect(log).toEqual(['preload:a']);
+    expect((caught as Error).message).toContain('aborted after isolating "a" create failure');
+  });
+
+  it('preload failures are NOT scene failures: they still abort the composition (ADR-028 non-goal)', async () => {
+    // Preload errors keep their existing boundary — only create / timeline /
+    // cleanup go through the PUL-F029 isolation path.
+    const failed: SceneFailureEvent[] = [];
+    const preloadAssets = (s: SceneModule): void => {
+      if (s.id === 'b') throw new Error('preload kaboom');
+    };
+    await expect(
+      run({
+        scenes: [scene('a'), scene('b'), scene('c')],
+        manifest: ['a', 'b', 'c'],
+        preloadAssets,
+        onSceneFailed: (event) => failed.push(event),
+      }),
+    ).rejects.toThrow(
+      'composition resolution failed: scene "b" preloadAssets threw: preload kaboom',
+    );
+    expect(failed).toEqual([]);
   });
 });

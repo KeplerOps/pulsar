@@ -52,3 +52,5 @@ Each ADR includes:
 | [024](024-presenter-pause-resume.md) | Presenter Pause/Resume — Runner-Owned Transport State on the Existing Presenter Command Seam | Accepted |
 | [025](025-timeline-adapter-boundary.md) | Timeline Adapter and Composition Master — Revising the Resolution Lifecycle | Accepted (supersedes ADR-002 §Resolution + ADR-011 ordering) |
 | [026](026-named-timeline-beats.md) | Named Timeline Beats — Scene-Local Kebab Labels, Validated at Compose Time, Referenced Through the Master | Accepted |
+| [027](027-caption-timestamp-grammar.md) | Caption Timestamp Grammar — `at` Accepts a Millisecond Offset or a Beat Label, Validated at the Scene Schema Boundary | Accepted |
+| [028](028-scene-level-error-isolation.md) | Scene-Level Error Isolation | Accepted |

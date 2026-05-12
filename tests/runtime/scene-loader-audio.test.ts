@@ -266,6 +266,7 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
   it('restricts ctx.audio.load() to URLs the slice declared in scene.assets', async () => {
     const stage = buildStage();
     const audio = recordingAudioEngine();
+    const captured: unknown[] = [];
     const scene = buildScene({
       id: 'a',
       assets: ['/audio/bed.mp3'],
@@ -285,13 +286,20 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
       createPreloader: () => () => Promise.resolve(),
       timeline: noopTimeline,
       audioEngine: audio.engine,
-      onError: () => undefined,
+      onError: (err) => {
+        captured.push(err);
+      },
     });
     await loader.handle(sceneTarget('a'));
     await loader.idle();
-    const err = stage.attrs.get('data-pulsar-navigation-error');
-    expect(err).toBeDefined();
-    expect(err).toContain('typo');
+    // PUL-F029 / ADR-028: a `create(ctx)` throw is a per-scene
+    // failure, not a fatal navigation error. The diagnostic lands on
+    // the per-scene stage attribute + `onError`, NOT on the
+    // composition-wide `data-pulsar-navigation-error` surface.
+    expect(stage.attrs.has('data-pulsar-navigation-error')).toBe(false);
+    expect(stage.attrs.get('data-pulsar-scene-failures')).toBe('a:create');
+    const sceneErr = captured.find((e) => e instanceof Error && /typo/.test((e as Error).message));
+    expect(sceneErr).toBeDefined();
     // The resolver still tore the scene down (create-attempted ⇒ cleanup).
     expect(stage.attrs.get('data-cleanup-ran')).toBe('yes');
   });

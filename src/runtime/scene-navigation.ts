@@ -72,6 +72,19 @@ export interface SceneNavigationCompositionContext {
    * mid-flight).
    */
   readonly sceneSlice: readonly SceneModule[];
+  /**
+   * Index of `manifestSlice[0]` in the ORIGINAL composition manifest.
+   * Zero for `kind: 'composition'` (slice starts at index 0); for
+   * `composition-scene` and `composition-index` it is the absolute
+   * position of the addressed entry. PUL-F029 / ADR-028 needs this so
+   * a scene failure diagnostic can name the absolute composition
+   * entry the failed scene lives at, not a slice-relative index that
+   * would point operators at the wrong manifest entry. Single-scene
+   * mode truncation (`applySingleSceneSlice`) preserves it so the
+   * diagnostic stays accurate even when the slice is truncated to
+   * the head entry.
+   */
+  readonly startIndex: number;
 }
 
 /**
@@ -241,6 +254,18 @@ export interface LoadSceneNavigationTargetOptions {
    * `cleanup(ctx)` runs. Absent for callers that do not need it.
    */
   readonly onSceneCleaned?: (sceneId: string) => void;
+  /**
+   * Per-scene failure sink (PUL-F029 / ADR-028). Forwarded to
+   * {@link resolveComposition} as `onSceneFailed`; the loader wires it
+   * to (a) append `<sceneId>:<phase>` to the per-navigation stage
+   * attribute `data-pulsar-scene-failures` and (b) surface a public
+   * diagnostic through the loader's `onError` sink without serializing
+   * the raw cause (ADR-028: no raw causes, stacks, scene objects,
+   * DOM, captions, headers, cookies, env, auth values). Absent for
+   * direct bridge callers that do not need scene-level error
+   * isolation.
+   */
+  readonly onSceneFailed?: (event: import('./composition-resolver').SceneFailureEvent) => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -314,7 +339,7 @@ function resolveCompositionFromStart(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, 0);
   const sceneSlice = snapshotSceneSlice(manifestSlice, 0, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex: 0 };
 }
 
 function resolveCompositionAndScene(
@@ -349,7 +374,7 @@ function resolveCompositionAndScene(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
   const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex };
 }
 
 function resolveCompositionAndIndex(
@@ -372,7 +397,7 @@ function resolveCompositionAndIndex(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, index);
   const sceneSlice = snapshotSceneSlice(manifestSlice, index, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice };
+  return { id: compositionId, manifestSlice, sceneSlice, startIndex: index };
 }
 
 /**
@@ -425,6 +450,11 @@ function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): Scene
       id: target.composition.id,
       manifestSlice: Object.freeze([headEntry]),
       sceneSlice: Object.freeze([headScene]),
+      // PUL-F029 / ADR-028: preserve the absolute composition start
+      // index so a failure diagnostic still points operators at the
+      // right manifest entry even after the slice was truncated to
+      // its head by `mode=standalone|loop|paused|scrub|screenshot`.
+      startIndex: target.composition.startIndex,
     },
   };
 }
@@ -508,10 +538,18 @@ export function resolveSceneNavigation(
  *    Per-entry `range` and `behavior` overrides are preserved and
  *    forwarded to the runner adapter unchanged (ADR-011).
  *
- * Resolves when the lifecycle has run end-to-end; rejects with the
- * resolver's own wrapping error (`composition resolution failed: ...`)
- * when any phase throws. Cleanup runs whenever the scene was touched,
- * matching the resolver's own invariants.
+ * Resolves when the lifecycle has run end-to-end. Per PUL-F029 /
+ * ADR-028, per-scene `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)`
+ * throws are SCENE failures: when `onSceneFailed` is wired they
+ * isolate (the failing scene is eagerly cleaned up and dropped, the
+ * composition keeps playing through the surviving scenes) and the
+ * bridge resolves normally; when it is not wired they aggregate into
+ * an `AggregateError` at the end so direct callers don't lose the
+ * signal. Composition-wide failures (preload, manifest invalid,
+ * registry miss, timeline-adapter `run` rejection, signal-abort)
+ * still reject the bridge with the resolver's wrapping error
+ * (`composition resolution failed: ...`). Cleanup runs whenever the
+ * scene was touched, matching the resolver's own invariants.
  */
 export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
@@ -656,5 +694,10 @@ export async function loadSceneNavigationTarget(
     // hook) is forwarded as-is; the loader supplies it on every
     // navigation that runs the resolver lifecycle.
     ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),
+    // `onSceneFailed` (PUL-F029 / ADR-028) is forwarded as-is so the
+    // resolver's per-scene isolation surfaces every create / timeline
+    // / cleanup failure through the loader's stage + onError plumbing
+    // without halting the active composition.
+    ...(options.onSceneFailed === undefined ? {} : { onSceneFailed: options.onSceneFailed }),
   });
 }

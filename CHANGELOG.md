@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Scene-level error isolation — PUL-F029 / ADR-028 — in
+  `src/runtime/composition-resolver.ts` and `src/runtime/scene-loader.ts`:
+  a thrown `create(ctx)`, `timeline(ctx)`, or `cleanup(ctx)` is now a
+  per-scene failure, not a composition-wide abort. The resolver
+  isolates the failing scene (runs its `cleanup(ctx)` eagerly on a
+  `create` or `timeline` throw, drops it from the segment list, and
+  continues the active composition with the remaining scenes); each
+  failure is surfaced through a new structured `onSceneFailed(event)`
+  callback carrying `{ phase, sceneId, message, cause }`. The scene
+  loader wires the callback to a new `data-pulsar-scene-failures` stage
+  attribute (comma-separated `<sceneId>:<phase>` entries in encounter
+  order) and routes a sanitized `scene "<id>" failed during <phase>:
+  <describeError(cause)>` Error through its existing `onError` sink —
+  the raw `cause` is never serialized to the public surface (no
+  stacks, scene objects, DOM, captions, headers, cookies, env, or
+  auth values). The fatal `data-pulsar-navigation-error` surface
+  stays reserved for composition-wide failures (manifest invalid,
+  registry miss, preload throw, timeline-adapter `run` rejection,
+  abort wrapper). Preload, signal-abort, manifest, and adapter
+  failures keep their composition-wide semantics per ADR-028's
+  non-goals. Direct resolver callers that do not wire
+  `onSceneFailed` still get an `AggregateError` of every scene
+  failure at the end of the lifecycle so the signal is never
+  silently lost. The presenter advances past a failed scene
+  structurally — a failed scene contributes no segment, so the
+  master timeline plays through whatever survived.
+
 ### Added
 
 - Runtime validation pass — PUL-F028 / ADR-008 #7 — in

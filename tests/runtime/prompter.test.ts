@@ -100,6 +100,7 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
         id: 'full-talk',
         manifestSlice: ['intro', 'middle', 'outro'],
         sceneSlice: [intro, middle, outro],
+        startIndex: 0,
       },
     };
 
@@ -138,6 +139,7 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
         id: 'full-talk',
         manifestSlice: ['middle', 'outro'],
         sceneSlice: [middle, outro],
+        startIndex: 0,
       },
     };
 
@@ -222,6 +224,7 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
         id: 'full-talk',
         manifestSlice: [{ id: 'middle', range: 'midpoint', behavior: { hold: true } }],
         sceneSlice: [middle],
+        startIndex: 0,
       },
     };
 
@@ -248,6 +251,7 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
         id: 'full-talk',
         manifestSlice: ['scene-a', 'scene-b'],
         sceneSlice: [sceneA, sceneB],
+        startIndex: 0,
       },
     };
     const directTarget: SceneNavigationTarget = { scene: sceneA };
@@ -285,6 +289,7 @@ describe('buildPrompterScript (PUL-F019 / ADR-022)', () => {
         id: 'full-talk',
         manifestSlice: [{ id: 'middle', range: 'midpoint', behavior: { hold: true } }],
         sceneSlice: [middle],
+        startIndex: 0,
       },
     };
 
