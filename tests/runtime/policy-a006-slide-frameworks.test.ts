@@ -46,17 +46,18 @@ function scanForA006(source: string, file: string): readonly SourceFinding[] {
 describe('PUL-A006 — live runtime independent of slide frameworks (source scan)', () => {
   describe('scanner self-tests', () => {
     it.each([
-      ["import Reveal from 'reveal.js';"],
-      ["import 'reveal.js/dist/reveal.css';"],
-      ["import { Deck, Slide } from 'spectacle';"],
-      ["import * as Spectacle from 'spectacle';"],
-      ["import { Theme } from '@spectacle/theme';"],
-      ["await import('reveal.js');"],
-      ["import type { Options } from 'reveal.js';"],
-      ["export * from 'spectacle';"],
-    ])('flags %s in runtime core', (source) => {
+      ["import Reveal from 'reveal.js';", '(static import)'],
+      ["import 'reveal.js/dist/reveal.css';", '(static import)'],
+      ["import { Deck, Slide } from 'spectacle';", '(static import)'],
+      ["import * as Spectacle from 'spectacle';", '(static import)'],
+      ["import { Theme } from '@spectacle/theme';", '(static import)'],
+      ["await import('reveal.js');", '(dynamic import)'],
+      ["import type { Options } from 'reveal.js';", '(type-only import)'],
+      ["export * from 'spectacle';", '(re-export)'],
+    ])('flags `%s` %s in runtime core', (source, suffix) => {
       const findings = scanForA006(source, 'src/runtime/example.ts');
       expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(`${RULE.label} ${suffix}`);
     });
 
     it('does NOT flag a similarly-named package (whole-specifier match)', () => {
@@ -79,6 +80,17 @@ describe('PUL-A006 — live runtime independent of slide frameworks (source scan
   describe('runtime tree (current code revision)', () => {
     it('runtime-core file set is non-empty', () => {
       expect(runtimeCoreFiles().length).toBeGreaterThan(0);
+    });
+
+    it('runtime-core file set excludes `src/scenes/`', () => {
+      // Pins the scope filter so a regression that removed or
+      // inverted the filter would fail here instead of silently
+      // widening the scan. No scene currently imports a slide
+      // framework, so without this assertion the "contains no
+      // violations" check alone would not catch the scope drift.
+      const files = runtimeCoreFiles();
+      const scenePaths = files.filter((f) => f.startsWith(`${SCENES_ROOT}/`));
+      expect(scenePaths).toEqual([]);
     });
 
     it('contains no A006 violations across the runtime-core file set', () => {

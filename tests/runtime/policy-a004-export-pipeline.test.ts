@@ -49,16 +49,17 @@ function scanForA004(source: string, file: string): readonly SourceFinding[] {
 describe('PUL-A004 — live runtime independent of export pipeline (source scan)', () => {
   describe('scanner self-tests', () => {
     it.each([
-      ["import { Composition } from 'remotion';"],
-      ["import 'remotion';"],
-      ["import { renderMedia } from '@remotion/renderer';"],
-      ["import { Player } from '@remotion/player';"],
-      ["await import('remotion');"],
-      ["import type { CompositionProps } from 'remotion';"],
-      ["export * from 'remotion';"],
-    ])('flags %s in runtime core', (source) => {
+      ["import { Composition } from 'remotion';", '(static import)'],
+      ["import 'remotion';", '(static import)'],
+      ["import { renderMedia } from '@remotion/renderer';", '(static import)'],
+      ["import { Player } from '@remotion/player';", '(static import)'],
+      ["await import('remotion');", '(dynamic import)'],
+      ["import type { CompositionProps } from 'remotion';", '(type-only import)'],
+      ["export * from 'remotion';", '(re-export)'],
+    ])('flags `%s` %s in runtime core', (source, suffix) => {
       const findings = scanForA004(source, 'src/runtime/example.ts');
       expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(`${RULE.label} ${suffix}`);
     });
 
     it('does NOT flag a similarly-named package (whole-specifier match)', () => {
@@ -76,6 +77,18 @@ describe('PUL-A004 — live runtime independent of export pipeline (source scan)
   describe('runtime tree (current code revision)', () => {
     it('runtime-core file set is non-empty', () => {
       expect(runtimeCoreFiles().length).toBeGreaterThan(0);
+    });
+
+    it('runtime-core file set excludes `src/scenes/`', () => {
+      // Pins the scope filter (`!file.startsWith(SCENES_ROOT + '/')`)
+      // so a regression that removed or inverted the filter would fail
+      // here instead of silently widening the scan. Without this
+      // assertion, deleting the scope filter would still leave the
+      // "contains no violations" check green (no scene currently
+      // imports Remotion), so the scope contract has no other guard.
+      const files = runtimeCoreFiles();
+      const scenePaths = files.filter((f) => f.startsWith(`${SCENES_ROOT}/`));
+      expect(scenePaths).toEqual([]);
     });
 
     it('contains no A004 violations across the runtime-core file set', () => {

@@ -57,19 +57,20 @@ function scanForA003(source: string, file: string): readonly SourceFinding[] {
 describe('PUL-A003 — optional rendering libraries are scene-local (source scan)', () => {
   describe('scanner self-tests', () => {
     it.each([
-      ["import { Application } from 'pixi.js';"],
-      ["import { Renderer } from 'pixi.js/lib/core';"],
-      ["import * as THREE from 'three';"],
-      ["import { Scene } from 'three/src/scenes/Scene';"],
-      ["import 'phaser';"],
-      ["import Phaser from 'phaser';"],
-      ["import { Scene } from 'phaser/types/scene';"],
-      ["await import('three');"],
-      ["import type { Texture } from 'pixi.js';"],
-      ["export * from 'three';"],
-    ])('flags %s in runtime core', (source) => {
+      ["import { Application } from 'pixi.js';", '(static import)'],
+      ["import { Renderer } from 'pixi.js/lib/core';", '(static import)'],
+      ["import * as THREE from 'three';", '(static import)'],
+      ["import { Scene } from 'three/src/scenes/Scene';", '(static import)'],
+      ["import 'phaser';", '(static import)'],
+      ["import Phaser from 'phaser';", '(static import)'],
+      ["import { Scene } from 'phaser/types/scene';", '(static import)'],
+      ["await import('three');", '(dynamic import)'],
+      ["import type { Texture } from 'pixi.js';", '(type-only import)'],
+      ["export * from 'three';", '(re-export)'],
+    ])('flags `%s` %s in runtime core', (source, suffix) => {
       const findings = scanForA003(source, 'src/runtime/example.ts');
       expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(`${RULE.label} ${suffix}`);
     });
 
     it('does NOT flag a similarly-named package (whole-specifier match)', () => {
