@@ -226,10 +226,7 @@ describe('browserSupportFixtureScene', () => {
         audio: {} as never,
       }),
     ).not.toThrow();
-    expect(
-      calls,
-      'create must not mutate the stage when ownerDocument is absent',
-    ).toEqual([]);
+    expect(calls, 'create must not mutate the stage when ownerDocument is absent').toEqual([]);
   });
 
   describe.each<[label: string, ctx: unknown]>([
