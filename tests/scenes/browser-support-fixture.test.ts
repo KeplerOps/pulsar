@@ -101,7 +101,15 @@ describe('browserSupportFixtureScene', () => {
     expect(attrs?.get('data-pulsar-fixture-state')).toBe('mounted');
   });
 
-  it('returns a GSAP timeline from `timeline(ctx)` when the fixture is mounted', () => {
+  it('returns a GSAP timeline whose final `call` advances the fixture state to "ran"', () => {
+    // The stub for `tl.call(fn)` must INVOKE the callback the
+    // fixture supplies — otherwise the test would assert only that
+    // a callback was registered, not that the callback does its
+    // job (the state advancement `el.setAttribute('data-pulsar-
+    // fixture-state', 'ran')` is the observable datum the
+    // Playwright e2e gate relies on). A discarded-callback stub
+    // would pass even if the fixture's callback body were deleted
+    // (test-quality review, cycle 1).
     const stage = buildStage();
     const tlCalls: string[] = [];
     const tlStub = {
@@ -113,8 +121,9 @@ describe('browserSupportFixtureScene', () => {
         tlCalls.push('to');
         return tlStub;
       },
-      call: (_fn: () => void) => {
+      call: (fn: () => void) => {
         tlCalls.push('call');
+        fn();
         return tlStub;
       },
     };
@@ -125,6 +134,12 @@ describe('browserSupportFixtureScene', () => {
       gsap,
       audio: {} as never,
     });
+    // Pre-condition: after `create`, the fixture element exists at
+    // state `"mounted"`. A regression in `create` would surface
+    // here before the `timeline` callback's side-effect is
+    // measured.
+    expect(stage.children[0]?.attrs.get('data-pulsar-fixture-state')).toBe('mounted');
+
     const result = browserSupportFixtureScene.timeline({
       stage: stage.element,
       mode: 'present',
@@ -133,6 +148,11 @@ describe('browserSupportFixtureScene', () => {
     });
     expect(result).toBe(tlStub);
     expect(tlCalls).toEqual(['set', 'to', 'call']);
+    // Post-condition: the `tl.call(...)` callback (now actually
+    // invoked by the stub) ran the fixture's state-advance
+    // setAttribute. Deleting or changing the callback body in the
+    // fixture would fail this assertion.
+    expect(stage.children[0]?.attrs.get('data-pulsar-fixture-state')).toBe('ran');
   });
 
   it('returns null from `timeline(ctx)` when no fixture element is mounted', () => {
