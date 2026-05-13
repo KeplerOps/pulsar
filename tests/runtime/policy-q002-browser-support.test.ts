@@ -168,13 +168,24 @@ describe('PUL-Q002 — browser support structural gate', () => {
       ).toBeTruthy();
     });
 
-    it('declares a test:browsers script that runs playwright test', () => {
+    it('declares a test:browsers script that runs playwright test against ALL engines', () => {
       const script = pkg.scripts?.['test:browsers'];
       expect(script, 'package.json must declare a test:browsers script').toBeTruthy();
       expect(
         script,
         'test:browsers must invoke playwright test (no shell substitution, no ad hoc runner)',
       ).toMatch(/^playwright test(\s|$)/);
+      // A `--project=<engine>` flag on the script would restrict the
+      // run to a single engine and silently drop the other two from
+      // the gate (test-quality review, cycle 1). Cross-engine coverage
+      // is the entire point of PUL-Q002, so the script must not pin a
+      // project subset. Per-engine local runs are still possible via
+      // `pnpm exec playwright test --project=<engine>`; the gate
+      // script is reserved for the full matrix.
+      expect(
+        script,
+        'test:browsers must NOT pin a Playwright project subset — the gate must exercise all three engines',
+      ).not.toMatch(/--project\b/);
     });
   });
 
