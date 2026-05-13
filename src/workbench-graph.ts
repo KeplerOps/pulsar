@@ -33,9 +33,19 @@
 import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
 import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
+import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
 import { placeholderScene } from './scenes/placeholder';
 
-export const WORKBENCH_SCENES: readonly SceneModule[] = [placeholderScene];
+// PUL-Q002 / ADR-030: the browser-support fixture scene is registered
+// alongside the placeholder so the PUL-Q002 CI gate can exercise a
+// real GSAP timeline + present-mode completion + cleanup path. It is
+// not part of the default composition — the gate addresses it
+// directly via `?scene=browser-support-fixture` (see
+// `tests-e2e/browser-support.spec.ts`).
+export const WORKBENCH_SCENES: readonly SceneModule[] = [
+  placeholderScene,
+  browserSupportFixtureScene,
+];
 
 export const WORKBENCH_COMPOSITIONS: readonly CompositionRegistryEntry[] = [
   { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
