@@ -76,3 +76,8 @@ archive/
 
 # Claude Code harness runtime state (not implementation artifacts)
 .claude/scheduled_tasks.lock
+
+# Playwright (PUL-Q002 browser-support gate artifacts)
+playwright-report/
+test-results/
+.playwright/
