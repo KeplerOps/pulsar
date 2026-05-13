@@ -153,6 +153,43 @@ describe('PUL-Q002 — browser support structural gate', () => {
         `tests-e2e/browser-support.spec.ts must import from '@playwright/test' (found imports: ${JSON.stringify(imports)})`,
       ).toBe(true);
     });
+
+    it('declares at least one `test(...)` call so Playwright has a test to run', () => {
+      // A spec gutted to just the `@playwright/test` import would
+      // satisfy the import assertion above but contribute no
+      // executed test — Playwright would still exit 0 with "no
+      // tests found," so CI could pass with the gate effectively
+      // disabled (test-quality review). Walk the AST for at least
+      // one call expression whose callee is `test` or `test.<name>`
+      // (`test.describe`, `test.only`, `test.skip`, etc.) so the
+      // structural assertion proves there is real test surface.
+      const text = readFileSync(PLAYWRIGHT_SPEC_PATH, 'utf-8');
+      const source = parseSource(text, 'tests-e2e/browser-support.spec.ts');
+      let foundTestCall = false;
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          if (ts.isIdentifier(callee) && callee.text === 'test') {
+            foundTestCall = true;
+          } else if (
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === 'test'
+          ) {
+            // `test.describe(...)`, `test.only(...)`, `test.skip(...)`,
+            // etc. — the per-test runners still register at least one
+            // executed test under `test.describe` blocks.
+            foundTestCall = true;
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      expect(
+        foundTestCall,
+        'tests-e2e/browser-support.spec.ts must declare at least one `test(...)` (or `test.<name>(...)`) call — a spec without test declarations runs nothing in CI',
+      ).toBe(true);
+    });
   });
 
   describe('package.json wiring', () => {
@@ -186,6 +223,16 @@ describe('PUL-Q002 — browser support structural gate', () => {
         script,
         'test:browsers must NOT pin a Playwright project subset — the gate must exercise all three engines',
       ).not.toMatch(/--project\b/);
+      // A `--config=<other>.ts` flag would route the run to a
+      // different Playwright config — circumventing the 3-engine
+      // `playwright.config.ts` whose project matrix is separately
+      // verified by this gate (test-quality review). The script must
+      // resolve to the repo-root `playwright.config.ts` so the
+      // structural assertion is load-bearing.
+      expect(
+        script,
+        'test:browsers must NOT override the Playwright config path — the gate must run against the verified playwright.config.ts',
+      ).not.toMatch(/--config\b/);
     });
   });
 
