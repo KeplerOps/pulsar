@@ -199,11 +199,24 @@ describe('browserSupportFixtureScene', () => {
     // mutation; the create hook silently no-ops. This pins the
     // codex-cycle-2 fix: routing DOM allocation through
     // `stage.ownerDocument` rather than the ambient `document`
-    // global.
+    // global. We track every method call on the stage stub so
+    // "no DOM mutation" is asserted structurally (`.not.toThrow()`
+    // alone would let a regression that called
+    // `stage.appendChild(somethingFromDocument)` pass — the
+    // appendChild stub would silently swallow it; test-quality
+    // review, cycle 1).
+    const calls: { name: string; args: unknown[] }[] = [];
     const minimalStage = {
-      setAttribute: () => undefined,
-      removeAttribute: () => undefined,
-      appendChild: () => undefined,
+      setAttribute: (...args: unknown[]) => {
+        calls.push({ name: 'setAttribute', args });
+      },
+      removeAttribute: (...args: unknown[]) => {
+        calls.push({ name: 'removeAttribute', args });
+      },
+      appendChild: (...args: unknown[]) => {
+        calls.push({ name: 'appendChild', args });
+        return undefined;
+      },
     };
     expect(() =>
       browserSupportFixtureScene.create({
@@ -213,6 +226,10 @@ describe('browserSupportFixtureScene', () => {
         audio: {} as never,
       }),
     ).not.toThrow();
+    expect(
+      calls,
+      'create must not mutate the stage when ownerDocument is absent',
+    ).toEqual([]);
   });
 
   describe.each<[label: string, ctx: unknown]>([
