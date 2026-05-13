@@ -85,6 +85,15 @@ describe('browserSupportFixtureScene', () => {
     expect(browserSupportFixtureScene.assets).toEqual([]);
     expect(browserSupportFixtureScene.captions).toEqual([]);
     expect(browserSupportFixtureScene.audio).toEqual([]);
+    // PUL-F001 / scene.ts `REQUIRED_FIELDS` also includes `tags` and
+    // `defaultNext`. Both carry behavioral meaning: `defaultNext`
+    // drives composition sequencing (a regression to a sibling
+    // scene id would silently change the workbench graph),
+    // `tags` drives prompter/exporter filtering. Asserting both
+    // here pins the fixture's intended values (test-quality
+    // review, cycle 1).
+    expect(browserSupportFixtureScene.tags).toEqual(['fixture', 'browser-support']);
+    expect(browserSupportFixtureScene.defaultNext).toBeNull();
   });
 
   it('appends a fixture element under the stage on `create`', () => {
