@@ -233,5 +233,15 @@ describe('browserSupportFixtureScene', () => {
       expect(() => browserSupportFixtureScene.timeline(ctx)).not.toThrow();
       expect(() => browserSupportFixtureScene.cleanup(ctx)).not.toThrow();
     });
+
+    // The fixture's `timeline(ctx)` contract for an invalid ctx is
+    // explicit: return `null`. A regression that returned
+    // `undefined`, `{}`, or a stub timeline object would pass the
+    // `.not.toThrow()` assertion above but still violate the
+    // contract — the master-timeline composer's `null`-handling
+    // path expects exactly `null` (test-quality review, cycle 1).
+    it('timeline() returns null for the invalid ctx', () => {
+      expect(browserSupportFixtureScene.timeline(ctx)).toBeNull();
+    });
   });
 });
