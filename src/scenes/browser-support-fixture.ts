@@ -76,9 +76,17 @@ interface FixtureStageElement {
 // (no `stage`, no `mode`, unknown `mode`, non-element `stage`) is
 // a no-op rather than a crash. Same defensive pattern the
 // placeholder scene uses, scoped to what this scene actually reads.
-type FixtureCtx = Pick<WorkbenchSceneCtx, 'stage' | 'mode' | 'gsap'>;
+// `stage` narrows to `FixtureStageElement | null` (not the
+// runtime's `StageElement | null`) so the lifecycle hooks can
+// read the optional `appendChild` / `querySelector` /
+// `ownerDocument` members without a per-hook type assertion.
+interface FixtureCtx {
+  readonly stage: FixtureStageElement | null;
+  readonly mode: WorkbenchSceneCtx['mode'];
+  readonly gsap: WorkbenchSceneCtx['gsap'];
+}
 
-const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
+const isStageShape = (stage: unknown): stage is FixtureStageElement | null => {
   if (stage === null) return true;
   if (typeof stage !== 'object') return false;
   const candidate = stage as Partial<Record<'setAttribute' | 'removeAttribute', unknown>>;
@@ -95,7 +103,7 @@ const isGsapShape = (gsap: unknown): gsap is WorkbenchSceneCtx['gsap'] => {
 const isFixtureCtx = (value: unknown): value is FixtureCtx => {
   if (typeof value !== 'object' || value === null) return false;
   if (!('stage' in value) || !('mode' in value) || !('gsap' in value)) return false;
-  const { stage, mode, gsap } = value as { stage: unknown; mode: unknown; gsap: unknown };
+  const { stage, mode, gsap } = value;
   if (!isStageShape(stage)) return false;
   if (typeof mode !== 'string' || !(NAVIGATION_MODES as readonly string[]).includes(mode)) {
     return false;
@@ -123,7 +131,7 @@ export const browserSupportFixtureScene: SceneModule = {
   trailerSafe: false,
   create: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return;
-    const stage = ctx.stage as FixtureStageElement | null;
+    const stage = ctx.stage;
     if (stage === null) return;
     if (typeof stage.appendChild !== 'function') return;
     // Allocate the fixture element through the stage's owner
@@ -143,7 +151,7 @@ export const browserSupportFixtureScene: SceneModule = {
   },
   timeline: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return null;
-    const stage = ctx.stage as FixtureStageElement | null;
+    const stage = ctx.stage;
     if (stage === null) return null;
     const el = findFixtureElement(stage);
     if (el === null) return null;
@@ -163,7 +171,7 @@ export const browserSupportFixtureScene: SceneModule = {
   },
   cleanup: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return;
-    const stage = ctx.stage as FixtureStageElement | null;
+    const stage = ctx.stage;
     if (stage === null) return;
     const el = findFixtureElement(stage);
     if (el !== null && typeof el.remove === 'function') {
