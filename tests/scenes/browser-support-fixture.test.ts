@@ -193,6 +193,27 @@ describe('browserSupportFixtureScene', () => {
     expect(stage.children).toHaveLength(0);
   });
 
+  it('is a no-op on `cleanup` when no fixture element was mounted (valid ctx, no prior create)', () => {
+    // The parallel case for `timeline` is tested above; `cleanup`'s
+    // null-guard path — `if (el !== null && typeof el.remove ===
+    // 'function')` — is only reachable with a valid ctx and a
+    // missing fixture element (e.g., the resolver invokes cleanup
+    // after `create` was bypassed by a defensive bail-out). The
+    // expected behavior is: do nothing, mutate nothing, do not
+    // throw (test-quality review, cycle 1).
+    const stage = buildStage();
+    expect(stage.children).toHaveLength(0);
+    expect(() =>
+      browserSupportFixtureScene.cleanup({
+        stage: stage.element,
+        mode: 'present',
+        gsap: { timeline: () => ({}) } as never,
+        audio: {} as never,
+      }),
+    ).not.toThrow();
+    expect(stage.children).toHaveLength(0);
+  });
+
   it('is a no-op when the stage has no ownerDocument (off-DOM harness)', () => {
     // The scene must NOT reach for the ambient global `document`.
     // A stage stub without `ownerDocument` must produce no DOM
