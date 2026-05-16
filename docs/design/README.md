@@ -12,6 +12,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-a001-timeline-library-encapsulation-preflight.md](pul-a001-timeline-library-encapsulation-preflight.md) | Guardrails for statically enforcing scene timeline-library encapsulation through the runtime adapter and scene context. |
 | [pul-a002-a006-import-bans-preflight.md](pul-a002-a006-import-bans-preflight.md) | Cluster-level guardrails for the PUL-A002..A006 source-policy gates (audio, rendering, export, slide-framework bans plus the PUL-A005 declarative-manifest shape rule). |
 | [pul-q003-url-state-determinism-preflight.md](pul-q003-url-state-determinism-preflight.md) | Guardrails for enforcing URL-only runtime target selection without persisted browser or host state. |
+| [pul-q004-resource-cleanup-preflight.md](pul-q004-resource-cleanup-preflight.md) | Guardrails for enforcing scene resource cleanup completeness through existing lifecycle, audio, timeline, presenter, and prompter boundaries. |
 | [pul-q007-runtime-code-execution-preflight.md](pul-q007-runtime-code-execution-preflight.md) | Guardrails for statically banning runtime code execution outside the published bundle. |
 | [pul-f013-present-mode-preflight.md](pul-f013-present-mode-preflight.md) | Guardrails for implementing default `mode=present` behavior. |
 | [pul-f014-standalone-mode-preflight.md](pul-f014-standalone-mode-preflight.md) | Guardrails for implementing isolated `mode=standalone` behavior. |
