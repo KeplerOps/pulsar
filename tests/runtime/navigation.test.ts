@@ -357,8 +357,16 @@ describe('parseNavigationSearch — ADR-013: repeated keys & unknown keys', () =
 describe('parseNavigationSearch — boundary discipline', () => {
   it('does NOT validate scene existence (resolution-layer concern)', () => {
     // ADR-013: composition + scene is id-based; existence/uniqueness in
-    // a composition is resolution-layer work, not grammar.
-    expect(() => parseNavigationSearch('composition=full-talk&scene=does-not-exist')).not.toThrow();
+    // a composition is resolution-layer work, not grammar. The parser
+    // passes the id through verbatim — assert the locator shape too
+    // so a silent corruption (parser drops the scene field when the id
+    // looks unfamiliar) would fail here, not just the no-throw check.
+    const result = parseNavigationSearch('composition=full-talk&scene=does-not-exist');
+    expect(result.locator).toEqual({
+      kind: 'composition-scene',
+      composition: 'full-talk',
+      scene: 'does-not-exist',
+    });
   });
 
   it('returns frozen targets so callers cannot mutate the parser output', () => {
@@ -832,5 +840,217 @@ describe('bootstrapNavigation — runtime entry wiring', () => {
   it('event-type constants match the dispatched event types', () => {
     expect(PULSAR_NAVIGATE_EVENT_TYPE).toBe('pulsar:navigate');
     expect(PULSAR_NAVIGATE_ERROR_EVENT_TYPE).toBe('pulsar:navigate-error');
+  });
+});
+
+describe('PUL-Q003 — persisted browser state never determines the target', () => {
+  // Behavioral pin for PUL-Q003: URL parameters fully determine the
+  // runtime's targeted state; `localStorage`, `sessionStorage`,
+  // `document.cookie`, `history.state`, IndexedDB, and Cache Storage
+  // must NOT determine which scene, beat, composition, or mode is
+  // targeted.
+  //
+  // Each test seeds the host globals with values that — if they leaked
+  // into target selection — would change the parsed locator, the
+  // beat, or the effective mode. The assertions confirm the dispatched
+  // navigation event matches `parseNavigationSearch(location.search)`
+  // exactly and that `effectiveMode(...)` ignores the seeded state.
+  //
+  // The structural ban on these surfaces in `src/**/*.ts` is enforced
+  // separately by `policy-q003-url-state-determinism.test.ts`. This
+  // block adds black-box coverage: if a future refactor of
+  // `subscribeNavigation` / `bootstrapNavigation` / `effectiveMode`
+  // started reading host globals (e.g. consuming the `PopStateEvent`
+  // `state` slot), the assertion below fails immediately.
+
+  interface FakeBrowser {
+    readonly target: NavigationEventTarget;
+    readonly events: EventTarget;
+    setSearch(value: string): void;
+    firePopstate(state: unknown): void;
+  }
+
+  const buildFakeBrowser = (initial: string): FakeBrowser => {
+    const events = new EventTarget();
+    let search = initial;
+    const target: NavigationEventTarget = {
+      addEventListener: (event, listener) => {
+        events.addEventListener(event, listener as EventListener);
+      },
+      removeEventListener: (event, listener) => {
+        events.removeEventListener(event, listener as EventListener);
+      },
+      dispatchEvent: (event) => events.dispatchEvent(event),
+      get location() {
+        return { search };
+      },
+    };
+    return {
+      target,
+      events,
+      setSearch(value) {
+        search = value;
+      },
+      firePopstate(state) {
+        // Real popstate events carry the synthetic `state` slot from
+        // `history.pushState` / `replaceState`. A future regression
+        // that read `evt.state` to influence the target would surface
+        // here — the seeded value disagrees with the URL.
+        const evt = new Event('popstate') as Event & { state?: unknown };
+        evt.state = state;
+        events.dispatchEvent(evt);
+      },
+    };
+  };
+
+  const flushMicrotasks = async (): Promise<void> => {
+    await Promise.resolve();
+  };
+
+  const collectNavigateEvents = (browser: FakeBrowser): CustomEvent<NavigationTarget>[] => {
+    const out: CustomEvent<NavigationTarget>[] = [];
+    browser.events.addEventListener(PULSAR_NAVIGATE_EVENT_TYPE, (evt) => {
+      out.push(evt as CustomEvent<NavigationTarget>);
+    });
+    return out;
+  };
+
+  // Deliberately-misleading values: every persistence surface points
+  // at a different "tampered" target. If ANY of them leaked into
+  // target selection, the assertion would catch the divergence —
+  // the test seeds are designed so no two surfaces agree, so a
+  // partial leak surfaces too.
+  const TAMPERED_HISTORY_STATE = {
+    scene: 'tampered-history-scene',
+    composition: 'tampered-history-composition',
+    mode: 'tampered-history-mode',
+  } as const;
+
+  const tamperedLocalStorage: Storage = {
+    length: 1,
+    clear: () => {},
+    getItem: (key) => (key === 'scene' ? 'tampered-localstorage-scene' : null),
+    key: (n) => (n === 0 ? 'scene' : null),
+    removeItem: () => {},
+    setItem: () => {},
+  };
+
+  const tamperedSessionStorage: Storage = {
+    length: 1,
+    clear: () => {},
+    getItem: (key) => (key === 'mode' ? 'tampered-sessionstorage-mode' : null),
+    key: (n) => (n === 0 ? 'mode' : null),
+    removeItem: () => {},
+    setItem: () => {},
+  };
+
+  const tamperedDocument = { cookie: 'scene=tampered-cookie-scene; mode=tampered-cookie-mode' };
+  const tamperedHistory = { state: TAMPERED_HISTORY_STATE };
+  const tamperedIndexedDB = {
+    open: () => {
+      throw new Error('PUL-Q003: indexedDB must not be consulted during navigation');
+    },
+  };
+  const tamperedCaches = {
+    open: async () => {
+      throw new Error('PUL-Q003: Cache Storage must not be consulted during navigation');
+    },
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', tamperedLocalStorage);
+    vi.stubGlobal('sessionStorage', tamperedSessionStorage);
+    vi.stubGlobal('document', tamperedDocument);
+    vi.stubGlobal('history', tamperedHistory);
+    vi.stubGlobal('indexedDB', tamperedIndexedDB);
+    vi.stubGlobal('caches', tamperedCaches);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('parseNavigationSearch returns the URL target verbatim with no fallback to host globals', () => {
+    // Pure parser sanity: an empty search produces `kind: 'none'` and
+    // no beat / no mode — none of the seeded globals contribute.
+    expect(parseNavigationSearch('')).toEqual({ locator: { kind: 'none' } });
+  });
+
+  it('effectiveMode defaults to `present` when the URL omits `mode`, regardless of seeded persisted state', () => {
+    // ADR-007: URL is the only source of mode. The seeded
+    // sessionStorage value (`tampered-sessionstorage-mode`) and the
+    // seeded history.state.mode are both invalid mode strings; if
+    // either leaked, `effectiveMode` would either return them
+    // (violating the type) or fail to default to `present`.
+    expect(effectiveMode()).toBe('present');
+    expect(effectiveMode({ locator: { kind: 'none' } })).toBe('present');
+  });
+
+  it('bootstrap with empty location.search ignores all seeded persisted state', async () => {
+    const browser = buildFakeBrowser('');
+    const navigate = collectNavigateEvents(browser);
+
+    bootstrapNavigation(browser.target);
+    await flushMicrotasks();
+
+    expect(navigate).toHaveLength(1);
+    const evt = navigate[0];
+    if (!evt) throw new Error('expected the startup navigate event');
+    expect(evt.detail).toEqual({ locator: { kind: 'none' } } satisfies NavigationTarget);
+    expect(effectiveMode(evt.detail)).toBe('present');
+  });
+
+  it('popstate parses the current location.search, not the popstate event `state`', async () => {
+    // PUL-F007 clause 2 + ADR-013: `popstate` re-reads `location.search`.
+    // The popstate event carries the seeded synthetic state slot; the
+    // parser must ignore it. A regression that read `evt.state` to
+    // build the target would surface a `tampered-history-scene`
+    // locator here.
+    const browser = buildFakeBrowser('');
+    const navigate = collectNavigateEvents(browser);
+    bootstrapNavigation(browser.target);
+    await flushMicrotasks();
+    navigate.length = 0; // discard startup
+
+    browser.setSearch('?scene=intro');
+    browser.firePopstate(TAMPERED_HISTORY_STATE);
+    browser.setSearch('?composition=full-talk&index=2&mode=loop');
+    browser.firePopstate({ scene: 'still-tampered', mode: 'still-tampered' });
+
+    expect(navigate.map((e) => e.detail)).toEqual([
+      { locator: { kind: 'scene', scene: 'intro' } },
+      {
+        locator: { kind: 'composition-index', composition: 'full-talk', index: 2 },
+        mode: 'loop',
+      },
+    ]);
+    const first = navigate[0];
+    const second = navigate[1];
+    if (!first || !second) throw new Error('expected two navigate events');
+    expect(effectiveMode(first.detail)).toBe('present');
+    expect(effectiveMode(second.detail)).toBe('loop');
+  });
+
+  it('an invalid URL grammar still routes through `navigation grammar is invalid:` without leaking seeded state into the error envelope', async () => {
+    // Parse failures must surface the parser's own diagnostic string;
+    // they must not echo the seeded `localStorage` / `document.cookie`
+    // / `history.state` values, even though those values are
+    // syntactically tempting fallbacks.
+    const browser = buildFakeBrowser('?scene=Bad');
+    const errors: CustomEvent<Error>[] = [];
+    browser.events.addEventListener(PULSAR_NAVIGATE_ERROR_EVENT_TYPE, (evt) => {
+      errors.push(evt as CustomEvent<Error>);
+    });
+    bootstrapNavigation(browser.target);
+    await flushMicrotasks();
+
+    expect(errors).toHaveLength(1);
+    const err = errors[0]?.detail;
+    if (!err) throw new Error('expected the startup error event');
+    expect(err.message).toMatch(/^navigation grammar is invalid:/);
+    expect(err.message).not.toContain('tampered-localstorage-scene');
+    expect(err.message).not.toContain('tampered-cookie');
+    expect(err.message).not.toContain('tampered-history');
+    expect(err.message).not.toContain('tampered-sessionstorage');
   });
 });
