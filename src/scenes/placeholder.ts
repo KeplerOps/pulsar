@@ -56,7 +56,7 @@ const isStageShape = (stage: unknown): stage is WorkbenchSceneCtx['stage'] => {
 const isWorkbenchCtx = (value: unknown): value is PlaceholderCtx => {
   if (typeof value !== 'object' || value === null) return false;
   if (!('stage' in value) || !('mode' in value)) return false;
-  const { stage, mode } = value as { stage: unknown; mode: unknown };
+  const { stage, mode } = value;
   if (!isStageShape(stage)) return false;
   return typeof mode === 'string' && (NAVIGATION_MODES as readonly string[]).includes(mode);
 };
