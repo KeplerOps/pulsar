@@ -77,12 +77,42 @@ const isValidSubRange = (v: unknown): v is SubRange => {
   return isKebabIdentifier(v[0]) && isKebabIdentifier(v[1]);
 };
 
+/**
+ * Error thrown by {@link assertCompositionManifest}.
+ *
+ * Subclasses `Error` to keep the existing `<envelope> is invalid: ...`
+ * message grammar (consumers pattern-match on `message`) while
+ * exposing `entryIndex` as a structured field consumers can read
+ * without parsing the message string. Manifest-shape failures (the
+ * value isn't an array) carry `entryIndex: undefined`; per-entry
+ * failures carry the offending entry's index.
+ *
+ * PUL-Q005 / PUL-F028: this is the canonical surface the validation
+ * pass (`src/runtime/validation.ts`) narrows on via `instanceof` to
+ * populate `Finding.entryIndex` on `composition-manifest-invalid`
+ * findings. The PUL-Q005 preflight forbids parsing message strings
+ * to recover structured fields — this error class IS the carry-
+ * through path it requires.
+ */
+export class CompositionManifestError extends Error {
+  readonly entryIndex?: number;
+
+  constructor(message: string, entryIndex?: number) {
+    super(message);
+    this.name = 'CompositionManifestError';
+    if (entryIndex !== undefined) this.entryIndex = entryIndex;
+  }
+}
+
 function failManifest(condition: string): never {
-  throw new Error(`composition manifest is invalid: ${condition}`);
+  throw new CompositionManifestError(`composition manifest is invalid: ${condition}`);
 }
 
 function failEntry(index: number, field: string, condition: string): never {
-  throw new Error(`composition entry [${index}] is invalid: ${field} ${condition}`);
+  throw new CompositionManifestError(
+    `composition entry [${index}] is invalid: ${field} ${condition}`,
+    index,
+  );
 }
 
 const validateBareString = (index: number, entry: string): void => {

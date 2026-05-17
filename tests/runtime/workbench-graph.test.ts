@@ -114,7 +114,16 @@ describe('workbench graph validation (PUL-P002)', () => {
     expect(findings.map((f) => f.code)).toContain('duplicate-scene-id');
     const offender = findings.find((f) => f.code === 'duplicate-scene-id');
     expect(offender?.sceneId).toBe('placeholder');
-    expect(offender?.message).toBe('scene registry: duplicate id "placeholder"');
+    // PUL-Q005: the duplicate-id finding's message embeds the
+    // duplicate occurrence's scene record position so the user-facing
+    // AggregateError consumer can identify which declaration to edit
+    // even when both occurrences share the same id. The id-registry's
+    // canonical `<label>: duplicate id "<id>"` grammar remains the
+    // prefix; the validator appends ` (scenes[<index>])`.
+    expect(offender?.message).toMatch(
+      /^scene registry: duplicate id "placeholder" \(scenes\[\d+\]\)$/,
+    );
+    expect(typeof offender?.sceneIndex).toBe('number');
   });
 
   it('surfaces clause (a) — unknown-scene-reference — when a composition names a missing scene', () => {

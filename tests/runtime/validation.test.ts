@@ -523,3 +523,288 @@ describe('assertNoValidationFindings (PUL-F028)', () => {
     expect(agg.message).toMatch(/runtime validation failed/i);
   });
 });
+
+// PUL-Q005 — Validation actionability. Each error reported by the
+// validation pass SHALL identify the offending entity (scene id, asset
+// path, composition id) and the failing condition in human-readable
+// form. The clauses are already largely satisfied by the existing
+// PUL-F028 envelopes (`assertSceneModule`, `assertCompositionManifest`,
+// `resolveAssetUrl`, id-registry duplicate grammar). PUL-Q005 closes
+// the three remaining gaps the preflight named:
+//
+//   1. Scene records with no usable id (the `scene ?` placeholder
+//      case) — the diagnostic must carry record position
+//      (`scenes[<index>]`) in both the structured `sceneIndex` field
+//      AND the human-readable message.
+//   2. Duplicate-scene-id findings must carry the duplicate
+//      occurrence's `sceneIndex` so the author can find the right
+//      edit site quickly.
+//   3. Asset-unresolvable findings on scene records with no usable
+//      id must carry the declaring scene's record position
+//      (`scenes[<index>]:` prefix + `sceneIndex` field).
+describe('validateRuntime (PUL-Q005 — actionability)', () => {
+  describe('scene-schema findings carry scene record position when the scene id is unusable', () => {
+    it('rewrites `scene ? is invalid: ...` to `scenes[<index>] is invalid: ...` when the input record is null', () => {
+      const findings = validateRuntime({ scenes: [null] });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('scene-schema-invalid');
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.sceneId).toBeUndefined();
+      // Human-readable locator is in the message text, not just the
+      // structured field. AggregateError.errors[i].message must on its
+      // own identify the offending record.
+      expect(finding?.message).toMatch(/^scenes\[0\] is invalid:/);
+      expect(finding?.message).not.toMatch(/scene \?/);
+    });
+
+    it('rewrites `scene ? is invalid: ...` when the input record is a primitive', () => {
+      const findings = validateRuntime({ scenes: ['not a scene'] });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('scene-schema-invalid');
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.message).toMatch(/^scenes\[0\] is invalid:/);
+    });
+
+    it('rewrites `scene ? is invalid: ...` when the input record is undefined', () => {
+      const findings = validateRuntime({ scenes: [undefined] });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('scene-schema-invalid');
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.message).toMatch(/^scenes\[0\] is invalid:/);
+    });
+
+    it('rewrites the message when the scene record is an object whose id field is missing', () => {
+      const broken: Record<string, unknown> = { ...buildScene({ id: 'real' }) };
+      // biome-ignore lint/performance/noDelete: structural delete used to drop the id field
+      delete broken.id;
+      const findings = validateRuntime({ scenes: [broken] });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('scene-schema-invalid');
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.sceneId).toBeUndefined();
+      expect(finding?.message).toMatch(/^scenes\[0\] is invalid:/);
+    });
+
+    it('uses the correct record index when the bad record is not first in the iterable', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'a' }), buildScene({ id: 'b' }), null, buildScene({ id: 'c' })],
+      });
+      const schemaFindings = findings.filter((f) => f.code === 'scene-schema-invalid');
+      expect(schemaFindings).toHaveLength(1);
+      expect(schemaFindings[0]?.sceneIndex).toBe(2);
+      expect(schemaFindings[0]?.message).toMatch(/^scenes\[2\] is invalid:/);
+    });
+
+    it('still uses the canonical `scene "<id>" is invalid:` envelope when the record has a usable id', () => {
+      // Negative test: pin the regression. A valid-id schema failure
+      // (e.g. missing `cleanup`) MUST keep the canonical
+      // `scene "<id>"` framing so existing consumers do not break.
+      const broken: Record<string, unknown> = { ...buildScene({ id: 'has-id' }) };
+      // biome-ignore lint/performance/noDelete: structural delete
+      delete broken.cleanup;
+      const findings = validateRuntime({ scenes: [broken] });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('scene-schema-invalid');
+      expect(finding?.sceneId).toBe('has-id');
+      // sceneIndex is still populated for completeness — but the
+      // human-readable envelope is the canonical id-anchored one.
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.message).toMatch(/^scene "has-id" is invalid:/);
+      expect(finding?.message).not.toMatch(/^scenes\[/);
+    });
+  });
+
+  describe('duplicate-scene-id findings carry the occurrence position', () => {
+    it('records the duplicate occurrence (not the canonical first) in sceneIndex', () => {
+      const findings = validateRuntime({
+        scenes: [
+          buildScene({ id: 'shared' }),
+          buildScene({ id: 'other' }),
+          buildScene({ id: 'shared' }),
+        ],
+      });
+      const dupes = findings.filter((f) => f.code === 'duplicate-scene-id');
+      expect(dupes).toHaveLength(1);
+      expect(dupes[0]?.sceneId).toBe('shared');
+      // The duplicate occurrence's index, not the canonical first.
+      expect(dupes[0]?.sceneIndex).toBe(2);
+      // PUL-Q005 (codex review cycle 1): the id-registry's
+      // `<label>: duplicate id "<id>"` grammar stays the prefix, and
+      // the validator appends ` (scenes[<index>])` so the
+      // AggregateError consumer can identify the offending occurrence
+      // from `Error.message` alone.
+      expect(dupes[0]?.message).toBe('scene registry: duplicate id "shared" (scenes[2])');
+    });
+
+    it('records each subsequent duplicate occurrence with its own sceneIndex', () => {
+      const findings = validateRuntime({
+        scenes: [
+          buildScene({ id: 'shared' }),
+          buildScene({ id: 'shared' }),
+          buildScene({ id: 'shared' }),
+        ],
+      });
+      const dupes = findings.filter((f) => f.code === 'duplicate-scene-id');
+      expect(dupes).toHaveLength(2);
+      expect(dupes[0]?.sceneIndex).toBe(1);
+      expect(dupes[1]?.sceneIndex).toBe(2);
+    });
+  });
+
+  describe('asset-unresolvable findings carry the declaring record position when the scene id is unusable', () => {
+    it('prepends `scenes[<index>]:` when the asset-bearing record has no usable id', () => {
+      // A scene record with no `id` still has assets that must be
+      // validated. The finding's message must on its own identify
+      // which record (by position) declared the bad URL.
+      const broken: Record<string, unknown> = {
+        ...buildScene({ id: 'placeholder', assets: ['file:///etc/passwd'] }),
+      };
+      // biome-ignore lint/performance/noDelete: structural delete to drop id
+      delete broken.id;
+      const findings = validateRuntime({ scenes: [broken] });
+      const assetFindings = findings.filter((f) => f.code === 'asset-unresolvable');
+      expect(assetFindings).toHaveLength(1);
+      const finding = assetFindings[0];
+      expect(finding?.asset).toBe('file:///etc/passwd');
+      expect(finding?.sceneId).toBeUndefined();
+      expect(finding?.sceneIndex).toBe(0);
+      expect(finding?.message).toMatch(/^scenes\[0\]:/);
+    });
+
+    it('uses the correct record index when the asset-bearing record is not first', () => {
+      const broken: Record<string, unknown> = {
+        ...buildScene({ id: 'placeholder', assets: ['file:///x'] }),
+      };
+      // biome-ignore lint/performance/noDelete: structural delete to drop id
+      delete broken.id;
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'a' }), buildScene({ id: 'b' }), broken],
+      });
+      const assetFindings = findings.filter((f) => f.code === 'asset-unresolvable');
+      expect(assetFindings).toHaveLength(1);
+      expect(assetFindings[0]?.sceneIndex).toBe(2);
+      expect(assetFindings[0]?.message).toMatch(/^scenes\[2\]:/);
+    });
+
+    it('still uses the canonical `scene "<id>":` envelope when the record has a usable id', () => {
+      // Negative test: pin the regression. A valid-id asset failure
+      // MUST keep the canonical `scene "<id>"` framing.
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'has-id', assets: ['file:///x'] })],
+      });
+      const assetFindings = findings.filter((f) => f.code === 'asset-unresolvable');
+      expect(assetFindings).toHaveLength(1);
+      expect(assetFindings[0]?.sceneId).toBe('has-id');
+      expect(assetFindings[0]?.sceneIndex).toBe(0);
+      expect(assetFindings[0]?.message).toMatch(/^scene "has-id":/);
+      expect(assetFindings[0]?.message).not.toMatch(/^scenes\[/);
+    });
+  });
+
+  describe('composition-manifest-invalid carries the offending entryIndex (codex review cycle 1)', () => {
+    it('populates entryIndex when a manifest entry fails schema validation', () => {
+      // Preflight: "Carry context from the validation phase that
+      // already has it." `assertCompositionManifest` throws a
+      // `CompositionManifestError` whose `entryIndex` field carries
+      // the offending entry index; the validator narrows on the
+      // class and populates `Finding.entryIndex` programmatically.
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'broken', manifest: ['real', { id: 'real', extraneous: 1 }] }],
+      });
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      expect(finding?.code).toBe('composition-manifest-invalid');
+      expect(finding?.compositionId).toBe('broken');
+      // The offending entry is at index 1.
+      expect(finding?.entryIndex).toBe(1);
+    });
+
+    it('populates entryIndex for a bad bare-string entry', () => {
+      // A bare string that fails `isKebabIdentifier` raises through
+      // `validateBareString`, which uses `failEntry(index, ...)`.
+      // `entryIndex` must reach the finding.
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'broken', manifest: ['real', 'NotKebab'] }],
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.code).toBe('composition-manifest-invalid');
+      expect(findings[0]?.entryIndex).toBe(1);
+    });
+
+    it('leaves entryIndex undefined when the manifest itself is not an array', () => {
+      // `failManifest` throws without an entry index — there is no
+      // offending entry to point at. The validator does NOT
+      // synthesize a fake index; the field stays undefined and the
+      // composition id is the locator.
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'broken', manifest: 'not an array' }],
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.code).toBe('composition-manifest-invalid');
+      expect(findings[0]?.entryIndex).toBeUndefined();
+    });
+  });
+
+  describe('every well-formed finding name is self-contained for AggregateError consumers', () => {
+    // Preflight: "A reader seeing only one `Error.message` from
+    // `AggregateError.errors` must still know which declaration to
+    // edit and why it failed." Round-trip the every-clause-aggregate
+    // fixture through `assertNoValidationFindings` and assert each
+    // wrapped `Error.message` independently carries a usable locator
+    // AND a condition phrase.
+    it('each AggregateError.errors[i].message identifies an entity AND a failing condition', () => {
+      const noIdScene: Record<string, unknown> = {
+        ...buildScene({ id: 'placeholder', assets: ['file:///etc/passwd'] }),
+      };
+      // biome-ignore lint/performance/noDelete: structural delete
+      delete noIdScene.id;
+      const findings = validateRuntime({
+        scenes: [
+          buildScene({ id: 'dup' }),
+          buildScene({ id: 'dup' }),
+          buildScene({ id: 'with-id-bad-asset', assets: ['file:///etc/shadow'] }),
+          noIdScene,
+        ],
+        compositions: [
+          { id: 'opener', manifest: ['ghost'] },
+          { id: 'broken', manifest: 'not an array' as unknown },
+        ],
+      });
+      // Sanity: cover every clause.
+      const codes = findings.map((f) => f.code);
+      expect(codes).toContain('duplicate-scene-id');
+      expect(codes).toContain('asset-unresolvable');
+      expect(codes).toContain('unknown-scene-reference');
+      expect(codes).toContain('composition-manifest-invalid');
+      // Round-trip every message through the AggregateError contract.
+      let thrown: unknown = null;
+      try {
+        assertNoValidationFindings(findings);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(AggregateError);
+      const agg = thrown as AggregateError;
+      // Every wrapped message must contain at least one of the
+      // approved entity locator forms: `scene "<id>"`,
+      // `scenes[<index>]`, `composition "<id>"`. Falls back to scene
+      // record position so the no-id branch still satisfies the
+      // contract.
+      const entityLocator =
+        /^(scene "[^"]+"|scenes\[\d+\]|composition "[^"]+"|scene registry: duplicate id "[^"]+")/;
+      for (const err of agg.errors) {
+        expect(err).toBeInstanceOf(Error);
+        const message = (err as Error).message;
+        expect(message).toMatch(entityLocator);
+      }
+    });
+  });
+});
