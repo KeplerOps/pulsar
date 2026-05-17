@@ -30,11 +30,23 @@ const config = (over: Partial<AudioSoundConfig> = {}): AudioSoundConfig => ({
 });
 
 describe('createHowlerAudioEngine (Howler boundary)', () => {
-  it('constructs a sound and forwards every handle method without throwing', () => {
+  it('constructs a sound and forwards every handle method, returning a valid play id', () => {
+    // The play id is a real number Howler hands out per `play()`
+    // call. The test-quality review (issue #49 cycle 1) named the
+    // risk of a regression where `wrapHowl.play` always returned
+    // `0` / `undefined` — Howler's `volume`/`loop`/`fade`/`stop`
+    // all special-case `undefined` playId to mean "all instances"
+    // so a broken play id would silently degrade per-play targeting
+    // without surfacing under `not.toThrow()`. Assert the play id
+    // is a non-negative number so a future regression that breaks
+    // the return type fails loud.
     const engine = createHowlerAudioEngine();
     const handle = engine.createSound(config());
+    const playId = handle.play();
+    expect(typeof playId).toBe('number');
+    expect(Number.isFinite(playId)).toBe(true);
+    expect(playId).toBeGreaterThanOrEqual(0);
     expect(() => {
-      const playId = handle.play();
       handle.volume(0.5, playId);
       handle.loop(true, playId);
       handle.fade(1, 0, 10, playId);
@@ -46,19 +58,36 @@ describe('createHowlerAudioEngine (Howler boundary)', () => {
     }).not.toThrow();
   });
 
-  it('supports a muted sound and a sprite map', () => {
+  it('supports a muted sound and a sprite map, returning a valid play id for sprite playback', () => {
+    // Same regression class as the play-id assertion above, applied
+    // to the sprite branch. A `wrapHowl.play` that dropped the
+    // sprite argument (`play: (sprite) => howl.play()`) would route
+    // to the no-sprite branch and the sprite test would still pass
+    // under `not.toThrow()`. Asserting the return type pins the
+    // sprite-forwarding path (test-quality review, issue #49
+    // cycle 1).
     const engine = createHowlerAudioEngine();
     const handle = engine.createSound(
       config({ muted: true, sprite: { hit: [0, 100], cheer: [200, 300, true] } }),
     );
+    const spriteId = handle.play('hit');
+    expect(typeof spriteId).toBe('number');
+    expect(Number.isFinite(spriteId)).toBe(true);
+    expect(spriteId).toBeGreaterThanOrEqual(0);
     expect(() => {
-      handle.play('hit');
       handle.stop();
       handle.unload();
     }).not.toThrow();
   });
 
-  it('round-trips master mute', () => {
+  it('round-trips wrapper-local isMasterMuted state (Howler.mute forwarding is asserted by the PUL-Q010 test below)', () => {
+    // This test only covers the wrapper's local `masterMuted`
+    // closure — `isMasterMuted()` reads the closure, not Howler's
+    // own state. A regression that removed `Howler.mute(...)` from
+    // `setMasterMute` would leave this test green. The PUL-Q010
+    // production-Howler-boundary test below pins the actual
+    // `Howler.mute(...)` forwarding (test-quality review, issue
+    // #49 cycle 1).
     const engine = createHowlerAudioEngine();
     expect(engine.isMasterMuted()).toBe(false);
     engine.setMasterMute(true);
@@ -67,18 +96,73 @@ describe('createHowlerAudioEngine (Howler boundary)', () => {
     expect(engine.isMasterMuted()).toBe(false);
   });
 
+  // PUL-Q010 — master mute responsiveness (≤ 100 ms).
+  //
+  // The user-visible guarantee is silence of active playback within
+  // 100 ms of engagement. The fake-engine tests at
+  // `audio.test.ts` PUL-Q010 + `scene-loader-present.test.ts`
+  // PUL-Q010 pin the loader → service → engine path structurally,
+  // but a regression that left `createHowlerAudioEngine.setMasterMute`
+  // still flipping wrapper-local state while skipping
+  // `Howler.mute(...)` — or deferring it past return — would leave
+  // active playback audible while every fake-engine test stayed
+  // green. This test anchors the production-Howler boundary
+  // (codex review cycle 1, class finding on issue 49) by spying on
+  // `Howler.mute` and asserting that `engine.setMasterMute(b)`
+  // forwards the call SYNCHRONOUSLY for both true and false.
+  it('PUL-Q010 — setMasterMute forwards synchronously to Howler.mute(...)', async () => {
+    const { Howler } = await import('howler');
+    const howlerHandle = Howler as unknown as { mute: (muted: boolean) => void };
+    const originalMute = howlerHandle.mute;
+    const muteCalls: boolean[] = [];
+    howlerHandle.mute = (muted: boolean): void => {
+      muteCalls.push(muted);
+    };
+    try {
+      const engine = createHowlerAudioEngine();
+      expect(muteCalls).toEqual([]);
+      engine.setMasterMute(true);
+      // No await between these two lines — a microtask-deferred
+      // implementation would observe `[]` here, not `[true]`.
+      expect(muteCalls).toEqual([true]);
+      engine.setMasterMute(false);
+      expect(muteCalls).toEqual([true, false]);
+    } finally {
+      howlerHandle.mute = originalMute;
+    }
+  });
+
   it('drives a full AudioService end-to-end over the real engine', () => {
+    // Test-quality review (issue #49 cycle 1) flagged the pre-fix
+    // version of this test as `not.toThrow()`-only with no state
+    // assertions on `mute()`, the disposal precondition, or the
+    // loaded/played sound. Added: disposal precondition before
+    // `stopAll()`; mute state assertions before and after
+    // `service.mute(true)`; engine-level mute observation through
+    // `engine.isMasterMuted()` so a no-op `mute()` regression
+    // surfaces at this seam.
     const engine = createHowlerAudioEngine();
     const service = createAudioService(engine, { signal: new AbortController().signal });
+    expect(service.isDisposed()).toBe(false);
     expect(() => {
       service.load('bed', { src: SILENT_WAV });
       service.play('bed', { loop: true, volume: 0.4, group: 'scene-a' });
       service.fade('bed', 0.4, 0, 20);
       service.stopGroup('scene-a');
-      service.mute(true);
+    }).not.toThrow();
+    expect(service.isMuted()).toBe(false);
+    service.mute(true);
+    expect(service.isMuted()).toBe(true);
+    expect(engine.isMasterMuted()).toBe(true);
+    expect(() => {
       service.stopAll();
     }).not.toThrow();
     expect(service.isDisposed()).toBe(true);
+    // Master mute persists across `stopAll` (engine-level runtime
+    // state, ADR-004); reset so this test does not leak mute state
+    // into other tests that share Howler's global engine in the
+    // same Vitest worker.
+    engine.setMasterMute(false);
   });
 
   // PUL-F030 / ADR-029: the engine's unlock operation is the

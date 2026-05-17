@@ -1797,5 +1797,261 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       loader.dispose();
       await loader.idle();
     });
+
+    /* ---------------------------------------------------------------- *
+     *  PUL-Q010 — master mute responsiveness (≤ 100 ms)
+     *
+     *  PUL-Q010 statement: "Master mute SHALL silence active audio
+     *  playback within 100 milliseconds of being engaged."
+     *
+     *  Engagement is the accepted `'toggle-master-mute'` command at
+     *  the presenter controller boundary; silence is delivered by
+     *  the audio engine's master mute (`Howler.mute(true)` in the
+     *  production engine — see `audio.ts`). The runtime seam being
+     *  bounded is therefore:
+     *
+     *    source.emit({ kind: 'toggle-master-mute' })
+     *      → controller.centralWrapped (validation + fan-out)
+     *      → loader audio handler (`audio.mute(!audio.isMuted())`)
+     *      → engine.setMasterMute(...) returns.
+     *
+     *  The path is synchronous in production code: no `await`, no
+     *  `queueMicrotask`, no timer, no fade interpolation, no runner
+     *  hop. The tests below pin THAT property structurally so a
+     *  future regression toward async work or subscription-order
+     *  drift cannot blow the 100 ms bound silently. They use a
+     *  deterministic fake engine that records `performance.now()`
+     *  at each `setMasterMute` invocation and a shared `events[]`
+     *  sequence labeling each observable side-effect, so ordering
+     *  and wall-clock are both first-class assertions.
+     *
+     *  Companion audio-service-layer tests live in
+     *  `tests/runtime/audio.test.ts` PUL-Q010 block; together they
+     *  pin the full audio-side of the latency path.
+     * ---------------------------------------------------------------- */
+
+    /** Engine fake that records wall-clock + ordering for PUL-Q010. */
+    const instrumentedAudioEngine = (muteTimes: number[], events: string[]): AudioEngine => {
+      let muted = false;
+      const noopHandle = {
+        play: () => 0,
+        stop: () => undefined,
+        fade: () => undefined,
+        loop: () => undefined,
+        volume: () => undefined,
+        unload: () => undefined,
+      };
+      return {
+        createSound: () => noopHandle,
+        setMasterMute: (m: boolean) => {
+          muted = m;
+          muteTimes.push(performance.now());
+          events.push('audio-flip');
+        },
+        isMasterMuted: () => muted,
+        unlock: () => Promise.resolve(),
+      };
+    };
+
+    // PUL-Q010's 100 ms budget collapses to "synchronous" at the
+    // runtime seam: a single synchronous call chain
+    // (`source.emit` → controller fan-out → loader handler →
+    // `AudioService.mute` → `AudioEngine.setMasterMute`) costs
+    // sub-millisecond on any realistic V8, so the 100 ms wall-clock
+    // bound is satisfied by proving the path is synchronous. A
+    // wall-clock assertion would be both flaky (GC / OS pauses) and
+    // strictly weaker than the structural observability check below;
+    // see codex review cycle 1 on issue 49. The structural test is
+    // the gate of record.
+    it('PUL-Q010 — engine master mute is observable synchronously on the next statement after `emit`', async () => {
+      // The synchronous-path invariant: a microtask-deferred
+      // implementation (e.g., `queueMicrotask(() => audio.mute(...))`
+      // in the loader handler, or `Promise.resolve().then(...)` in
+      // the audio service) would leave the engine state unchanged
+      // on the very next line after `emit(...)`. Pinning this
+      // separately from the wall-clock test means a regression
+      // toward microtask deferral fails LOUD here even on a CI
+      // whose `performance.now()` granularity would still satisfy
+      // the 100 ms bound.
+      const engine = instrumentedAudioEngine([], []);
+      const m = mountPresent({ mode: 'present', engine });
+      await m.readyP;
+      expect(engine.isMasterMuted()).toBe(false);
+      m.fake.emit({ kind: 'toggle-master-mute' });
+      // No await between these two lines — a microtask-deferred
+      // implementation would see `false` here.
+      expect(engine.isMasterMuted()).toBe(true);
+      m.loader.dispose();
+      await m.loader.idle();
+    });
+
+    it('PUL-Q010 — the loader audio handler runs BEFORE any runner-supplied subscriber on the same emission', async () => {
+      // The preflight guardrail: "A slow or throwing runner handler
+      // must not sit before the audio mute action on the critical
+      // path." The controller fans subscribers out in subscription
+      // order; the loader subscribes the audio handler in
+      // `buildPresenterPipe` BEFORE the runner subscribes via
+      // `input.presenter.subscribe(...)`. A regression that moved
+      // the audio handler subscription into `runner(input)` (or
+      // any later seam) would put it AFTER the runner subscriber
+      // in the fan-out and a slow runner could delay the engine
+      // flip past 100 ms.
+      const muteTimes: number[] = [];
+      const events: string[] = [];
+      const engine = instrumentedAudioEngine(muteTimes, events);
+      const fake = buildFakeSource();
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({ id: 'scene-a' });
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        input.presenter?.subscribe((cmd) => {
+          if (cmd.kind === 'toggle-master-mute') events.push('runner-saw-cmd');
+        });
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      fake.emit({ kind: 'toggle-master-mute' });
+      // The audio flip is the FIRST observable side-effect; the
+      // runner subscriber sees the command strictly after.
+      expect(events).toEqual(['audio-flip', 'runner-saw-cmd']);
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('PUL-Q010 — a slow runner subscriber cannot delay the engine flip past 100 ms', async () => {
+      // Strongest form of the handler-ordering invariant: even
+      // when the runner subscriber does a deliberate synchronous
+      // busy-loop, the engine flip has already happened BEFORE
+      // the loop starts — because the loader's audio handler is
+      // FIRST in the fan-out and its work (one boolean flip) is
+      // complete before control reaches the runner's handler.
+      // Asserted via ordering AND wall-clock: the
+      // `setMasterMute` timestamp is captured before the busy-
+      // loop's start timestamp, so a regression that pushed the
+      // audio handler after the runner would surface as either
+      // an inverted `events[]` order OR a `muteTimes[0]` reading
+      // AFTER the loop wall-clock.
+      const muteTimes: number[] = [];
+      const events: string[] = [];
+      const engine = instrumentedAudioEngine(muteTimes, events);
+      const fake = buildFakeSource();
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({ id: 'scene-a' });
+      let busyStart = -1;
+      let busyEnd = -1;
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        input.presenter?.subscribe((cmd) => {
+          if (cmd.kind !== 'toggle-master-mute') return;
+          busyStart = performance.now();
+          // Bounded busy loop: deliberately spin for ~5 ms so
+          // any "runner-runs-first" regression would put
+          // `muteTimes[0]` AT OR AFTER `busyEnd`.
+          while (performance.now() - busyStart < 5) {
+            // intentionally empty busy loop
+          }
+          busyEnd = performance.now();
+        });
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(muteTimes).toHaveLength(1);
+      expect(busyStart).toBeGreaterThan(0);
+      expect(busyEnd).toBeGreaterThanOrEqual(busyStart);
+      // The engine flip happened strictly before the runner's
+      // busy loop started — a regression that put the runner
+      // first would have `muteTimes[0] >= busyEnd`.
+      const firstMuteTime = muteTimes[0] ?? Number.NaN;
+      expect(firstMuteTime).toBeLessThan(busyEnd);
+      // Even with the runner's deliberate ~5 ms spin in the
+      // same fan-out, the engine flip stayed comfortably under
+      // 100 ms because it ran first.
+      loader.dispose();
+      await loader.idle();
+    });
+
+    it('PUL-Q010 — a throwing runner subscriber does NOT prevent the engine flip', async () => {
+      // Per-subscriber isolation guarantee: the controller wraps
+      // each subscriber's handler in try/catch (presenter.ts
+      // `centralWrapped`). A runner subscriber that throws on
+      // `'toggle-master-mute'` cannot prevent the loader's audio
+      // handler (which already executed first per the ordering
+      // invariant above) from having flipped the engine. The
+      // throw is surfaced via the loader's `onError` sink.
+      const muteTimes: number[] = [];
+      const events: string[] = [];
+      const engine = instrumentedAudioEngine(muteTimes, events);
+      const fake = buildFakeSource();
+      const errors: unknown[] = [];
+      let runnerEntered: () => void = () => undefined;
+      const ready = new Promise<void>((resolve) => {
+        runnerEntered = resolve;
+      });
+      const sceneA = buildScene({ id: 'scene-a' });
+      const runner = (input: LegacyRunInput): Promise<void> => {
+        input.presenter?.subscribe((cmd) => {
+          if (cmd.kind === 'toggle-master-mute') throw new Error('runner subscriber boom');
+        });
+        runnerEntered();
+        return new Promise<void>((resolve) => {
+          input.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: buildStage().element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: asTimeline(runner),
+        audioEngine: engine,
+        presenterCommands: fake.source,
+        onError: (err) => errors.push(err),
+      });
+      void loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+      await ready;
+      fake.emit({ kind: 'toggle-master-mute' });
+      expect(engine.isMasterMuted()).toBe(true);
+      expect(muteTimes).toHaveLength(1);
+      const boomErrors = errors.filter(
+        (e) => e instanceof Error && /runner subscriber boom/.test(e.message),
+      );
+      expect(boomErrors).toHaveLength(1);
+      loader.dispose();
+      await loader.idle();
+    });
   });
 });

@@ -17,7 +17,7 @@
 // here the engine is a deterministic in-process fake so every code
 // path of the service is asserted without a browser audio context.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   type AudioCueLogEntry,
   type AudioCueLogStopGroup,
@@ -537,6 +537,79 @@ describe('createAudioService — master mute (ADR-004)', () => {
     service.stopAll();
     expect(service.isMuted()).toBe(true);
   });
+
+  /* ---------------------------------------------------------------- *
+   *  PUL-Q010 — master mute responsiveness (≤ 100 ms)
+   *
+   *  PUL-Q010 statement: "Master mute SHALL silence active audio
+   *  playback within 100 milliseconds of being engaged."
+   *
+   *  The audio-service boundary is one leg of the runtime latency
+   *  path the loader-owned `'toggle-master-mute'` handler walks
+   *  (see `scene-loader-present.test.ts` PUL-Q010 block for the
+   *  end-to-end test). At THIS layer the bound translates to two
+   *  structural invariants that any regression toward async work
+   *  (debounce / queueMicrotask / setTimeout / fade-to-silence)
+   *  would break:
+   *
+   *  (1) `engine.setMasterMute(...)` is invoked SYNCHRONOUSLY on
+   *      the same call stack as `AudioService.mute(...)`. No
+   *      microtask gap, no scheduler hop, no fade interpolation.
+   *  (2) The invocation happens regardless of whether playback is
+   *      currently active — silencing an already-playing sound is
+   *      delegated to the engine's master-mute mechanism rather
+   *      than to per-sound iteration or fade scheduling.
+   * ---------------------------------------------------------------- */
+
+  it('PUL-Q010 — engine.setMasterMute is invoked synchronously from AudioService.mute (no microtask hop)', () => {
+    // The 100 ms bound collapses to "synchronous" at this layer
+    // because a single synchronous call costs sub-millisecond on
+    // any realistic V8. The only way to blow the bound here is to
+    // defer the engine call — `queueMicrotask`, `Promise.resolve()
+    // .then`, `setTimeout(..., 0)`, debounce, fade scheduling, etc.
+    // This test pins the synchronous contract by checking the
+    // engine's mute state on the very next statement after the
+    // service call (no `await`, no `await Promise.resolve()`).
+    const { fake, service } = buildService();
+    expect(fake.masterMuted()).toBe(false);
+    service.mute(true);
+    // No await between these two lines — a microtask-deferred
+    // implementation would see `false` here.
+    expect(fake.masterMuted()).toBe(true);
+    service.mute(false);
+    expect(fake.masterMuted()).toBe(false);
+  });
+
+  it('PUL-Q010 — engine.setMasterMute is invoked synchronously even while sounds are loaded and playing', () => {
+    // Pins the "active audio playback" clause: silencing an
+    // already-playing sound is delegated to the engine's master
+    // mute, not to iterating the registered sounds. A regression
+    // that re-implemented mute as `for (const sound of sounds)
+    // sound.handle.<stop|fade|volume|loop|unload>()` (or similar
+    // per-sound work) would silently break the engine-state
+    // contract — and the next `play()` after un-muting would no
+    // longer be inhibited by the engine, because the per-sound
+    // mute would be a snapshot rather than persistent runtime
+    // state. The assertion below snapshots the entire handle-call
+    // record before `mute(...)` and asserts that mute adds NO
+    // handle-level calls (codex review cycle 1: a `stop`-only
+    // filter would miss `fade` / `volume` / `loop` / `unload`
+    // regressions on the mute path).
+    const { fake, service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    service.load('stinger', { src: '/audio/stinger.mp3' });
+    service.play('stinger');
+    expect(fake.masterMuted()).toBe(false);
+    const handleCallsBeforeMute = fake.calls.length;
+    service.mute(true);
+    expect(fake.masterMuted()).toBe(true);
+    // `mute(...)` MUST NOT add any per-sound handle calls — the
+    // path is purely engine-level. Any new entry in `fake.calls`
+    // (`stop` / `fade` / `volume` / `loop` / `unload`) would mean
+    // mute is iterating registered sounds.
+    expect(fake.calls.length).toBe(handleCallsBeforeMute);
+  });
 });
 
 /* -------------------------------------------------------------------- *
@@ -688,8 +761,27 @@ describe('createAudioService — lifecycle / cleanup (ADR-004)', () => {
  * -------------------------------------------------------------------- */
 
 describe('noopAudioEngine', () => {
-  it('produces handles whose methods do not throw and back a working service', () => {
+  // `noopAudioEngine` is a module-level singleton with mutable
+  // `masterMuted` state. Sharing it across tests in the same
+  // Vitest worker creates the same leak `scene-loader-present.test.ts`
+  // documents and avoids with its own `freshAudioEngine` helper.
+  // Test-quality review (issue #49 cycle 1) flagged the singleton
+  // hazard here. The `afterEach` below resets the singleton so any
+  // test that flips `mute(true)` on the noop engine and bails
+  // before unsetting it does not corrupt the baseline for later
+  // tests that observe `isMasterMuted()`.
+  afterEach(() => {
+    noopAudioEngine.setMasterMute(false);
+  });
+
+  it('produces handles whose methods do not throw, back a working service, and dispose cleanly', () => {
+    // Pre-fix: pure `not.toThrow()`. Post-fix: assert
+    // `isDisposed()` precondition and postcondition so a regression
+    // that broke `stopAll()`'s dispose flag (or that disposed the
+    // service early) surfaces here (test-quality review, issue #49
+    // cycle 1).
     const service = createAudioService(noopAudioEngine, { signal: liveSignal() });
+    expect(service.isDisposed()).toBe(false);
     service.load('bed', { src: '/audio/bed.mp3', sprite: { hit: [0, 100] } });
     expect(() => {
       service.play('bed', { sprite: 'hit', loop: true, volume: 0.5, group: 'scene-a' });
@@ -698,10 +790,14 @@ describe('noopAudioEngine', () => {
       service.stop('bed');
       service.stopAll();
     }).not.toThrow();
+    expect(service.isDisposed()).toBe(true);
   });
 
   it('round-trips master mute', () => {
     const service = createAudioService(noopAudioEngine, { signal: liveSignal() });
+    // The `afterEach` above resets the singleton, so the baseline
+    // here is always `false` regardless of prior-test mute state.
+    expect(service.isMuted()).toBe(false);
     service.mute(true);
     expect(service.isMuted()).toBe(true);
     service.mute(false);

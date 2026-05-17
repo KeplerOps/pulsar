@@ -18,6 +18,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-q007-runtime-code-execution-preflight.md](pul-q007-runtime-code-execution-preflight.md) | Guardrails for statically banning runtime code execution outside the published bundle. |
 | [pul-q008-dom-css-accessibility-preflight.md](pul-q008-dom-css-accessibility-preflight.md) | Guardrails for preserving native browser text selection, focus order, and ARIA semantics in DOM/CSS scenes. |
 | [pul-q009-asset-failure-surfacing-preflight.md](pul-q009-asset-failure-surfacing-preflight.md) | Guardrails for surfacing asset preload failures with scene and asset context before mounting. |
+| [pul-q010-master-mute-responsiveness-preflight.md](pul-q010-master-mute-responsiveness-preflight.md) | Guardrails for bounding master-mute latency without duplicating presenter or audio boundaries. |
 | [pul-f013-present-mode-preflight.md](pul-f013-present-mode-preflight.md) | Guardrails for implementing default `mode=present` behavior. |
 | [pul-f014-standalone-mode-preflight.md](pul-f014-standalone-mode-preflight.md) | Guardrails for implementing isolated `mode=standalone` behavior. |
 | [pul-f015-loop-mode-preflight.md](pul-f015-loop-mode-preflight.md) | Guardrails for implementing repeated `mode=loop` scene-timeline playback. |
