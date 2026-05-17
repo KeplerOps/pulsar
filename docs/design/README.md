@@ -15,6 +15,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-q004-resource-cleanup-preflight.md](pul-q004-resource-cleanup-preflight.md) | Guardrails for enforcing scene resource cleanup completeness through existing lifecycle, audio, timeline, presenter, and prompter boundaries. |
 | [pul-q005-validation-actionability-preflight.md](pul-q005-validation-actionability-preflight.md) | Guardrails for making runtime validation findings locate the offending declaration and failed condition without duplicating validation schemas or error systems. |
 | [pul-q007-runtime-code-execution-preflight.md](pul-q007-runtime-code-execution-preflight.md) | Guardrails for statically banning runtime code execution outside the published bundle. |
+| [pul-q009-asset-failure-surfacing-preflight.md](pul-q009-asset-failure-surfacing-preflight.md) | Guardrails for surfacing asset preload failures with scene and asset context before mounting. |
 | [pul-f013-present-mode-preflight.md](pul-f013-present-mode-preflight.md) | Guardrails for implementing default `mode=present` behavior. |
 | [pul-f014-standalone-mode-preflight.md](pul-f014-standalone-mode-preflight.md) | Guardrails for implementing isolated `mode=standalone` behavior. |
 | [pul-f015-loop-mode-preflight.md](pul-f015-loop-mode-preflight.md) | Guardrails for implementing repeated `mode=loop` scene-timeline playback. |

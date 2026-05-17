@@ -791,7 +791,12 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
 
       // The cleanup failure on `broken` MUST have surfaced through
       // `onError` (the loader's `onSceneFailed` handler routes there).
-      expect(captured.length).toBeGreaterThanOrEqual(1);
+      // Exactly one onError call: the pure-abort wrapper is suppressed
+      // by `isPureAbort` (scene-loader.ts:418-424), so the cleanup
+      // failure is the only event reaching the workbench logger. The
+      // earlier `>= 1` assertion let a future regression that double-
+      // fires the abort through `onError` pass silently.
+      expect(captured).toHaveLength(1);
       const cleanupError = captured.find(
         (e) => e instanceof Error && /cleanup boom/.test((e as Error).message),
       );
@@ -830,6 +835,73 @@ describe('createSceneLoader — navigation, errors & abort (PUL-F008)', () => {
       // already-loaded scene.
       expect(stage.attrs.get('data-pulsar-navigation-error')).toBe('preloader factory blew up');
       expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+    });
+
+    it('surfaces the scene id and every failing asset path BEFORE mounting the scene (PUL-Q009)', async () => {
+      // PUL-Q009: when an asset declared by a scene fails to load
+      // during preload, the runtime SHALL surface the failure with the
+      // scene id and asset path before mounting the scene. The preload
+      // throw path already names the scene id in the resolver wrapper;
+      // the asset paths live in the AggregateError's per-asset
+      // `errors[]`. The browser-visible surface (onError + the stage
+      // attribute) MUST carry both so an operator does not see a
+      // generic "preload failed" line for a multi-asset failure.
+      const captured: unknown[] = [];
+      const stage = buildStage();
+      const createSpy = vi.fn();
+      const intro = buildScene({
+        id: 'intro',
+        assets: ['/missing.png', '/broken.json'],
+        create: createSpy,
+      });
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([intro]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        // Mimic the exact AggregateError shape `createAssetPreloader`
+        // produces (asset-preloader.ts: per-asset Errors whose
+        // `.message` carries the declared path, wrapped under a
+        // composition-scoped aggregate message).
+        createPreloader: () => () =>
+          Promise.reject(
+            new AggregateError(
+              [
+                new Error('asset "/missing.png": 404 Not Found'),
+                new Error('asset "/broken.json": 500 Internal Server Error'),
+              ],
+              'composition asset preload failed: scene "intro"',
+            ),
+          ),
+        timeline: noopTimeline,
+        onError: (err) => {
+          captured.push(err);
+        },
+      });
+
+      await loader.handle(sceneTarget('intro'));
+
+      // Clause "before mounting the scene": create(ctx) MUST NOT have
+      // been called for the scene whose preload failed.
+      expect(createSpy).not.toHaveBeenCalled();
+
+      // onError fires with an Error whose message carries the scene id
+      // AND every failing asset path.
+      expect(captured).toHaveLength(1);
+      const surfaced = captured[0] as Error;
+      expect(surfaced).toBeInstanceOf(Error);
+      expect(surfaced.message).toContain('scene "intro"');
+      expect(surfaced.message).toContain('asset "/missing.png"');
+      expect(surfaced.message).toContain('asset "/broken.json"');
+
+      // The stage attribute (data-pulsar-navigation-error) carries the
+      // same content so screenshot tooling / agents inspecting the DOM
+      // see the same diagnostic the workbench logger gets.
+      const stageMsg = stage.attrs.get('data-pulsar-navigation-error');
+      expect(stageMsg).toBeDefined();
+      expect(stageMsg).toContain('scene "intro"');
+      expect(stageMsg).toContain('asset "/missing.png"');
+      expect(stageMsg).toContain('asset "/broken.json"');
     });
 
     it('handle() after dispose() is a no-op', async () => {
