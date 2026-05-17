@@ -53,7 +53,11 @@
 // a CI summary, or a JSON report.
 
 import { DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
-import { assertCompositionManifest, findUnregisteredEntries } from './composition';
+import {
+  CompositionManifestError,
+  assertCompositionManifest,
+  findUnregisteredEntries,
+} from './composition';
 import { describeError } from './error';
 import { createIdRegistry } from './id-registry';
 import { isKebabIdentifier } from './identifier';
@@ -83,6 +87,25 @@ export interface Finding {
   readonly compositionId?: string;
   readonly entryIndex?: number;
   readonly asset?: string;
+  /**
+   * PUL-Q005 — position of the offending scene record in the input
+   * iterable, when known. The validator iterates `scenes` once; the
+   * iteration index is the cheapest stable locator that does not
+   * depend on the scene record's internal shape (a malformed record
+   * may have no `id` field at all). Populated for every finding code
+   * that points at a single scene record (`scene-schema-invalid`,
+   * `duplicate-scene-id`, `asset-unresolvable`). Carried in the
+   * human-readable message text as a `scenes[<index>]` prefix when
+   * the scene id is absent or unusable; carried as additional
+   * structured context alongside the canonical `scene "<id>"`
+   * envelope when the id IS usable.
+   *
+   * Per the PUL-Q005 preflight: a malformed scene id cannot be
+   * repaired by synthesizing an identity. When the id is missing or
+   * invalid, the record position is the only locator we can offer
+   * without inventing a fake id.
+   */
+  readonly sceneIndex?: number;
 }
 
 /**
@@ -178,6 +201,13 @@ export interface ValidationInput {
 interface Inspected {
   readonly id: string | null;
   readonly assets: readonly string[] | null;
+  /**
+   * PUL-Q005 — iteration index of this record in the input `scenes`
+   * iterable. Used by phases 2 (duplicate-id) and 4 (asset) to
+   * populate `Finding.sceneIndex` so an author sees the offending
+   * record position even when the canonical scene id is unusable.
+   */
+  readonly sceneIndex: number;
 }
 
 export function validateRuntime(input: ValidationInput): readonly Finding[] {
@@ -212,10 +242,12 @@ export function validateRuntime(input: ValidationInput): readonly Finding[] {
  */
 function runSceneShapePhase(scenes: Iterable<unknown>, findings: Finding[]): readonly Inspected[] {
   const inspected: Inspected[] = [];
+  let sceneIndex = 0;
   for (const scene of scenes) {
-    const shapeFinding = checkSceneShape(scene);
+    const shapeFinding = checkSceneShape(scene, sceneIndex);
     if (shapeFinding !== null) findings.push(shapeFinding);
-    inspected.push(inspectScene(scene));
+    inspected.push(inspectScene(scene, sceneIndex));
+    sceneIndex += 1;
   }
   return inspected;
 }
@@ -240,7 +272,16 @@ function runDuplicateIdPhase(
   inspected: readonly Inspected[],
   findings: Finding[],
 ): ReadonlySet<string> {
-  const sceneIdRegistry = createIdRegistry<null>(idEntries(inspected), {
+  // PUL-Q005: pass the duplicate occurrence's `sceneIndex` through
+  // the id-registry's `onDuplicate` collector so the finding carries
+  // record-position context (which is the *duplicate*, not the
+  // canonical first). The id-registry's grammar
+  // (`<label>: duplicate id "<id>"`) stays the canonical message
+  // — `sceneIndex` is additional structured context, not a message
+  // rewrite. The validator passes the `sceneIndex` as the entry's
+  // `value` so it round-trips back through `onDuplicate`'s `entry`
+  // argument.
+  const sceneIdRegistry = createIdRegistry<number>(idEntries(inspected), {
     label: 'scene registry',
     subject: 'scene',
     // `isKebabIdentifier` already accepted the id during phase 1
@@ -248,21 +289,35 @@ function runDuplicateIdPhase(
     // redundant here. Matches `createSceneRegistry`'s wiring.
     validateId: () => undefined,
     onDuplicate: (entry) => {
+      // PUL-Q005 (codex review cycle 1): the AggregateError consumer
+      // sees only `finding.message`. Without the occurrence position
+      // in the message, two duplicate findings for the same id are
+      // textually identical. The id-registry's canonical
+      // `<label>: duplicate id "<id>"` grammar stays intact; the
+      // validator appends ` (scenes[<index>])` so each user-facing
+      // line independently identifies the offending occurrence.
       findings.push({
         code: 'duplicate-scene-id',
-        message: `scene registry: duplicate id "${entry.id}"`,
+        message: `scene registry: duplicate id "${entry.id}" (scenes[${entry.value}])`,
         sceneId: entry.id,
+        sceneIndex: entry.value,
       });
     },
   });
   return new Set<string>(sceneIdRegistry.ids());
 }
 
-/** Yield `{id, value: null}` for every inspected record that has a kebab id. */
-function* idEntries(inspected: readonly Inspected[]): Iterable<{ id: string; value: null }> {
+/**
+ * Yield `{id, value: <sceneIndex>}` for every inspected record that
+ * has a kebab id. The `value` carries the record's iteration index
+ * so the duplicate-id `onDuplicate` hook can record the offending
+ * occurrence's `sceneIndex` (PUL-Q005). Records without a kebab id
+ * are skipped — they have no signal for duplicate detection.
+ */
+function* idEntries(inspected: readonly Inspected[]): Iterable<{ id: string; value: number }> {
   for (const item of inspected) {
     if (item.id === null) continue;
-    yield { id: item.id, value: null };
+    yield { id: item.id, value: item.sceneIndex };
   }
 }
 
@@ -375,14 +430,27 @@ function checkAssetResolvable(
   } catch (cause) {
     const detail = describeError(cause);
     const id = item.id;
+    // PUL-Q005: every asset finding now carries the declaring
+    // record's `sceneIndex` AND a message prefix that identifies the
+    // entity. When the scene has a usable id, the canonical
+    // `scene "<id>":` prefix stays (existing consumers unchanged).
+    // When the id is null, the prefix becomes `scenes[<index>]:` so
+    // the AggregateError / console.error path still points at one
+    // specific declaration to edit.
     if (id === null) {
-      return { code: 'asset-unresolvable', message: detail, asset };
+      return {
+        code: 'asset-unresolvable',
+        message: `scenes[${item.sceneIndex}]: ${detail}`,
+        asset,
+        sceneIndex: item.sceneIndex,
+      };
     }
     return {
       code: 'asset-unresolvable',
       message: `scene "${id}": ${detail}`,
       sceneId: id,
       asset,
+      sceneIndex: item.sceneIndex,
     };
   }
 }
@@ -404,8 +472,8 @@ function checkAssetResolvable(
  * No second scene schema, no parallel contract: just the minimal
  * field extraction the dependent phases need (codex review cycle 2).
  */
-function inspectScene(scene: unknown): { id: string | null; assets: readonly string[] | null } {
-  if (scene === null || typeof scene !== 'object') return { id: null, assets: null };
+function inspectScene(scene: unknown, sceneIndex: number): Inspected {
+  if (scene === null || typeof scene !== 'object') return { id: null, assets: null, sceneIndex };
   const rec = scene as Record<string, unknown>;
   const id = isKebabIdentifier(rec.id) ? rec.id : null;
   const rawAssets = rec.assets;
@@ -413,7 +481,7 @@ function inspectScene(scene: unknown): { id: string | null; assets: readonly str
     Array.isArray(rawAssets) && rawAssets.every((a) => typeof a === 'string')
       ? (rawAssets as readonly string[])
       : null;
-  return { id, assets };
+  return { id, assets, sceneIndex };
 }
 
 /**
@@ -448,21 +516,58 @@ export function assertNoValidationFindings(findings: readonly Finding[]): void {
  * validator's `?` placeholder so the renderer can find the offending
  * position.
  */
-function checkSceneShape(scene: unknown): Finding | null {
+function checkSceneShape(scene: unknown, sceneIndex: number): Finding | null {
   try {
     assertSceneModule(scene);
     return null;
   } catch (cause) {
-    const finding: Finding = {
-      code: 'scene-schema-invalid',
-      message: describeError(cause),
-    };
-    if (scene !== null && typeof scene === 'object') {
-      const id = (scene as { id?: unknown }).id;
-      if (typeof id === 'string') return { ...finding, sceneId: id };
+    const rawMessage = describeError(cause);
+    // PUL-Q005: when `assertSceneModule` could not anchor its message
+    // on a usable id (the `scene ?` placeholder branch), rewrite the
+    // human-readable locator to `scenes[<index>]`. The validator owns
+    // the iteration index; the schema gate's `?` placeholder is an
+    // acknowledged "no usable id" signal we replace deterministically
+    // — we do NOT parse arbitrary message structure. The structured
+    // `sceneIndex` field is populated for every record regardless of
+    // id validity.
+    const usableSceneId = readUsableSceneId(scene);
+    if (usableSceneId === null) {
+      return {
+        code: 'scene-schema-invalid',
+        message: rawMessage.replace(/^scene \?/, `scenes[${sceneIndex}]`),
+        sceneIndex,
+      };
     }
-    return finding;
+    return {
+      code: 'scene-schema-invalid',
+      message: rawMessage,
+      sceneId: usableSceneId,
+      sceneIndex,
+    };
   }
+}
+
+/**
+ * Read a scene record's `id` field IF it is a string the schema
+ * envelope would have used to anchor its message. Mirrors the same
+ * predicate `assertSceneModule` uses internally to decide between the
+ * `scene "<id>"` and `scene ?` framings — so the validator's
+ * message-rewrite decision agrees with the schema gate's own framing
+ * decision. Returns `null` for non-object records, missing-`id`
+ * records, and records whose `id` field is not a string.
+ *
+ * Note: this is a string-presence check, not a kebab-identifier
+ * check. The schema envelope writes `scene "<id>"` whenever the
+ * `id` field is a string, even when that string fails
+ * `isKebabIdentifier` (the kebab-format violation then becomes the
+ * `<condition>` half of the envelope). We mirror that here so a
+ * scene record like `{ id: "Not-Kebab", ... }` keeps its
+ * `scene "Not-Kebab" is invalid: ...` framing.
+ */
+function readUsableSceneId(scene: unknown): string | null {
+  if (scene === null || typeof scene !== 'object') return null;
+  const id = (scene as { id?: unknown }).id;
+  return typeof id === 'string' ? id : null;
 }
 
 /**
@@ -482,10 +587,19 @@ function checkCompositionShape(composition: ValidationCompositionInput): Finding
     assertCompositionManifest(composition.manifest);
     return null;
   } catch (cause) {
-    return {
+    // PUL-Q005 (codex review cycle 1): `CompositionManifestError`
+    // carries the offending entry's index programmatically so the
+    // validator's finding does too — consumers no longer have to
+    // parse the message text to recover the index. Manifest-shape
+    // failures (the value isn't an array) carry undefined; we omit
+    // the field on those findings rather than reporting a fake
+    // index.
+    const entryIndex = cause instanceof CompositionManifestError ? cause.entryIndex : undefined;
+    const finding: Finding = {
       code: 'composition-manifest-invalid',
       message: `composition "${composition.id}": ${describeError(cause)}`,
       compositionId: composition.id,
     };
+    return entryIndex === undefined ? finding : { ...finding, entryIndex };
   }
 }
