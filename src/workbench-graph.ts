@@ -34,6 +34,7 @@ import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/defau
 import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
 import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
+import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-fixture';
 import { placeholderScene } from './scenes/placeholder';
 
 // PUL-Q002 / ADR-030: the browser-support fixture scene is registered
@@ -42,9 +43,16 @@ import { placeholderScene } from './scenes/placeholder';
 // not part of the default composition — the gate addresses it
 // directly via `?scene=browser-support-fixture` (see
 // `tests-e2e/browser-support.spec.ts`).
+//
+// PUL-Q008 / ADR-005: the DOM/CSS accessibility fixture is registered
+// the same way so the PUL-Q008 Playwright spec
+// (`tests-e2e/dom-css-accessibility.spec.ts`) can boot it via
+// `?scene=dom-css-accessibility-fixture`. It is not part of the
+// default composition.
 export const WORKBENCH_SCENES: readonly SceneModule[] = [
   placeholderScene,
   browserSupportFixtureScene,
+  domCssAccessibilityFixtureScene,
 ];
 
 export const WORKBENCH_COMPOSITIONS: readonly CompositionRegistryEntry[] = [
