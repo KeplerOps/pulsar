@@ -47,6 +47,7 @@ const ROOT_ATTR = 'data-pulsar-q008-root';
 const TEXT_ATTR = 'data-pulsar-q008-text';
 const BUTTON_ATTR = 'data-pulsar-q008-button';
 const SENTINEL_ATTR = 'data-pulsar-q008-sentinel';
+const LIFECYCLE_ATTR = 'data-pulsar-q008-lifecycle';
 
 // The deterministic phrase the C1 selection assertion compares
 // against. Static, non-secret, non-localised text — the fixture is a
@@ -242,19 +243,26 @@ export const domCssAccessibilityFixtureScene: SceneModule = {
 
     stage.appendChild(root);
   },
-  timeline: () => {
-    // The fixture has no animation surface; the scene-loader / GSAP
-    // path is exercised by the browser-support fixture. Always
-    // returning null keeps the composition resolver's null-timeline
-    // path exercised in the e2e gate, AND honours the ctx-invariant
-    // shape — the function has no side effects, so a ctx-guard would
-    // never change the observable result.
+  timeline: (ctx: unknown) => {
+    // The fixture has no GSAP animation surface (the browser-support
+    // fixture covers that path). Tag the stage with a lifecycle
+    // marker so the composition resolver's `timeline(ctx)` invocation
+    // is observable — the `placeholder` scene uses the same pattern
+    // with its own `data-pulsar-scene-lifecycle` marker. Returning
+    // null keeps the master-timeline composer's null-handling path
+    // exercised in the e2e gate.
+    if (!isFixtureCtx(ctx)) return null;
+    const stage = ctx.stage;
+    if (stage !== null) {
+      stage.setAttribute(LIFECYCLE_ATTR, 'timeline');
+    }
     return null;
   },
   cleanup: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return;
     const stage = ctx.stage;
     if (stage === null) return;
+    stage.removeAttribute(LIFECYCLE_ATTR);
     const root = findRoot(stage);
     if (root !== null && typeof root.remove === 'function') {
       root.remove();
