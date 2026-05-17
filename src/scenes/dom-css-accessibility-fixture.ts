@@ -242,12 +242,13 @@ export const domCssAccessibilityFixtureScene: SceneModule = {
 
     stage.appendChild(root);
   },
-  timeline: (ctx: unknown) => {
+  timeline: () => {
     // The fixture has no animation surface; the scene-loader / GSAP
-    // path is exercised by the browser-support fixture. Returning
-    // null keeps the composition resolver's null-timeline path
-    // exercised in the e2e gate.
-    if (!isFixtureCtx(ctx)) return null;
+    // path is exercised by the browser-support fixture. Always
+    // returning null keeps the composition resolver's null-timeline
+    // path exercised in the e2e gate, AND honours the ctx-invariant
+    // shape — the function has no side effects, so a ctx-guard would
+    // never change the observable result.
     return null;
   },
   cleanup: (ctx: unknown) => {
