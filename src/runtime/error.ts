@@ -132,3 +132,65 @@ function renderBranches(
   if (remaining > 0) shown.push(`…+${remaining} more`);
   return `[${shown.join('; ')}]`;
 }
+
+/**
+ * Lifecycle phase keywords PUL-Q006 names in its statement: the three
+ * `create` / `timeline` / `cleanup` hooks the scene contract owns
+ * (`SceneFailurePhase` in `composition-resolver.ts` is the structured
+ * source). Re-declared as a string-literal union here so this module
+ * stays free of a `composition-resolver` import — `error.ts` is
+ * upstream of the resolver in the dependency graph, and a runtime
+ * `Error` formatter has no business depending on lifecycle plumbing.
+ */
+export type ScenePhase = 'create' | 'timeline' | 'cleanup';
+
+/**
+ * Structured context for {@link formatSceneContext} — the PUL-Q006
+ * "scene id and (where applicable) the beat label or the timeline
+ * phase" surface contract, lifted out of bespoke message templates so
+ * future fields (composition entry, occurrence index, mode) get added
+ * here once instead of grepped back out of `Error.message`.
+ */
+export interface SceneErrorContext {
+  /** The scene id the diagnostic belongs to (PUL-Q006 mandatory clause). */
+  readonly sceneId: string;
+  /**
+   * The lifecycle phase whose throw produced the diagnostic, when one
+   * applies. Preload / abort / manifest / registry errors have no
+   * phase; lifecycle failures (`create` / `timeline` / `cleanup`) do.
+   */
+  readonly phase?: ScenePhase;
+  /**
+   * The beat label the diagnostic concerns, when one applies. The URL
+   * `beat=` value for a missing-label diagnostic, or the offending
+   * authored label for a {@link import('./timeline').SceneTimelineLabelError}.
+   */
+  readonly beat?: string;
+}
+
+/**
+ * Render the canonical PUL-Q006 scene-error context prefix.
+ *
+ * Used by every public-surface error template that scopes to a scene,
+ * so a future regression that drops the scene id, phase, or beat at
+ * any one seam shows up as a behavioral diff at this single helper
+ * rather than as one bespoke message-template per surface. Existing
+ * resolver / timeline wording (e.g. `composition resolution failed:
+ * scene "X" create threw: ...`) keeps its prose and continues to
+ * satisfy the requirement on its own; this helper is the seam for
+ * surfaces that compose the prefix programmatically (the loader's
+ * `buildOnSceneFailed`) and for future fields per the PUL-Q006
+ * preflight.
+ *
+ * Output shapes:
+ *  - `{ sceneId: 'X' }`                                       → `scene "X"`
+ *  - `{ sceneId: 'X', phase: 'create' }`                      → `scene "X" failed during create`
+ *  - `{ sceneId: 'X', beat: 'b' }`                            → `scene "X" at beat "b"`
+ *  - `{ sceneId: 'X', phase: 'timeline', beat: 'b' }`         → `scene "X" failed during timeline at beat "b"`
+ */
+export function formatSceneContext(context: SceneErrorContext): string {
+  let out = `scene "${context.sceneId}"`;
+  if (context.phase !== undefined) out += ` failed during ${context.phase}`;
+  if (context.beat !== undefined) out += ` at beat "${context.beat}"`;
+  return out;
+}

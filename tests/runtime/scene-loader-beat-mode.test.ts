@@ -140,11 +140,11 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       expect(lifecycleLog).toEqual(['create']);
       expect(stage.attrs.get('data-pulsar-scene-target')).toBe('intro');
       expect(stage.attrs.get('data-pulsar-navigation-error')).toBe(
-        'beat positioning failed: beat "unknown-label" does not exist in scene "intro"',
+        'beat positioning failed: scene "intro" at beat "unknown-label" — beat does not exist',
       );
       expect(captured).toHaveLength(1);
       expect((captured[0] as Error).message).toBe(
-        'beat positioning failed: beat "unknown-label" does not exist in scene "intro"',
+        'beat positioning failed: scene "intro" at beat "unknown-label" — beat does not exist',
       );
 
       // Release the runner so the lifecycle completes naturally.
@@ -673,6 +673,11 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       // `buildCtx` was not invoked stops a regression that
       // pre-emptively built ctx on the error path (wasted allocation
       // and a misleading "fresh navigation" signal to mode listeners).
+      // Pin the surface-error contract too so a regression that
+      // silently drops the `surfaceError` call on the handleError
+      // path cannot pass this test (it would otherwise look identical
+      // to "correctly handled, no lifecycle").
+      const captured: unknown[] = [];
       const stage = buildStage();
       const probe = buildModeProbe();
       const loader = createSceneLoader({
@@ -682,13 +687,19 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
         buildCtx: probe.buildCtx,
         createPreloader: () => () => undefined,
         timeline: noopTimeline,
-        onError: () => undefined,
+        onError: (err) => {
+          captured.push(err);
+        },
       });
 
       loader.handleError(new Error('navigation grammar is invalid: parse failure'));
       await loader.idle();
 
       expect(probe.modes).toEqual([]);
+      expect(captured).toHaveLength(1);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(
+        /navigation grammar is invalid: parse failure/,
+      );
     });
 
     it('rejects a constructed target with an unknown mode (defense-in-depth for ADR-007)', async () => {
@@ -813,6 +824,13 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       // invoked stops a regression that pre-emptively ran the builder
       // (wasted side effects, plus a misleading "fresh navigation"
       // signal to mode listeners).
+      // Also pin the rollback contract — a regression that suppresses
+      // `resetStageAttrs()` + `surfaceError()` on this path would
+      // leave the failure invisible (stage attrs would lie about a
+      // half-loaded scene); the ctx-only assertion cannot tell the
+      // difference between "correctly surfaced" and "silently
+      // swallowed."
+      const captured: unknown[] = [];
       const intro = buildScene({ id: 'intro' });
       const stage = buildStage();
       const probe = buildModeProbe();
@@ -825,12 +843,18 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
           throw new Error('preloader factory bug');
         },
         timeline: noopTimeline,
-        onError: () => undefined,
+        onError: (err) => {
+          captured.push(err);
+        },
       });
 
       await loader.handle(sceneTarget('intro'));
 
       expect(probe.modes).toEqual([]);
+      expect(captured).toHaveLength(1);
+      expect((captured[0] as Error).message).toContain('preloader factory bug');
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(/preloader factory bug/);
     });
 
     it('does not invoke buildCtx when scene resolution fails (no lifecycle, no ctx)', async () => {
@@ -839,6 +863,11 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       // because nothing is mounted; charging buildCtx in this path
       // would be wasted work and could leak mode-aware listeners on
       // failed navigations.
+      // Pin the surface-error contract too — a regression that drops
+      // the `surfaceError(err)` call on the `resolveSceneNavigation`
+      // catch path would leave the navigation silent (no stage error,
+      // no `onError`); a ctx-only assertion would not catch that.
+      const captured: unknown[] = [];
       const stage = buildStage();
       const probe = buildModeProbe();
       const loader = createSceneLoader({
@@ -848,12 +877,17 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
         buildCtx: probe.buildCtx,
         createPreloader: () => () => undefined,
         timeline: noopTimeline,
-        onError: () => undefined,
+        onError: (err) => {
+          captured.push(err);
+        },
       });
 
       await loader.handle(sceneTarget('does-not-exist'));
 
       expect(probe.modes).toEqual([]);
+      expect(captured).toHaveLength(1);
+      expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(/does-not-exist/);
+      expect(stage.attrs.has('data-pulsar-scene-target')).toBe(false);
     });
   });
 });

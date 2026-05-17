@@ -14,6 +14,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-q003-url-state-determinism-preflight.md](pul-q003-url-state-determinism-preflight.md) | Guardrails for enforcing URL-only runtime target selection without persisted browser or host state. |
 | [pul-q004-resource-cleanup-preflight.md](pul-q004-resource-cleanup-preflight.md) | Guardrails for enforcing scene resource cleanup completeness through existing lifecycle, audio, timeline, presenter, and prompter boundaries. |
 | [pul-q005-validation-actionability-preflight.md](pul-q005-validation-actionability-preflight.md) | Guardrails for making runtime validation findings locate the offending declaration and failed condition without duplicating validation schemas or error systems. |
+| [pul-q006-error-surfacing-context-preflight.md](pul-q006-error-surfacing-context-preflight.md) | Guardrails for surfacing runtime errors with scene, beat, and lifecycle phase context through existing diagnostic seams. |
 | [pul-q007-runtime-code-execution-preflight.md](pul-q007-runtime-code-execution-preflight.md) | Guardrails for statically banning runtime code execution outside the published bundle. |
 | [pul-q009-asset-failure-surfacing-preflight.md](pul-q009-asset-failure-surfacing-preflight.md) | Guardrails for surfacing asset preload failures with scene and asset context before mounting. |
 | [pul-f013-present-mode-preflight.md](pul-f013-present-mode-preflight.md) | Guardrails for implementing default `mode=present` behavior. |
