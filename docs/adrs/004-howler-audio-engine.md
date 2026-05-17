@@ -146,6 +146,35 @@ PUL-F024 lands the runtime side in `src/runtime/audio.ts`:
   `'audible'` is the default for every other mode. Future variations
   (export silence, ducking, bus volume, an audio-status UI) extend
   this same union rather than scattering branches across the runtime.
+- **PUL-Q010 latency bound (≤ 100 ms).** Master mute engagement under
+  PUL-F025 is bounded end to end: from the accepted
+  `'toggle-master-mute'` presenter command at the controller boundary
+  (`src/runtime/presenter.ts` `centralWrapped`) to
+  `AudioEngine.setMasterMute(...)` returning, the path is one
+  synchronous call chain — no `await`, `queueMicrotask`, timer, fade
+  interpolation, or runner hop. The loader-owned audio handler
+  (`src/runtime/scene-loader.ts` `buildPresenterPipe`) is subscribed to
+  the controller BEFORE the runner subscribes via
+  `input.presenter.subscribe(...)`, so it runs FIRST in the controller's
+  subscription-order fan-out and a slow or throwing runner subscriber
+  cannot push the engine flip past the bound. The per-subscriber
+  try/catch in `centralWrapped` keeps a throwing runner subscriber
+  from masking the audio flip. Tests pinning these properties live at
+  `tests/runtime/scene-loader-present.test.ts` (PUL-Q010 block in the
+  PUL-F025 describe — synchronous observability of the engine flip
+  on the next statement after `emit()`, ordering, slow-runner
+  immunity, throwing-runner isolation),
+  `tests/runtime/audio.test.ts` (PUL-Q010 block in the master-mute
+  describe — synchronous engine delegation with no per-sound
+  iteration on the mute path), and
+  `tests/runtime/audio-engine.test.ts` (PUL-Q010
+  production-Howler-boundary test —
+  `createHowlerAudioEngine.setMasterMute(b)` forwards synchronously
+  to `Howler.mute(b)`). The wall-clock budget collapses to
+  "synchronous" at this seam because a single synchronous call chain
+  costs sub-millisecond on any realistic V8; the structural
+  observability checks above are the gate of record. Detailed
+  guardrails: `docs/design/pul-q010-master-mute-responsiveness-preflight.md`.
 - Rehearsal (PUL-F026) lives entirely on this audio-service seam — not
   as a head-only timeline-runner hint, not as a slice truncation, not
   as a presenter command. Rehearsal preserves the same composition
