@@ -43,7 +43,7 @@ import type {
   CompositionTimelineAdapter,
   SceneFailureEvent,
 } from './composition-resolver';
-import { describeError } from './error';
+import { describeErrorDetailed } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
   NAVIGATION_MODES,
@@ -624,7 +624,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         }
       }
       // Public diagnostic: scene id + phase + composition context +
-      // mode + describeError rendering. Wrapped in an `Error` so
+      // mode + the resolver-rendered `event.message`. Wrapped in an `Error` so
       // existing `onError` consumers that call `err.message` keep
       // working. `event.cause` deliberately stays inside the resolver
       // — the loader never publishes it (ADR-028's "no raw causes"
@@ -655,8 +655,19 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   };
 
   const surfaceError = (err: unknown): void => {
-    onError(err);
-    setStageAttr(ATTR_ERROR, describeError(err));
+    // PUL-Q009: render the public-surface diagnostic through the
+    // bounded multi-cause walker so a preload failure (resolver wrap
+    // around an asset-preloader AggregateError) surfaces the scene id
+    // AND every failing declared asset path on `data-pulsar-navigation-error`
+    // and in `onError`'s argument. When the walker has nothing extra
+    // to add (a plain Error whose `.message` is already the full
+    // story), pass the original through so consumers comparing error
+    // identity / .message wording see no change.
+    const rendered = describeErrorDetailed(err);
+    const surfaced =
+      err instanceof Error && err.message === rendered ? err : new Error(rendered, { cause: err });
+    onError(surfaced);
+    setStageAttr(ATTR_ERROR, rendered);
   };
 
   /**
