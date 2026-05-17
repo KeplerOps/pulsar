@@ -43,7 +43,7 @@ import type {
   CompositionTimelineAdapter,
   SceneFailureEvent,
 } from './composition-resolver';
-import { describeErrorDetailed } from './error';
+import { describeErrorDetailed, formatSceneContext } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
   NAVIGATION_MODES,
@@ -600,6 +600,13 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const entries: string[] = [];
     const seen = new Set<string>();
     const renderMessage = (event: SceneFailureEvent): string => {
+      // PUL-Q006 / ADR-028: scene id + lifecycle phase come from the
+      // canonical `formatSceneContext` helper in `./error.ts` so any
+      // future PUL-Q006 context (composition entry, occurrence index,
+      // mode) gets added there once instead of re-templated at every
+      // public-surface seam (codex preflight: "do not satisfy the
+      // requirement by parsing Error.message").
+      const prefix = formatSceneContext({ sceneId: event.sceneId, phase: event.phase });
       // Codex review cycle 2: render the ABSOLUTE composition entry
       // index (slice start + resolver-level slice-relative index).
       // The resolver's `event.entryIndex` is relative to the manifest
@@ -611,7 +618,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         composition === undefined
           ? ''
           : ` (composition "${composition.id}" entry [${composition.startIndex + event.entryIndex}])`;
-      return `scene "${event.sceneId}" failed during ${event.phase}${compositionSuffix} under mode "${mode}": ${event.message}`;
+      return `${prefix}${compositionSuffix} under mode "${mode}": ${event.message}`;
     };
     return (event: SceneFailureEvent): void => {
       if (disposed) return;
@@ -769,9 +776,15 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       // surface stays non-fatal even when the operator's logger
       // throws.
       try {
+        // PUL-Q006: route the missing-beat diagnostic through the
+        // canonical `formatSceneContext` helper so the scene-id +
+        // beat-label fields come from the same structural seam
+        // `buildOnSceneFailed.renderMessage` uses. Future context
+        // (composition entry, occurrence index, mode) gets added at
+        // the helper and reaches this surface for free.
         surfaceError(
           new Error(
-            `beat positioning failed: beat "${beat}" does not exist in scene "${headSceneId}"`,
+            `beat positioning failed: ${formatSceneContext({ sceneId: headSceneId, beat })} — beat does not exist`,
           ),
         );
       } catch {

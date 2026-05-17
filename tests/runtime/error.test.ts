@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeError, describeErrorDetailed } from '../../src/runtime/error';
+import { describeError, describeErrorDetailed, formatSceneContext } from '../../src/runtime/error';
 
 describe('describeError', () => {
   it('returns the .message for an Error instance', () => {
@@ -107,5 +107,35 @@ describe('describeErrorDetailed (PUL-Q009 public-surface renderer)', () => {
     const out = describeErrorDetailed(a, { maxDepth: Number.POSITIVE_INFINITY });
     expect(out.startsWith('a — cause: b')).toBe(true);
     expect(out.length).toBeLessThan(200);
+  });
+});
+
+describe('formatSceneContext (PUL-Q006 scene-error context prefix)', () => {
+  it('renders the scene id alone when neither phase nor beat is supplied', () => {
+    expect(formatSceneContext({ sceneId: 'intro' })).toBe('scene "intro"');
+  });
+
+  it('appends `failed during <phase>` when a lifecycle phase is supplied', () => {
+    expect(formatSceneContext({ sceneId: 'intro', phase: 'create' })).toBe(
+      'scene "intro" failed during create',
+    );
+    expect(formatSceneContext({ sceneId: 'intro', phase: 'timeline' })).toBe(
+      'scene "intro" failed during timeline',
+    );
+    expect(formatSceneContext({ sceneId: 'intro', phase: 'cleanup' })).toBe(
+      'scene "intro" failed during cleanup',
+    );
+  });
+
+  it('appends `at beat "<beat>"` when a beat label is supplied', () => {
+    expect(formatSceneContext({ sceneId: 'intro', beat: 'hook' })).toBe(
+      'scene "intro" at beat "hook"',
+    );
+  });
+
+  it('appends both phase and beat when both are supplied', () => {
+    expect(formatSceneContext({ sceneId: 'intro', phase: 'timeline', beat: 'hook' })).toBe(
+      'scene "intro" failed during timeline at beat "hook"',
+    );
   });
 });
