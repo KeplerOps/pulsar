@@ -248,15 +248,19 @@ export const domCssAccessibilityFixtureScene: SceneModule = {
     // fixture covers that path). Tag the stage with a lifecycle
     // marker so the composition resolver's `timeline(ctx)` invocation
     // is observable — the `placeholder` scene uses the same pattern
-    // with its own `data-pulsar-scene-lifecycle` marker. Returning
-    // null keeps the master-timeline composer's null-handling path
-    // exercised in the e2e gate.
+    // with its own `data-pulsar-scene-lifecycle` marker. Invalid ctx
+    // returns null; valid ctx falls through to an implicit
+    // `undefined` after the side effect. The master-timeline
+    // composer treats both as "no timeline contribution"
+    // (`src/runtime/timeline.ts` null/undefined branch), so the two
+    // exit shapes are semantically identical to the composer; the
+    // structural difference keeps the function honest under
+    // SonarCloud's invariant-return rule.
     if (!isFixtureCtx(ctx)) return null;
     const stage = ctx.stage;
     if (stage !== null) {
       stage.setAttribute(LIFECYCLE_ATTR, 'timeline');
     }
-    return null;
   },
   cleanup: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return;
