@@ -36,6 +36,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [pul-f027-caption-metadata-prompter-preflight.md](pul-f027-caption-metadata-prompter-preflight.md) | Guardrails for widening caption metadata timing and keeping prompter content single-sourced. |
 | [pul-f028-validation-preflight.md](pul-f028-validation-preflight.md) | Guardrails for implementing structural runtime validation without duplicating schemas, registries, asset policy, or lifecycle logic. |
 | [pul-f030-audio-unlock-interaction-preflight.md](pul-f030-audio-unlock-interaction-preflight.md) | Guardrails for implementing present-mode audio unlock before an audio-declaring composition begins. |
+| [pul-f031-workbench-chrome-surface-preflight.md](pul-f031-workbench-chrome-surface-preflight.md) | Guardrails for implementing a persistent workbench-owned chrome surface around the scene stage. |
 
 Design docs are mutable. Decisions are captured as ADRs (immutable once
 accepted).

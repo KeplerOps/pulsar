@@ -316,6 +316,49 @@ export interface SceneLoaderOptions {
    *    a workbench-bootstrap defect, not an inert seam.
    */
   readonly audioUnlockAdapter?: AudioUnlockAdapter;
+  /**
+   * PUL-F031 / ADR-031: workbench-supplied chrome controller. The
+   * loader calls `chrome.applyMode(effectiveMode(target))` once per
+   * navigation, immediately after mode-grammar validation passes and
+   * BEFORE scene resolution / lifecycle work, so chrome visibility
+   * tracks the addressed workbench mode (`present` → visible;
+   * `standalone` / `screenshot` → hidden; other modes → visible per
+   * preflight policy) and a present-mode composition does not flash
+   * an un-chromed frame.
+   *
+   * Chrome is workbench-owned and built at bootstrap by
+   * `src/runtime/workbench-chrome.ts`. The loader's seam is
+   * intentionally narrow: one call per navigation with the URL-derived
+   * mode. The chrome controller itself decides what "visible" /
+   * "hidden" mean structurally (DOM `hidden` attribute, visibility
+   * data attribute) — the loader does not know.
+   *
+   * Optional: a workbench bootstrap that has not wired chrome yet
+   * (Node tests, pre-PUL-F031 bootstraps) omits the field and the
+   * seam is structurally inert, the same inert-seam pattern
+   * {@link renderPrompter} / {@link presenterCommands} /
+   * {@link audioUnlockAdapter} follow.
+   *
+   * The chrome surface persists across scene navigations within a
+   * composition because the loader's single call site is upstream of
+   * the resolver's per-scene loop — a multi-scene composition under
+   * `mode=present` produces exactly one `applyMode('present')` call.
+   * Per ADR-007 / ADR-016 / PUL-A008, chrome state is workbench-owned
+   * and scenes never see a chrome handle.
+   */
+  readonly chrome?: WorkbenchChromeAdapter;
+}
+
+/**
+ * PUL-F031 / ADR-031: workbench-supplied chrome controller surface.
+ * The loader only needs the one operation — apply a validated mode
+ * to chrome — so the interface stays narrow. The full chrome
+ * controller lives in {@link import('./workbench-chrome').WorkbenchChromeController}
+ * with a `dispose()` method the workbench (not the loader) calls on
+ * HMR teardown.
+ */
+export interface WorkbenchChromeAdapter {
+  applyMode(mode: NavigationMode): void;
 }
 
 /**
@@ -1412,14 +1455,68 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
   };
 
-  const runOnce = async (event: NavigationEvent, myGen: number): Promise<void> => {
+  /**
+   * PUL-F031 / ADR-031: dispatch the workbench chrome surface for a
+   * target event synchronously, returning any thrown error so the
+   * caller can surface it after stage-attr reset.
+   *
+   * Called from {@link enqueue} BEFORE the queue serializes the event,
+   * because chrome is workbench-owned and outside the scene-lifecycle
+   * serialization invariant — flipping `present` → `standalone` /
+   * `screenshot` MUST hide chrome immediately rather than waiting for
+   * the prior load's `cleanup(ctx)` to drain (codex review, cycle 1,
+   * one-off "suppressing-mode chrome updates wait for old cleanup").
+   * The mode is re-validated through {@link validateModeGrammar} so a
+   * forged `NavigationTarget` (non-parser caller) never reaches the
+   * chrome adapter; `runTarget` will surface the same validation
+   * error downstream so the operator sees one consistent diagnostic.
+   *
+   * Synchronous adapter throws (codex review, cycle 1, one-off
+   * "chrome adapter failures bypass the loader error envelope") are
+   * caught and routed through the same {@link surfaceError} envelope
+   * as every other navigation diagnostic. `runOnce` defers the
+   * surface until after `resetStageAttrs()` so the
+   * `data-pulsar-navigation-error` attribute survives the post-abort
+   * reset, AND skips the lifecycle for the failing event because
+   * chrome is in an unknown state.
+   */
+  const dispatchChrome = (target: NavigationTarget): Error | null => {
+    if (options.chrome === undefined) return null;
+    if (validateModeGrammar(target) !== null) return null;
+    try {
+      options.chrome.applyMode(effectiveMode(target));
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  };
+
+  const runOnce = async (
+    event: NavigationEvent,
+    myGen: number,
+    chromeErr: Error | null,
+  ): Promise<void> => {
     // Drop superseded events before doing any visible work — both at
     // entry (handle → handle race) and after the abort-and-await yield
-    // (slow cleanup observed by another enqueue).
+    // (slow cleanup observed by another enqueue). A chrome error from
+    // a superseded enqueue is intentionally dropped here: the newer
+    // event has already dispatched chrome (possibly successfully), so
+    // the older error is moot.
     if (myGen !== generation || disposed) return;
     await abortAndAwait();
     if (myGen !== generation || disposed) return;
     resetStageAttrs();
+
+    if (chromeErr !== null) {
+      // Chrome dispatch failed at enqueue — surface through the same
+      // envelope as grammar / resolution failures AND skip the
+      // lifecycle for this event. Chrome is in an unknown state;
+      // running scene lifecycle around an unsynchronized chrome
+      // surface would compound the workbench bootstrap defect rather
+      // than recover from it.
+      surfaceError(chromeErr);
+      return;
+    }
 
     if (event.kind === 'error') {
       surfaceError(event.err);
@@ -1430,6 +1527,14 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
 
   const enqueue = (event: NavigationEvent): Promise<void> => {
     if (disposed) return pending;
+    // PUL-F031 / ADR-031: dispatch chrome SYNCHRONOUSLY at enqueue,
+    // BEFORE the queue serializes. Workbench chrome is outside the
+    // scene-lifecycle serialization invariant — a mode flip (present
+    // → standalone) hides chrome immediately rather than waiting for
+    // the prior load's cleanup. Errors are captured and forwarded to
+    // `runOnce`, which surfaces them after `resetStageAttrs()` (so
+    // the diagnostic attr is not wiped) and bails the lifecycle.
+    const chromeErr = event.kind === 'target' ? dispatchChrome(event.target) : null;
     // Eagerly abort any in-flight load so the queued event can
     // proceed past `await load.settled` immediately. Without this, a
     // popstate-fired re-navigation would wait for the current load to
@@ -1438,8 +1543,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     if (inFlight !== null) inFlight.controller.abort();
     const myGen = ++generation;
     pending = pending.then(
-      () => runOnce(event, myGen),
-      () => runOnce(event, myGen),
+      () => runOnce(event, myGen, chromeErr),
+      () => runOnce(event, myGen, chromeErr),
     );
     return pending;
   };

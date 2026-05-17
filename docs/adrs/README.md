@@ -55,3 +55,5 @@ Each ADR includes:
 | [027](027-caption-timestamp-grammar.md) | Caption Timestamp Grammar — `at` Accepts a Millisecond Offset or a Beat Label, Validated at the Scene Schema Boundary | Accepted |
 | [028](028-scene-level-error-isolation.md) | Scene-Level Error Isolation | Accepted |
 | [029](029-present-mode-audio-unlock-gate.md) | Present-Mode Audio Unlock Gate Before Composition Start | Accepted |
+| [030](030-browser-support.md) | Browser Support Contract | Accepted |
+| [031](031-workbench-chrome-surface.md) | Workbench Chrome Surface — Workbench-Owned, Mode-Governed, Persistent | Accepted |
