@@ -43,7 +43,7 @@ import type {
   CompositionTimelineAdapter,
   SceneFailureEvent,
 } from './composition-resolver';
-import { describeError, describeErrorDetailed } from './error';
+import { describeErrorDetailed } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
   NAVIGATION_MODES,
@@ -624,7 +624,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         }
       }
       // Public diagnostic: scene id + phase + composition context +
-      // mode + describeError rendering. Wrapped in an `Error` so
+      // mode + the resolver-rendered `event.message`. Wrapped in an `Error` so
       // existing `onError` consumers that call `err.message` keep
       // working. `event.cause` deliberately stays inside the resolver
       // — the loader never publishes it (ADR-028's "no raw causes"
