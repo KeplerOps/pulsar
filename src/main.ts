@@ -39,6 +39,7 @@ import { createSceneRegistry } from './runtime/registry';
 import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loader';
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
+import { createDomWorkbenchChrome } from './runtime/workbench-chrome';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
 const stage = document.querySelector('#stage');
@@ -212,6 +213,31 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
   },
 });
 
+// PUL-F031 / ADR-031: workbench chrome surface. The chrome controller
+// is workbench-owned, mounted as a sibling of `#stage` BEFORE
+// `bootstrapNavigation()` registers its listeners, and persists across
+// scene navigations within a composition. The loader (above) calls
+// `chrome.applyMode(effectiveMode(target))` once per navigation; this
+// factory flips the `hidden` boolean + `data-pulsar-chrome-visibility`
+// attribute on the same element instance, so persistence is structural.
+// The chrome surface ships empty today — actual chrome content
+// (presenter controls per PUL-F020 / F021 / F025, captions chrome,
+// audio chrome) lands as those surfaces' own requirements. ARIA
+// `role="complementary"` + `aria-label` keeps the chrome region
+// announced without interfering with the scene's focus order
+// (PUL-Q008). Mounting on `document.body` keeps `#stage` ownership
+// untouched (preflight: do not re-parent `#stage`).
+const chrome = createDomWorkbenchChrome({
+  mount: (element) => document.body.appendChild(element as unknown as Node),
+  createSurface: () => {
+    const surface = document.createElement('div');
+    surface.dataset.pulsarChrome = 'surface';
+    surface.setAttribute('role', 'complementary');
+    surface.setAttribute('aria-label', 'workbench chrome');
+    return surface;
+  },
+});
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -222,6 +248,7 @@ const loader = createSceneLoader({
   audioEngine,
   renderPrompter,
   audioUnlockAdapter,
+  chrome,
 });
 
 const onNavigate = (event: Event): void => {
@@ -247,4 +274,7 @@ import.meta.hot?.dispose(() => {
   globalThis.removeEventListener(PULSAR_NAVIGATE_EVENT_TYPE, onNavigate);
   globalThis.removeEventListener(PULSAR_NAVIGATE_ERROR_EVENT_TYPE, onNavigateError);
   loader.dispose();
+  // PUL-F031 / ADR-031: remove the chrome surface so HMR re-evaluation
+  // does not accumulate workbench chrome roots on `document.body`.
+  chrome.dispose();
 });

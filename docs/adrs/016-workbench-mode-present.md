@@ -30,7 +30,7 @@ not yet landed in this repo:
 
 | Facet | Surface that delivers it | Status |
 |-------|--------------------------|--------|
-| Render full chrome | Workbench-shell requirement (not yet drafted) | absent |
+| Render full chrome | PUL-F031 / ADR-031 workbench chrome surface | **delivered (structure)** — workbench-owned DOM root mounted by `src/runtime/workbench-chrome.ts`, mode-governed via `chromeVisibilityFor`. The chrome surface ships empty today; actual presenter UI content lands with the presenter-input facet (PUL-F020 / F021 / F025). |
 | Render audio | Audio service per ADR-004 (Howler.js); a future PUL-F* requirement will deliver the service | absent |
 | Render inter-scene transitions | GSAP timeline runner per ADR-003; the runner's adapter slot exists in `composition-resolver.ts` but the GSAP implementation has not landed | absent (placeholder runner in `src/main.ts`) |
 | Respond to presenter input | Presenter controls per PUL-F020 (advance / hold / skip), PUL-F021 (pause / resume), PUL-F025 (master mute) | absent |
@@ -179,6 +179,21 @@ When all four arrive, PUL-F013 transitions to ACTIVE and the issue
 ↔ requirement link upgrades from `DOCUMENTS` to `IMPLEMENTS`. Until
 then, treating this PR as satisfying PUL-F013 would be a
 traceability/status mismatch.
+
+## Update — 2026-05-18 (PUL-F031 lands)
+
+PUL-F031 ships the workbench chrome surface — see ADR-031. The
+"Render full chrome" facet in the table above is now structurally
+delivered: chrome is workbench-owned, mounted before the first
+navigation, mode-governed (`present` → visible; `standalone` /
+`screenshot` → hidden), and persistent across scene navigations
+within a composition. The chrome surface itself ships empty;
+PUL-F020 / F021 / F025 land the presenter controls that populate it.
+
+PUL-F013 STILL stays DRAFT. Three facets remain absent (audio,
+inter-scene transitions, presenter input). The ACTIVE bar is
+unchanged — every facet must land as a real rendering / input
+surface with end-to-end tests.
 
 ## Related ADRs
 
