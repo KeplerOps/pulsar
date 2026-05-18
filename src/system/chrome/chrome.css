@@ -1,0 +1,342 @@
+/* Pulsar L2 chrome — slot positioning + flicker keyframes + scene
+ * authoring affordances (typewriter chars, clock, popout, src-mark).
+ *
+ * The atmospheric stack is in `./atmospheric.css`. This file styles
+ * the slots scenes mount content into (title / brand / centerpiece /
+ * lower-third / tag / act-frame) plus per-character typewriter
+ * primitives used by scene templates.
+ */
+
+/* ----- title slot (left-rail headline) -------------------------- */
+.pulsar-title {
+  position: absolute;
+  left: clamp(28px, var(--pulsar-space-rail), 96px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: var(--pulsar-z-chrome-slot);
+  width: min(46vw, 720px);
+  color: var(--pulsar-color-fg-white);
+  font-family: var(--pulsar-type-display);
+  font-weight: 700;
+  font-size: var(--pulsar-type-display-size);
+  line-height: var(--pulsar-type-display-line);
+  letter-spacing: var(--pulsar-type-display-tracking);
+  text-transform: uppercase;
+  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.05), 0 18px 60px rgba(0, 0, 0, 0.72);
+}
+
+.pulsar-title .word {
+  display: block;
+  white-space: nowrap;
+  position: relative;
+  opacity: 0;
+  transform: translateY(10px);
+  filter: blur(5px);
+  animation: pulsar-word-in 1000ms var(--pulsar-motion-ease-entry) forwards;
+}
+
+.pulsar-title .word:nth-child(1) {
+  animation-delay: 200ms;
+}
+.pulsar-title .word:nth-child(2) {
+  animation-delay: 580ms;
+}
+.pulsar-title .word:nth-child(3) {
+  animation-delay: 960ms;
+}
+.pulsar-title .word:nth-child(4) {
+  animation-delay: 1340ms;
+}
+
+@keyframes pulsar-word-in {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* Flicker-out keyframes for each chrome layer. The chrome effects
+ * helper adds these classes with small offsets so the layers go
+ * offline on independent rhythms. */
+.pulsar-title.flicker-out-a {
+  animation: pulsar-flicker-out-a 1500ms ease-in-out forwards;
+}
+
+.pulsar-brand.flicker-out-b {
+  animation: pulsar-flicker-out-b 1500ms ease-in-out forwards;
+}
+
+.pulsar-act.flicker-out-c {
+  animation: pulsar-flicker-out-c 1500ms ease-in-out forwards;
+}
+
+.fade-out-clean {
+  animation: pulsar-fade-out-clean 800ms ease-out forwards;
+}
+
+@keyframes pulsar-flicker-out-a {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  20% {
+    opacity: 0.68;
+    filter: blur(0.2px);
+  }
+  36% {
+    opacity: 0.9;
+    filter: blur(0);
+  }
+  62% {
+    opacity: 0.3;
+    filter: blur(0.8px);
+  }
+  78% {
+    opacity: 0.46;
+    filter: blur(0.5px);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(2px);
+  }
+}
+
+@keyframes pulsar-flicker-out-b {
+  0% {
+    opacity: 1;
+  }
+  18% {
+    opacity: 0.6;
+  }
+  34% {
+    opacity: 0.85;
+  }
+  58% {
+    opacity: 0.4;
+  }
+  82% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes pulsar-flicker-out-c {
+  0% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  22% {
+    opacity: 0.75;
+    transform: translateX(-2px);
+  }
+  44% {
+    opacity: 0.6;
+    transform: translateX(1px);
+  }
+  66% {
+    opacity: 0.4;
+    transform: translateX(-1px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulsar-fade-out-clean {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ----- brand mark slot (bottom-left) ---------------------------- */
+.pulsar-brand {
+  position: absolute;
+  left: clamp(28px, var(--pulsar-space-rail), 96px);
+  bottom: calc(var(--pulsar-space-letterbox) + 12px);
+  z-index: var(--pulsar-z-chrome-slot);
+  display: flex;
+  align-items: center;
+  gap: var(--pulsar-space-lg);
+  color: var(--pulsar-color-fg-soft);
+  font-family: var(--pulsar-type-sans);
+  font-size: var(--pulsar-type-caption-size);
+}
+
+/* ----- centerpiece slot (middle) -------------------------------- */
+.pulsar-center {
+  position: absolute;
+  inset: var(--pulsar-space-letterbox) 0;
+  z-index: var(--pulsar-z-chrome-slot);
+  display: grid;
+  place-items: center;
+  padding: 0 clamp(40px, 8vw, 160px);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 800ms var(--pulsar-motion-ease-exit);
+}
+
+.pulsar-center.show {
+  opacity: 1;
+}
+
+/* ----- lower-third slot (presenter HUD area) -------------------- */
+.pulsar-lower-third {
+  position: absolute;
+  left: clamp(28px, var(--pulsar-space-rail), 96px);
+  right: clamp(28px, var(--pulsar-space-rail), 96px);
+  bottom: calc(var(--pulsar-space-letterbox) + 60px);
+  z-index: var(--pulsar-z-hud);
+  color: var(--pulsar-color-fg-dim);
+  font-family: var(--pulsar-type-sans);
+  font-size: var(--pulsar-type-caption-size);
+  pointer-events: auto;
+}
+
+/* ----- tag slot (top-right watermark) --------------------------- */
+.pulsar-tag {
+  position: fixed;
+  top: 24px;
+  right: 28px;
+  z-index: var(--pulsar-z-chrome-slot);
+  color: var(--pulsar-color-fg-soft);
+  font-family: var(--pulsar-type-mono);
+  font-size: var(--pulsar-type-caption-size);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: var(--pulsar-opacity-tag);
+}
+
+/* ----- act-frame slot (right-panel scene mount area) ----------- */
+.pulsar-act {
+  position: absolute;
+  inset: var(--pulsar-space-letterbox) 0;
+  z-index: var(--pulsar-z-scene);
+  pointer-events: none;
+}
+
+.pulsar-act__frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+}
+
+/* ----- typewriter character primitives (typeNode / typeInto) ---- */
+.ph-char {
+  opacity: 0;
+  display: inline;
+  transition: opacity 80ms linear;
+}
+
+.ph-char.show {
+  opacity: 1;
+}
+
+.ph-char.glow,
+.glow {
+  color: var(--pulsar-color-accent-red-mid);
+  text-shadow: 0 0 6px rgba(255, 88, 98, 0.32);
+}
+
+/* ----- elapsed clock overlay (please-hack timing) -------------- */
+.ph-clock {
+  position: fixed;
+  top: calc(var(--pulsar-space-letterbox) + 12px);
+  right: clamp(28px, var(--pulsar-space-rail), 96px);
+  z-index: var(--pulsar-z-hud);
+  color: var(--pulsar-color-accent-cyan);
+  font-family: var(--pulsar-type-mono);
+  font-size: var(--pulsar-type-h3-size);
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.ph-clock__label {
+  font-size: var(--pulsar-type-caption-size);
+  text-transform: uppercase;
+  color: var(--pulsar-color-fg-faint);
+}
+
+.ph-clock__time {
+  font-variant-numeric: tabular-nums;
+}
+
+.ph-clock__col {
+  opacity: 0.6;
+}
+
+/* ----- popout punches (please-hack centred reveals) ------------ */
+.ph-popout {
+  position: fixed;
+  inset: 0;
+  z-index: var(--pulsar-z-hud);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.ph-popout__text {
+  font-family: var(--pulsar-type-display);
+  font-weight: 700;
+  font-size: var(--pulsar-type-h1-size);
+  text-transform: uppercase;
+  color: var(--pulsar-color-fg-white);
+  text-shadow: 0 0 24px rgba(125, 245, 255, 0.45);
+  animation: pulsar-popout-grow 2600ms var(--pulsar-motion-ease-slam) forwards, pulsar-popout-fade
+    2600ms var(--pulsar-motion-ease-exit) forwards;
+}
+
+@keyframes pulsar-popout-grow {
+  0% {
+    transform: scale(0.6);
+  }
+  100% {
+    transform: scale(1.05);
+  }
+}
+
+@keyframes pulsar-popout-fade {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ----- source-citation mark ----------------------------------- */
+.src-mark {
+  position: fixed;
+  bottom: calc(var(--pulsar-space-letterbox) + 12px);
+  right: clamp(28px, var(--pulsar-space-rail), 96px);
+  z-index: var(--pulsar-z-hud);
+  color: var(--pulsar-color-fg-faint);
+  font-family: var(--pulsar-type-mono);
+  font-size: var(--pulsar-type-caption-size);
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  max-width: 50vw;
+  text-align: right;
+}
