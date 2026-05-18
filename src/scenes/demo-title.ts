@@ -50,11 +50,15 @@ export const demoTitleScene: SceneModule = {
   create: (ctx: unknown) => {
     mountDemoRoot(ctx, ROOT_VALUE, (root, ownerDoc) => {
       const title = ownerDoc.createElement('h1');
-      title.setAttribute('data-pulsar-demo-title', '');
+      // `dataset.pulsarDemoTitle = ''` is the idiomatic surface for
+      // `data-*` attributes — Sonar's prefer-dataset rule flags
+      // `setAttribute('data-...', '')` and the test stub mirrors
+      // dataset writes so this stays test-compatible.
+      if (title.dataset !== undefined) title.dataset.pulsarDemoTitle = '';
       title.textContent = TITLE_TEXT;
       root.appendChild?.(title);
       const subtitle = ownerDoc.createElement('p');
-      subtitle.setAttribute('data-pulsar-demo-subtitle', '');
+      if (subtitle.dataset !== undefined) subtitle.dataset.pulsarDemoSubtitle = '';
       subtitle.textContent = SUBTITLE_TEXT;
       root.appendChild?.(subtitle);
     });

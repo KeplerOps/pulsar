@@ -22,8 +22,6 @@ import { buildDemoTimeline, cleanupDemoRoot, mountDemoRoot } from './demo-shared
 export const DEMO_FEATURE_ASSET_URL = '/assets/demo/pulsar-mark.svg';
 
 const ROOT_VALUE = 'demo-feature';
-const FEATURE_IMG_ATTR = 'data-pulsar-demo-feature-img';
-
 const BEAT_FEATURE_REVEAL = 'feature-reveal';
 
 const HEADLINE_TEXT = 'Composition over slides.';
@@ -49,20 +47,22 @@ export const demoFeatureScene: SceneModule = {
   create: (ctx: unknown) => {
     mountDemoRoot(ctx, ROOT_VALUE, (root, ownerDoc) => {
       const heading = ownerDoc.createElement('h2');
-      heading.setAttribute('data-pulsar-demo-headline', '');
+      // `dataset.pulsarDemoX = ''` is the idiomatic data-* surface —
+      // see `demo-title.ts` for the rationale.
+      if (heading.dataset !== undefined) heading.dataset.pulsarDemoHeadline = '';
       heading.textContent = HEADLINE_TEXT;
       root.appendChild?.(heading);
 
       // The preloader (PUL-F005) has already warmed `assets[0]` when
       // this hook runs; the <img> just points at the same URL.
       const img = ownerDoc.createElement('img');
-      img.setAttribute(FEATURE_IMG_ATTR, '');
+      if (img.dataset !== undefined) img.dataset.pulsarDemoFeatureImg = '';
       img.setAttribute('src', DEMO_FEATURE_ASSET_URL);
       img.setAttribute('alt', 'Pulsar mark');
       root.appendChild?.(img);
 
       const body = ownerDoc.createElement('p');
-      body.setAttribute('data-pulsar-demo-body', '');
+      if (body.dataset !== undefined) body.dataset.pulsarDemoBody = '';
       body.textContent = BODY_TEXT;
       root.appendChild?.(body);
     });

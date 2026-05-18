@@ -28,13 +28,23 @@ import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
 /**
  * The minimal shape the demo lifecycle hooks need from any element
  * they allocate via `ctx.stage.ownerDocument.createElement`. The
- * `appendChild` / `textContent` members are optional so off-DOM test
- * harnesses can supply bare records without those fields.
+ * `appendChild` / `textContent` / `dataset` members are optional so
+ * off-DOM test harnesses can supply bare records without them.
+ *
+ * `dataset` mirrors `HTMLElement.dataset` — the idiomatic surface
+ * for `data-*` attributes the demo scenes use to mark their authored
+ * children. Sonar's `prefer-dataset` rule prefers it over
+ * `setAttribute('data-...', '')` and the test stub
+ * (`tests/runtime/demo-composition.test.ts`) accordingly proxies
+ * dataset writes back into the same attribute-bag `setAttribute`
+ * uses, so demo unit tests stay agnostic of which surface authored
+ * the attribute.
  */
 export interface DemoDomElement {
   setAttribute(name: string, value: string): void;
   appendChild?(node: unknown): unknown;
   textContent?: string;
+  dataset?: Record<string, string>;
 }
 
 /** The factory `ctx.stage.ownerDocument` exposes to the demo scenes. */

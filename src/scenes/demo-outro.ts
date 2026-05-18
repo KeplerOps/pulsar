@@ -31,11 +31,13 @@ export const demoOutroScene: SceneModule = {
   create: (ctx: unknown) => {
     mountDemoRoot(ctx, ROOT_VALUE, (root, ownerDoc) => {
       const heading = ownerDoc.createElement('h2');
-      heading.setAttribute('data-pulsar-demo-headline', '');
+      // `dataset.pulsarDemoX = ''` is the idiomatic data-* surface —
+      // see `demo-title.ts` for the rationale.
+      if (heading.dataset !== undefined) heading.dataset.pulsarDemoHeadline = '';
       heading.textContent = HEADLINE_TEXT;
       root.appendChild?.(heading);
       const body = ownerDoc.createElement('p');
-      body.setAttribute('data-pulsar-demo-body', '');
+      if (body.dataset !== undefined) body.dataset.pulsarDemoBody = '';
       body.textContent = BODY_TEXT;
       root.appendChild?.(body);
     });
