@@ -161,12 +161,49 @@ function scanForbiddenSceneFields(sourceFile: ts.SourceFile): readonly SourceFin
         // The scanner now flags both `PropertySignature` and
         // `MethodSignature` members whose name is in the forbidden
         // set.
+        // PUL-A010 codex review cycle 2 class finding (index-signature
+        // bypass): an index signature `[key: string]: unknown` admits
+        // unbounded fields → unbounded caption-authoring slot.
+        // Structurally banned with the same opacity rule that bans
+        // opaque computed keys.
+        if (ts.isIndexSignatureDeclaration(member)) {
+          const idxStart = member.getStart(sourceFile);
+          const { line: idxLine } = sourceFile.getLineAndCharacterOfPosition(idxStart);
+          if (exempted.has(idxLine)) continue;
+          findings.push({
+            file: sourceFile.fileName,
+            line: idxLine + 1,
+            text: lineText(sourceFile, idxLine).trim(),
+            label: `index signature on ${node.name.text} interface — caption-authoring vector cannot be statically classified`,
+          });
+          continue;
+        }
         if (!ts.isPropertySignature(member) && !ts.isMethodSignature(member)) continue;
+        const start = member.getStart(sourceFile);
+        const { line } = sourceFile.getLineAndCharacterOfPosition(start);
+        // PUL-A010 codex review cycle 1 class finding (computed-key
+        // bypass on the canonical interface): an opaque computed key
+        // whose expression is an identifier reference — e.g. `const
+        // FIELD = 'prompterScript' as const; interface SceneModule {
+        // [FIELD]: unknown }` — installs a forbidden member that the
+        // static name extractor cannot resolve. Apply the same
+        // opacity ban rule 4 had for scene-shaped object literals.
+        if (ts.isComputedPropertyName(member.name)) {
+          const expr = member.name.expression;
+          if (!ts.isStringLiteralLike(expr)) {
+            if (exempted.has(line)) continue;
+            findings.push({
+              file: sourceFile.fileName,
+              line: line + 1,
+              text: lineText(sourceFile, line).trim(),
+              label: `opaque computed key on ${node.name.text} interface — caption-authoring vector cannot be statically classified`,
+            });
+            continue;
+          }
+        }
         const propName = getStaticPropertyName(member.name);
         if (propName === undefined) continue;
         if (!FORBIDDEN_SCENE_FIELDS.has(propName)) continue;
-        const start = member.getStart(sourceFile);
-        const { line } = sourceFile.getLineAndCharacterOfPosition(start);
         if (exempted.has(line)) continue;
         const memberKind = ts.isMethodSignature(member) ? 'method' : 'field';
         findings.push({
@@ -523,18 +560,84 @@ const SCENE_MODULE_AUTHORING_ROOTS: readonly string[] = ['scenes', 'compositions
  * identify the canonical scene shape and conservatively return no
  * names.
  */
-function getReferencedTypeNames(typeNode: ts.TypeNode | undefined): readonly string[] {
+/**
+ * Canonical declaration paths for the scene-shaped type names PUL-A009
+ * uses to detect scene-shaped object literals. Distinct from the
+ * caption-specific `CANONICAL_DECLARATION_PATHS` above, which records
+ * the canonical path for `Caption`. PUL-A010 codex review cycle 2
+ * class finding (source-insensitive leaf collapsing) — a qualified
+ * `External.SceneModule` reference must resolve to the canonical
+ * declaration site before the leaf is treated as canonical.
+ */
+const SCENE_SHAPED_CANONICAL_PATHS: ReadonlyMap<string, string> = new Map([
+  ['SceneModule', 'src/runtime/scene.ts'],
+  ['CompositionEntryOverride', 'src/runtime/composition.ts'],
+  ['CompositionManifest', 'src/runtime/composition.ts'],
+]);
+
+/**
+ * Source-aware resolution context, built per source file by
+ * `collectSceneShapedAliases`. PUL-A010 codex review cycle 2 class
+ * finding (qualified canonical-name detection was source-insensitive).
+ */
+interface ScenicResolutionContext {
+  readonly canonicalNamespaces: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly sourceFilePath: string;
+}
+
+function getReferencedTypeNames(
+  typeNode: ts.TypeNode | undefined,
+  ctx: ScenicResolutionContext = {
+    canonicalNamespaces: new Map(),
+    sourceFilePath: '',
+  },
+): readonly string[] {
   if (typeNode === undefined) return [];
-  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
-    return [typeNode.typeName.text];
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const tn = typeNode.typeName;
+    if (ts.isIdentifier(tn)) return [tn.text];
+    if (ts.isQualifiedName(tn)) {
+      let leftCursor: ts.EntityName = tn;
+      while (ts.isQualifiedName(leftCursor.left)) {
+        leftCursor = leftCursor.left;
+      }
+      const root = ts.isQualifiedName(leftCursor) ? leftCursor.left : leftCursor;
+      if (!ts.isIdentifier(root)) return [];
+      const namespaceCanonicalSet = ctx.canonicalNamespaces.get(root.text);
+      if (namespaceCanonicalSet === undefined) return [];
+      let leaf: ts.EntityName = tn;
+      while (ts.isQualifiedName(leaf)) leaf = leaf.right;
+      if (!ts.isIdentifier(leaf)) return [];
+      const leafName = leaf.text;
+      return namespaceCanonicalSet.has(leafName) ? [leafName] : [];
+    }
+    return [];
+  }
+  if (ts.isImportTypeNode(typeNode)) {
+    if (typeNode.qualifier === undefined) return [];
+    let leaf: ts.EntityName = typeNode.qualifier;
+    while (ts.isQualifiedName(leaf)) leaf = leaf.right;
+    if (!ts.isIdentifier(leaf)) return [];
+    const leafName = leaf.text;
+    const canonicalPath = SCENE_SHAPED_CANONICAL_PATHS.get(leafName);
+    if (canonicalPath === undefined) return [];
+    const argLiteral = ts.isLiteralTypeNode(typeNode.argument)
+      ? typeNode.argument.literal
+      : undefined;
+    if (argLiteral === undefined || !ts.isStringLiteralLike(argLiteral)) return [];
+    const specifier = argLiteral.text;
+    const importingDir = pathPosix.dirname(ctx.sourceFilePath);
+    const resolved = `${pathPosix.normalize(pathPosix.join(importingDir, specifier))}.ts`;
+    const matchesCanonical = resolved === canonicalPath || resolved.endsWith(`/${canonicalPath}`);
+    return matchesCanonical ? [leafName] : [];
   }
   if (ts.isParenthesizedTypeNode(typeNode)) {
-    return getReferencedTypeNames(typeNode.type);
+    return getReferencedTypeNames(typeNode.type, ctx);
   }
   if (ts.isIntersectionTypeNode(typeNode)) {
     const names: string[] = [];
     for (const t of typeNode.types) {
-      names.push(...getReferencedTypeNames(t));
+      names.push(...getReferencedTypeNames(t, ctx));
     }
     return names;
   }
@@ -547,8 +650,11 @@ function getReferencedTypeNames(typeNode: ts.TypeNode | undefined): readonly str
  * type name; multi-name callers (intersection-aware) use
  * `getReferencedTypeNames` directly.
  */
-function getReferencedTypeName(typeNode: ts.TypeNode | undefined): string | null {
-  const names = getReferencedTypeNames(typeNode);
+function getReferencedTypeName(
+  typeNode: ts.TypeNode | undefined,
+  ctx?: ScenicResolutionContext,
+): string | null {
+  const names = getReferencedTypeNames(typeNode, ctx);
   return names[0] ?? null;
 }
 
@@ -573,8 +679,14 @@ function getReferencedTypeName(typeNode: ts.TypeNode | undefined): string | null
  * canonical names themselves map to themselves so callers can do one
  * lookup instead of a membership-then-alias-lookup dance.
  */
-function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, string> {
+interface CollectedAliases {
+  readonly aliases: ReadonlyMap<string, string>;
+  readonly ctx: ScenicResolutionContext;
+}
+
+function collectSceneShapedAliases(sourceFile: ts.SourceFile): CollectedAliases {
   const aliases = new Map<string, string>();
+  const canonicalNamespaces = new Map<string, Set<string>>();
   for (const canonical of SCENE_LIKE_TYPE_NAMES) {
     aliases.set(canonical, canonical);
   }
@@ -586,17 +698,44 @@ function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, strin
   //    or `import { SceneModule } from '...'`. The SOURCE identifier
   //    is what we match against the canonical set; the LOCAL
   //    identifier (alias or same name) is the file-local handle.
+  // 2) Namespace imports — `import * as Runtime from '<spec>'`. The
+  //    local namespace identifier is recorded in
+  //    `canonicalNamespaces` ONLY when the specifier path-resolves to
+  //    a canonical declaration site for at least one scene-shaped
+  //    canonical name. PUL-A010 codex review cycle 2 class finding
+  //    (source-insensitive leaf collapsing).
   const visitImports = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && node.importClause !== undefined) {
+    if (
+      ts.isImportDeclaration(node) &&
+      node.importClause !== undefined &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
       const clause = node.importClause;
-      if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
-        for (const element of clause.namedBindings.elements) {
-          const sourceName = element.propertyName?.text ?? element.name.text;
-          if (
-            SCENE_LIKE_TYPE_NAMES.has(sourceName) ||
-            COMPOSITION_MANIFEST_TYPE_NAMES.has(sourceName)
-          ) {
-            aliases.set(element.name.text, sourceName);
+      const specifier = node.moduleSpecifier.text;
+      if (clause.namedBindings !== undefined) {
+        const bindings = clause.namedBindings;
+        if (ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) {
+            const sourceName = element.propertyName?.text ?? element.name.text;
+            if (
+              SCENE_LIKE_TYPE_NAMES.has(sourceName) ||
+              COMPOSITION_MANIFEST_TYPE_NAMES.has(sourceName)
+            ) {
+              aliases.set(element.name.text, sourceName);
+            }
+          }
+        } else if (ts.isNamespaceImport(bindings)) {
+          const localName = bindings.name.text;
+          const canonicalSet = new Set<string>();
+          const importingDir = pathPosix.dirname(sourceFile.fileName);
+          const resolved = `${pathPosix.normalize(pathPosix.join(importingDir, specifier))}.ts`;
+          for (const [canonName, canonPath] of SCENE_SHAPED_CANONICAL_PATHS) {
+            if (resolved === canonPath || resolved.endsWith(`/${canonPath}`)) {
+              canonicalSet.add(canonName);
+            }
+          }
+          if (canonicalSet.size > 0) {
+            canonicalNamespaces.set(localName, canonicalSet);
           }
         }
       }
@@ -605,7 +744,12 @@ function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, strin
   };
   visitImports(sourceFile);
 
-  // 2) Type-alias declarations — `type X = SceneModule`. Chained
+  const ctx: ScenicResolutionContext = {
+    canonicalNamespaces,
+    sourceFilePath: sourceFile.fileName,
+  };
+
+  // 3) Type-alias declarations — `type X = SceneModule`. Chained
   //    aliases resolve via fixed-point iteration. Intersection types
   //    walk every branch so `type X = SceneModule & Extra` classifies
   //    X as scene-shaped (codex review cycle 3).
@@ -621,7 +765,7 @@ function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, strin
 
   const tryRegisterAlias = (alias: TypeAlias): boolean => {
     if (aliases.has(alias.name)) return false;
-    for (const referenced of getReferencedTypeNames(alias.init)) {
+    for (const referenced of getReferencedTypeNames(alias.init, ctx)) {
       const resolved = aliases.get(referenced);
       if (resolved !== undefined) {
         aliases.set(alias.name, resolved);
@@ -638,7 +782,7 @@ function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, strin
     if (!changed) break;
   }
 
-  return aliases;
+  return { aliases, ctx };
 }
 
 /**
@@ -655,8 +799,9 @@ function collectSceneShapedAliases(sourceFile: ts.SourceFile): Map<string, strin
 function resolveSceneShapedType(
   typeNode: ts.TypeNode | undefined,
   aliases: ReadonlyMap<string, string>,
+  ctx: ScenicResolutionContext,
 ): string | null {
-  for (const name of getReferencedTypeNames(typeNode)) {
+  for (const name of getReferencedTypeNames(typeNode, ctx)) {
     const canonical = aliases.get(name);
     if (canonical !== undefined) return canonical;
   }
@@ -726,62 +871,148 @@ function unwrapParens(expr: ts.Expression): ts.Expression {
  * (test-quality review cycle 1 — `({literal}) as X` form had no
  * coverage and exposed a wrong implementation of paren handling).
  */
+/**
+ * Strip transparent expression wrappers (`ParenthesizedExpression`,
+ * `AsExpression`, `SatisfiesExpression`, `TypeAssertionExpression`)
+ * to find the inner runtime-value expression. PUL-A010 codex review
+ * cycle 1 class finding (`as const satisfies` bypass): the prior
+ * implementation only stripped parens, so `(x as const) satisfies Y`
+ * left the AsExpression in place and parent-equality checks failed.
+ */
+function unwrapTypeAssertions(node: ts.Node): ts.Node {
+  let cursor: ts.Node = node;
+  while (
+    ts.isParenthesizedExpression(cursor) ||
+    ts.isAsExpression(cursor) ||
+    ts.isSatisfiesExpression(cursor) ||
+    ts.isTypeAssertionExpression(cursor)
+  ) {
+    cursor = cursor.expression;
+  }
+  return cursor;
+}
+
+/**
+ * Skip past any chain of transparent expression wrappers above
+ * `node`, returning the first non-transparent ancestor. The dual of
+ * `unwrapTypeAssertions` for the parent direction.
+ */
+function ascendThroughWrappers(node: ts.Node): ts.Node | undefined {
+  let cursor: ts.Node | undefined = node.parent;
+  while (
+    cursor !== undefined &&
+    (ts.isParenthesizedExpression(cursor) ||
+      ts.isAsExpression(cursor) ||
+      ts.isSatisfiesExpression(cursor) ||
+      ts.isTypeAssertionExpression(cursor))
+  ) {
+    cursor = cursor.parent;
+  }
+  return cursor;
+}
+
+/**
+ * Walk up the parent chain through transparent expression wrappers,
+ * resolving every `AsExpression` / `SatisfiesExpression` /
+ * `TypeAssertionExpression` site against the alias map. Returns the
+ * canonical name when ANY wrapper in the chain resolves to a scene-
+ * shaped type, or `null` when the chain terminates without one.
+ *
+ * PUL-A010 codex review cycle 1 class finding: the prior
+ * implementation treated the immediate `AsExpression` as terminal,
+ * so `({...} as const) satisfies SceneModule` slipped through.
+ * Walking up gives every wrapper a chance to classify the value.
+ *
+ * `pred` lets callers restrict matches further (e.g. "only match
+ * `CompositionManifest`" for the array-binding climb).
+ */
+function findScenicWrapperBinding(
+  start: ts.Node,
+  aliases: ReadonlyMap<string, string>,
+  ctx: ScenicResolutionContext,
+  pred: (canonical: string) => boolean = () => true,
+): { node: ts.Node; canonical: string } | null {
+  let cursor: ts.Node = start;
+  while (true) {
+    const parent: ts.Node | undefined = cursor.parent;
+    if (parent === undefined) return null;
+    if (
+      ts.isAsExpression(parent) ||
+      ts.isSatisfiesExpression(parent) ||
+      ts.isTypeAssertionExpression(parent)
+    ) {
+      const canonical = resolveSceneShapedType(parent.type, aliases, ctx);
+      if (canonical !== null && pred(canonical)) {
+        return { node: parent, canonical };
+      }
+      cursor = parent;
+      continue;
+    }
+    if (ts.isParenthesizedExpression(parent)) {
+      cursor = parent;
+      continue;
+    }
+    return null;
+  }
+}
+
 function isSceneShapedObjectLiteral(
   objectLiteral: ts.ObjectLiteralExpression,
   aliases: ReadonlyMap<string, string>,
+  ctx: ScenicResolutionContext,
 ): boolean {
-  const parent = getEffectiveParent(objectLiteral);
+  const wrapper = findScenicWrapperBinding(objectLiteral, aliases, ctx);
+  if (wrapper !== null) return true;
+
+  const parent = ascendThroughWrappers(objectLiteral);
   if (parent === undefined) return false;
-  // Direct binding shapes — the literal IS the operand (after
-  // unwrapping any parens) of an `as` / `satisfies` /
-  // `<Type>literal` / variable initializer.
+
   if (
     ts.isVariableDeclaration(parent) &&
     parent.initializer !== undefined &&
-    unwrapParens(parent.initializer) === objectLiteral
+    unwrapTypeAssertions(parent.initializer) === objectLiteral
   ) {
-    return resolveSceneShapedType(parent.type, aliases) !== null;
+    return resolveSceneShapedType(parent.type, aliases, ctx) !== null;
   }
-  if (ts.isAsExpression(parent) && unwrapParens(parent.expression) === objectLiteral) {
-    return resolveSceneShapedType(parent.type, aliases) !== null;
-  }
-  if (ts.isSatisfiesExpression(parent) && unwrapParens(parent.expression) === objectLiteral) {
-    return resolveSceneShapedType(parent.type, aliases) !== null;
-  }
-  if (ts.isTypeAssertionExpression(parent) && unwrapParens(parent.expression) === objectLiteral) {
-    return resolveSceneShapedType(parent.type, aliases) !== null;
-  }
-  // Array-entry shape: `const m: CompositionManifest = [{ id, script }]`.
-  // The literal's effective parent is `ArrayLiteralExpression`; its
-  // enclosing binding may be a direct variable initializer, an `as`
-  // cast, or a `satisfies` expression. All three resolve through the
-  // same alias map check.
   if (ts.isArrayLiteralExpression(parent)) {
-    const arrayBinding = getEffectiveParent(parent);
+    const arrayWrapper = findScenicWrapperBinding(
+      parent,
+      aliases,
+      ctx,
+      (canonical) => canonical === 'CompositionManifest',
+    );
+    if (arrayWrapper !== null) return true;
+    const arrayBinding = ascendThroughWrappers(parent);
     if (arrayBinding === undefined) return false;
     if (
       ts.isVariableDeclaration(arrayBinding) &&
       arrayBinding.initializer !== undefined &&
-      unwrapParens(arrayBinding.initializer) === parent
+      unwrapTypeAssertions(arrayBinding.initializer) === parent
     ) {
-      return resolveSceneShapedType(arrayBinding.type, aliases) === 'CompositionManifest';
+      return resolveSceneShapedType(arrayBinding.type, aliases, ctx) === 'CompositionManifest';
     }
-    if (ts.isAsExpression(arrayBinding) && unwrapParens(arrayBinding.expression) === parent) {
-      return resolveSceneShapedType(arrayBinding.type, aliases) === 'CompositionManifest';
-    }
-    if (
-      ts.isSatisfiesExpression(arrayBinding) &&
-      unwrapParens(arrayBinding.expression) === parent
-    ) {
-      return resolveSceneShapedType(arrayBinding.type, aliases) === 'CompositionManifest';
+    // PUL-A010 codex review cycle 2 class finding (returned-manifest
+    // array gap): `function makeManifest(): CompositionManifest {
+    // return [{...}] }` and arrow `(): CompositionManifest =>
+    // ([{...}])` are valid authoring shapes the prior detector
+    // missed.
+    if (ts.isReturnStatement(arrayBinding) || ts.isArrowFunction(arrayBinding)) {
+      let fnCursor: ts.Node | undefined = arrayBinding;
+      while (fnCursor !== undefined) {
+        if (
+          ts.isFunctionDeclaration(fnCursor) ||
+          ts.isFunctionExpression(fnCursor) ||
+          ts.isMethodDeclaration(fnCursor) ||
+          ts.isArrowFunction(fnCursor)
+        ) {
+          const fn = fnCursor as ts.SignatureDeclaration;
+          return resolveSceneShapedType(fn.type, aliases, ctx) === 'CompositionManifest';
+        }
+        fnCursor = fnCursor.parent;
+      }
     }
     return false;
   }
-  // Function-return shape: walk up from a `ReturnStatement` (or an
-  // arrow function whose body is an expression) to the enclosing
-  // function-like declaration; check its declared return type.
-  // Captures `function makeScene(): SceneModule { return { ... } }`
-  // and arrow `(): SceneModule => ({ ... })`.
   if (ts.isReturnStatement(parent) || ts.isArrowFunction(parent)) {
     let cursor: ts.Node | undefined = parent;
     while (cursor !== undefined) {
@@ -792,7 +1023,7 @@ function isSceneShapedObjectLiteral(
         ts.isArrowFunction(cursor)
       ) {
         const fn = cursor as ts.SignatureDeclaration;
-        return resolveSceneShapedType(fn.type, aliases) !== null;
+        return resolveSceneShapedType(fn.type, aliases, ctx) !== null;
       }
       cursor = cursor.parent;
     }
@@ -802,7 +1033,7 @@ function isSceneShapedObjectLiteral(
 
 function scanForbiddenSceneObjectFields(sourceFile: ts.SourceFile): readonly SourceFinding[] {
   const exempted = collectLineExemptions(sourceFile, ALLOW_TAG);
-  const aliases = collectSceneShapedAliases(sourceFile);
+  const { aliases, ctx } = collectSceneShapedAliases(sourceFile);
   const findings: SourceFinding[] = [];
   const recordOn = (target: ts.Node, label: string): void => {
     const start = target.getStart(sourceFile);
@@ -816,7 +1047,7 @@ function scanForbiddenSceneObjectFields(sourceFile: ts.SourceFile): readonly Sou
     });
   };
   const visit = (node: ts.Node): void => {
-    if (ts.isObjectLiteralExpression(node) && isSceneShapedObjectLiteral(node, aliases)) {
+    if (ts.isObjectLiteralExpression(node) && isSceneShapedObjectLiteral(node, aliases, ctx)) {
       for (const property of node.properties) {
         // Codex review cycle 2 (one-off — spread can smuggle
         // forbidden authoring fields): a `SpreadAssignment` carries
@@ -841,7 +1072,9 @@ function scanForbiddenSceneObjectFields(sourceFile: ts.SourceFile): readonly Sou
         if (
           ts.isPropertyAssignment(property) ||
           ts.isShorthandPropertyAssignment(property) ||
-          ts.isMethodDeclaration(property)
+          ts.isMethodDeclaration(property) ||
+          ts.isGetAccessorDeclaration(property) ||
+          ts.isSetAccessorDeclaration(property)
         ) {
           // Codex review cycle 3 (one-off — opaque computed keys
           // bypass the same opacity rule that bans spreads): if the
@@ -863,7 +1096,18 @@ function scanForbiddenSceneObjectFields(sourceFile: ts.SourceFile): readonly Sou
           const propName = getStaticPropertyName(property.name);
           if (propName === undefined) continue;
           if (!FORBIDDEN_SCENE_FIELDS.has(propName)) continue;
-          const memberKind = ts.isMethodDeclaration(property) ? 'method' : 'field';
+          // PUL-A010 codex review cycle 2 class finding
+          // (accessor-bypass): get/set accessors install the same
+          // public property key as a regular assignment and are now
+          // in scope. The finding label distinguishes the member
+          // kind so reviewers see exactly which form is offending.
+          const memberKind = ts.isGetAccessorDeclaration(property)
+            ? 'getter'
+            : ts.isSetAccessorDeclaration(property)
+              ? 'setter'
+              : ts.isMethodDeclaration(property)
+                ? 'method'
+                : 'field';
           recordOn(
             property,
             `parallel caption authoring ${memberKind} "${propName}" on scene-module object literal`,
@@ -1061,6 +1305,67 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
       expect(findings).toHaveLength(1);
       expect(findings[0]?.label).toBe(
         `parallel caption authoring field "${fieldName}" on SceneModule`,
+      );
+    });
+
+    // PUL-A010 codex review cycle 1 class finding (computed-key
+    // bypass on the canonical interface): an opaque computed key
+    // whose expression is an identifier reference installs a member
+    // the static name extractor cannot resolve. Rule 1 now applies
+    // the same opacity ban rule 4 had for object literals.
+    it('structurally bans opaque computed keys on the SceneModule interface', () => {
+      const src = [
+        "const FIELD = 'prompterScript';",
+        'export interface SceneModule {',
+        '  [FIELD]: unknown;',
+        '}',
+      ].join('\n');
+      const findings = rule1FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'opaque computed key on SceneModule interface — caption-authoring vector cannot be statically classified',
+      );
+    });
+
+    it('honors `// PUL-A009-allow: <reason>` on an opaque computed interface key', () => {
+      const src = [
+        "const FIELD = 'prompterScript';",
+        'export interface SceneModule {',
+        '  [FIELD]: unknown; // PUL-A009-allow: dynamic-key authoring helper under review',
+        '}',
+      ].join('\n');
+      expect(rule1FindingsOf(src)).toEqual([]);
+    });
+
+    // PUL-A010 codex review cycle 2 class finding (index-signature
+    // bypass): an index signature `[key: string]: unknown` on the
+    // canonical scene interface admits unbounded fields → unbounded
+    // caption-authoring slot. Structurally banned.
+    it('structurally bans index signatures on the SceneModule interface', () => {
+      const src = [
+        'export interface SceneModule {',
+        '  id: string;',
+        '  [key: string]: unknown;',
+        '}',
+      ].join('\n');
+      const findings = rule1FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'index signature on SceneModule interface — caption-authoring vector cannot be statically classified',
+      );
+    });
+
+    it('structurally bans index signatures on the CompositionEntryOverride interface', () => {
+      const src = [
+        'export interface CompositionEntryOverride {',
+        '  readonly id: string;',
+        '  readonly [key: string]: unknown;',
+        '}',
+      ].join('\n');
+      const findings = rule1FindingsOf(src, 'src/runtime/composition.ts');
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'index signature on CompositionEntryOverride interface — caption-authoring vector cannot be statically classified',
       );
     });
   });
@@ -2014,6 +2319,164 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
       expect(findings).toHaveLength(1);
       expect(findings[0]?.label).toBe(
         'parallel caption authoring field "script" on scene-module object literal',
+      );
+    });
+
+    // PUL-A010 codex review cycle 1 class finding (`as const
+    // satisfies` bypass): the prior detector treated the immediate
+    // `as` expression as terminal, so a `({...} as const) satisfies
+    // SceneModule` literal slipped through. The detector now walks
+    // up through transparent assertion wrappers.
+    it('flags forbidden field on `({...} as const) satisfies SceneModule`', () => {
+      const src = [
+        'export const myScene = ({',
+        "  id: 'fake',",
+        '  prompterScript: "value",',
+        '} as const) satisfies SceneModule;',
+      ].join('\n');
+      const findings = rule4FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "prompterScript" on scene-module object literal',
+      );
+    });
+
+    it('flags forbidden field on `([{...} as const]) satisfies CompositionManifest`', () => {
+      const src = [
+        'export const m = ([',
+        '  {',
+        "    id: 'fake-scene',",
+        '    prompterCaptions: [],',
+        '  } as const,',
+        ']) satisfies CompositionManifest;',
+      ].join('\n');
+      const findings = rule4FindingsOf(src, 'src/compositions/fake.ts');
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "prompterCaptions" on scene-module object literal',
+      );
+    });
+
+    // PUL-A010 codex review cycle 1 class finding (qualified
+    // canonical type references invisible): a namespace import +
+    // qualified type reference bypassed the detector because
+    // `Runtime.SceneModule` is a `QualifiedName`, not an
+    // `Identifier`. `getReferencedTypeNames` now walks qualified
+    // names to the leaf identifier.
+    it('flags forbidden field on a `Runtime.SceneModule` namespace-qualified annotation', () => {
+      const src = [
+        "import type * as Runtime from '../runtime/scene';",
+        'export const myScene: Runtime.SceneModule = {',
+        "  id: 'fake',",
+        '  prompterScript: "value",',
+        '};',
+      ].join('\n');
+      const findings = rule4FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "prompterScript" on scene-module object literal',
+      );
+    });
+
+    it('flags forbidden field on an `import("./scene").SceneModule` type-position dynamic import', () => {
+      const src = [
+        "export const myScene: import('../runtime/scene').SceneModule = {",
+        "  id: 'fake',",
+        '  notes: "value",',
+        '};',
+      ].join('\n');
+      const findings = rule4FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "notes" on scene-module object literal',
+      );
+    });
+
+    // PUL-A010 codex review cycle 2 class finding (source-insensitive
+    // leaf collapsing): a namespace import from a NON-canonical path
+    // should not be treated as the canonical `SceneModule`. Source-
+    // aware resolution requires the namespace's import specifier to
+    // resolve to the canonical declaration site before the leaf is
+    // treated as canonical.
+    it('does NOT flag a `External.SceneModule` reference from a non-canonical namespace import', () => {
+      const src = [
+        "import type * as External from '@pkg/shadow';",
+        'export const myScene: External.SceneModule = {',
+        "  id: 'fake',",
+        '  notes: "value",',
+        '};',
+      ].join('\n');
+      expect(rule4FindingsOf(src)).toEqual([]);
+    });
+
+    it('does NOT flag an `import("@pkg/shadow").SceneModule` type-position reference from a non-canonical specifier', () => {
+      const src = [
+        "export const myScene: import('@pkg/shadow').SceneModule = {",
+        "  id: 'fake',",
+        '  notes: "value",',
+        '};',
+      ].join('\n');
+      expect(rule4FindingsOf(src)).toEqual([]);
+    });
+
+    // PUL-A010 codex review cycle 2 class finding (returned-manifest
+    // array gap): `function makeManifest(): CompositionManifest`
+    // returns a `CompositionManifest` array; the prior detector
+    // missed this binding shape.
+    it('flags forbidden field on a CompositionManifest returned from a function', () => {
+      const src = [
+        'export function makeManifest(): CompositionManifest {',
+        "  return [{ id: 'fake-scene', prompterCaptions: [] }];",
+        '}',
+      ].join('\n');
+      const findings = rule4FindingsOf(src, 'src/compositions/fake.ts');
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "prompterCaptions" on scene-module object literal',
+      );
+    });
+
+    it('flags forbidden field on a CompositionManifest returned from an arrow function', () => {
+      const src = [
+        'export const makeManifest = (): CompositionManifest => [',
+        "  { id: 'fake-scene', script: 'override' },",
+        '];',
+      ].join('\n');
+      const findings = rule4FindingsOf(src, 'src/compositions/fake.ts');
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring field "script" on scene-module object literal',
+      );
+    });
+
+    // PUL-A010 codex review cycle 2 class finding (accessor-bypass):
+    // get/set accessors install the same property key as a regular
+    // assignment.
+    it('flags `get prompterScript()` on a scene-shaped literal', () => {
+      const src = [
+        'export const myScene: SceneModule = {',
+        "  id: 'fake',",
+        '  get prompterScript() { return ""; },',
+        '};',
+      ].join('\n');
+      const findings = rule4FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring getter "prompterScript" on scene-module object literal',
+      );
+    });
+
+    it('flags `set notes(v)` on a scene-shaped literal', () => {
+      const src = [
+        'export const myScene: SceneModule = {',
+        "  id: 'fake',",
+        '  set notes(v: string) { void v; },',
+        '};',
+      ].join('\n');
+      const findings = rule4FindingsOf(src);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.label).toBe(
+        'parallel caption authoring setter "notes" on scene-module object literal',
       );
     });
   });
