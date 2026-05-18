@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Pulsar mark">
-  <title>Pulsar mark</title>
-  <rect width="200" height="200" fill="#0b1020" />
-  <circle cx="100" cy="100" r="58" fill="none" stroke="#7df5ff" stroke-width="6" />
-  <circle cx="100" cy="100" r="14" fill="#7df5ff" />
-  <line x1="100" y1="20" x2="100" y2="180" stroke="#7df5ff" stroke-width="3" />
-  <line x1="20" y1="100" x2="180" y2="100" stroke="#7df5ff" stroke-width="3" />
-</svg>
