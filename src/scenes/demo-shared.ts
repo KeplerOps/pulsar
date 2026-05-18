@@ -164,3 +164,121 @@ export const findDemoRoot = (
   if (typeof stage.querySelector !== 'function') return null;
   return stage.querySelector(`[${DEMO_ROOT_ATTR}="${rootValue}"]`);
 };
+
+/** Per-scene state attribute every demo scene flips through `mounted` → `ran`. */
+export const DEMO_STATE_ATTR = 'data-pulsar-demo-state';
+
+/**
+ * Mount the empty scene root with the canonical demo markers and
+ * call the supplied `buildChildren` callback to author scene-
+ * specific children inside it. Returns `null` (silent no-op) when
+ * the ctx is malformed, the stage cannot append, or the owner
+ * document cannot create elements — same defensive contract the
+ * existing fixture scenes use.
+ *
+ * The scene-specific content is the only thing the callback owns;
+ * the marker attributes (`DEMO_ROOT_ATTR`, `DEMO_STATE_ATTR`,
+ * `DEMO_ACTIVE_ATTR`) and the initial inactive-state inline
+ * `display: none;` are written here so every demo scene gets them
+ * identically — the preflight's "no demo framework" rule is honored
+ * by keeping per-scene constants in the scene file and pushing only
+ * the marker boilerplate down here.
+ */
+export const mountDemoRoot = (
+  ctx: unknown,
+  rootValue: string,
+  buildChildren: (root: DemoDomElement, ownerDoc: DemoDomFactory) => void,
+): void => {
+  if (!isDemoCtx(ctx)) return;
+  const stage = ctx.stage;
+  if (stage === null) return;
+  if (typeof stage.appendChild !== 'function') return;
+  const ownerDoc = stage.ownerDocument;
+  if (ownerDoc === undefined || ownerDoc === null) return;
+  if (typeof ownerDoc.createElement !== 'function') return;
+
+  const root = ownerDoc.createElement('section');
+  root.setAttribute(DEMO_ROOT_ATTR, rootValue);
+  root.setAttribute(DEMO_STATE_ATTR, 'mounted');
+  // Initially inactive: the resolver mounts every scene in the slice
+  // before any timeline runs, so a visible-on-create root would
+  // render alongside every sibling scene. Activation flips to true
+  // inside the scene's own timeline segment via `setDemoActive`.
+  root.setAttribute(DEMO_ACTIVE_ATTR, 'false');
+  root.setAttribute('style', 'display: none;');
+  if (typeof root.appendChild === 'function') {
+    buildChildren(root, ownerDoc);
+  }
+  stage.appendChild(root);
+};
+
+/**
+ * Build a scene's GSAP timeline with the activation/deactivation
+ * envelope every demo scene shares. The scene-specific GSAP segments
+ * (named beats, tween durations, intermediate `tl.to({}, ...)` calls)
+ * are authored inside the `buildSegments` callback; the prefix
+ * `tl.call(() => setDemoActive(root, true))` and the suffix tween
+ * whose `onComplete` writes `data-pulsar-demo-state="ran"` and flips
+ * activation back to false live here.
+ *
+ * The suffix is a tween's `onComplete` rather than a trailing
+ * `tl.call(...)` because the last entry in a composition slice has
+ * its child timeline end at master `duration()`; a callback
+ * registered at that exact position races the master's `onComplete`
+ * and may be skipped on the final tick.
+ *
+ * `suffixDuration` controls how long the deactivation tween lasts;
+ * scenes pick a number that matches their visual close (e.g., 1s
+ * for title/feature, 0.5s for outro).
+ *
+ * Returns `null` (silent no-op, same as the existing fixture
+ * scenes) when the ctx is malformed or the stage is absent.
+ */
+export const buildDemoTimeline = (
+  ctx: unknown,
+  rootValue: string,
+  buildSegments: (
+    tl: ReturnType<WorkbenchSceneCtx['gsap']['timeline']>,
+    root: ReturnType<typeof findDemoRoot>,
+  ) => void,
+  suffixDuration: number,
+): ReturnType<WorkbenchSceneCtx['gsap']['timeline']> | null => {
+  if (!isDemoCtx(ctx)) return null;
+  const stage = ctx.stage;
+  if (stage === null) return null;
+  const root = findDemoRoot(stage, rootValue);
+  const tl = ctx.gsap.timeline();
+  tl.call(() => setDemoActive(root, true));
+  buildSegments(tl, root);
+  tl.to(
+    {},
+    {
+      duration: suffixDuration,
+      onComplete: () => {
+        if (root !== null && typeof root.setAttribute === 'function') {
+          root.setAttribute(DEMO_STATE_ATTR, 'ran');
+        }
+        setDemoActive(root, false);
+      },
+    },
+  );
+  return tl;
+};
+
+/**
+ * Build a cleanup lifecycle hook that removes the scene root keyed
+ * by `rootValue`. Every demo scene's cleanup is structurally
+ * identical (find by attribute, remove if attached), so the factory
+ * removes the per-scene boilerplate entirely.
+ */
+export const cleanupDemoRoot =
+  (rootValue: string) =>
+  (ctx: unknown): void => {
+    if (!isDemoCtx(ctx)) return;
+    const stage = ctx.stage;
+    if (stage === null) return;
+    const root = findDemoRoot(stage, rootValue);
+    if (root !== null && typeof root.remove === 'function') {
+      root.remove();
+    }
+  };

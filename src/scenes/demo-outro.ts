@@ -2,21 +2,14 @@
 //
 // The third (and final) scene in the demo composition. A short
 // authored close — one named GSAP beat (`outro-out`), one caption
-// anchored to it, no assets, no audio. Shared defensive helpers
-// (ctx predicate, activation flip, scene-root query) live in
-// `./demo-shared.ts`.
+// anchored to it, no assets, no audio. The shared lifecycle
+// envelope lives in `./demo-shared.ts`; per-scene constants stay
+// here.
 
 import type { SceneModule } from '../runtime/scene';
-import {
-  DEMO_ACTIVE_ATTR,
-  DEMO_ROOT_ATTR,
-  findDemoRoot,
-  isDemoCtx,
-  setDemoActive,
-} from './demo-shared';
+import { buildDemoTimeline, cleanupDemoRoot, mountDemoRoot } from './demo-shared';
 
 const ROOT_VALUE = 'demo-outro';
-const STATE_ATTR = 'data-pulsar-demo-state';
 const BEAT_OUTRO_OUT = 'outro-out';
 
 const HEADLINE_TEXT = 'Thanks for watching.';
@@ -36,61 +29,26 @@ export const demoOutroScene: SceneModule = {
   standalone: false,
   trailerSafe: true,
   create: (ctx: unknown) => {
-    if (!isDemoCtx(ctx)) return;
-    const stage = ctx.stage;
-    if (stage === null) return;
-    if (typeof stage.appendChild !== 'function') return;
-    const ownerDoc = stage.ownerDocument;
-    if (ownerDoc === undefined || ownerDoc === null) return;
-    if (typeof ownerDoc.createElement !== 'function') return;
-
-    const root = ownerDoc.createElement('section');
-    root.setAttribute(DEMO_ROOT_ATTR, ROOT_VALUE);
-    root.setAttribute(STATE_ATTR, 'mounted');
-    root.setAttribute(DEMO_ACTIVE_ATTR, 'false');
-    root.setAttribute('style', 'display: none;');
-    if (typeof root.appendChild === 'function') {
+    mountDemoRoot(ctx, ROOT_VALUE, (root, ownerDoc) => {
       const heading = ownerDoc.createElement('h2');
       heading.setAttribute('data-pulsar-demo-headline', '');
       heading.textContent = HEADLINE_TEXT;
-      root.appendChild(heading);
+      root.appendChild?.(heading);
       const body = ownerDoc.createElement('p');
       body.setAttribute('data-pulsar-demo-body', '');
       body.textContent = BODY_TEXT;
-      root.appendChild(body);
-    }
-    stage.appendChild(root);
+      root.appendChild?.(body);
+    });
   },
-  timeline: (ctx: unknown) => {
-    if (!isDemoCtx(ctx)) return null;
-    const stage = ctx.stage;
-    if (stage === null) return null;
-    const root = findDemoRoot(stage, ROOT_VALUE);
-    const tl = ctx.gsap.timeline();
-    tl.call(() => setDemoActive(root, true));
-    tl.to({}, { duration: 1 });
-    tl.addLabel(BEAT_OUTRO_OUT, 1);
-    tl.to(
-      {},
-      {
-        duration: 0.5,
-        onComplete: () => {
-          if (root !== null && typeof root.setAttribute === 'function') {
-            root.setAttribute(STATE_ATTR, 'ran');
-          }
-          setDemoActive(root, false);
-        },
+  timeline: (ctx: unknown) =>
+    buildDemoTimeline(
+      ctx,
+      ROOT_VALUE,
+      (tl) => {
+        tl.to({}, { duration: 1 });
+        tl.addLabel(BEAT_OUTRO_OUT, 1);
       },
-    );
-    return tl;
-  },
-  cleanup: (ctx: unknown) => {
-    if (!isDemoCtx(ctx)) return;
-    const stage = ctx.stage;
-    if (stage === null) return;
-    const root = findDemoRoot(stage, ROOT_VALUE);
-    if (root !== null && typeof root.remove === 'function') {
-      root.remove();
-    }
-  },
+      0.5,
+    ),
+  cleanup: cleanupDemoRoot(ROOT_VALUE),
 };
