@@ -31,9 +31,13 @@
 // literal at compile time.
 
 import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
+import { DEMO_COMPOSITION_ID, demoComposition } from './compositions/demo';
 import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
 import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
+import { demoFeatureScene } from './scenes/demo-feature';
+import { demoOutroScene } from './scenes/demo-outro';
+import { demoTitleScene } from './scenes/demo-title';
 import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-fixture';
 import { placeholderScene } from './scenes/placeholder';
 
@@ -49,12 +53,22 @@ import { placeholderScene } from './scenes/placeholder';
 // (`tests-e2e/dom-css-accessibility.spec.ts`) can boot it via
 // `?scene=dom-css-accessibility-fixture`. It is not part of the
 // default composition.
+//
+// Issue 98: the three authored demo scenes are registered together
+// and arranged by the `demo` composition. Reachable at
+// `?composition=demo` in the workbench; the e2e spec at
+// `tests-e2e/demo-composition.spec.ts` boots them and verifies the
+// declared static asset is actually served by the production build.
 export const WORKBENCH_SCENES: readonly SceneModule[] = [
   placeholderScene,
   browserSupportFixtureScene,
   domCssAccessibilityFixtureScene,
+  demoTitleScene,
+  demoFeatureScene,
+  demoOutroScene,
 ];
 
 export const WORKBENCH_COMPOSITIONS: readonly CompositionRegistryEntry[] = [
   { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
+  { id: DEMO_COMPOSITION_ID, manifest: demoComposition },
 ];
