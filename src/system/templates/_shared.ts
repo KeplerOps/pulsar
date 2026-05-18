@@ -147,6 +147,7 @@ export const findTemplateRoot = (
 ): {
   setAttribute?(name: string, value: string): void;
   remove?(): void;
+  dataset?: Record<string, string>;
 } | null => {
   if (!isTemplateCtx(ctx)) return null;
   const stage = ctx.stage;
@@ -162,25 +163,18 @@ export const findTemplateRoot = (
  */
 const writeTemplateActive = (
   root: {
-    setAttribute?(name: string, value: string): void;
     dataset?: Record<string, string>;
   },
   active: boolean,
 ): void => {
-  const value = active ? 'true' : 'false';
   if (root.dataset !== undefined) {
-    root.dataset.pulsarTemplateActive = value;
-    return;
-  }
-  if (typeof root.setAttribute === 'function') {
-    root.setAttribute('data-pulsar-template-active', value);
+    root.dataset.pulsarTemplateActive = active ? 'true' : 'false';
   }
 };
 
 /** Flip a template root's visibility marker. CSS handles the actual show/hide via the attribute selector. */
 export const setTemplateActive = (
   root: {
-    setAttribute?(name: string, value: string): void;
     dataset?: Record<string, string>;
   } | null,
   active: boolean,

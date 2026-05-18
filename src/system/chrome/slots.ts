@@ -90,7 +90,7 @@ export const mountChromeSlots = (host: MountChromeSlotsHost): ChromeSlots => {
   const { surface, ownerDocument } = host;
   // Clear any prior slot DOM (HMR safety).
   while (surface.firstChild !== null) {
-    (surface.firstChild as ChildNode).remove();
+    surface.firstChild.remove();
   }
   // The surface itself gets the .pulsar-stage class for atmospheric
   // backdrop + shake animation host.
@@ -135,6 +135,6 @@ export const mountChromeSlots = (host: MountChromeSlotsHost): ChromeSlots => {
 export const disposeChromeSlots = (surface: HTMLElement): void => {
   surface.classList.remove('pulsar-stage');
   while (surface.firstChild !== null) {
-    (surface.firstChild as ChildNode).remove();
+    surface.firstChild.remove();
   }
 };

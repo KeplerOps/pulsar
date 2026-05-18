@@ -38,6 +38,7 @@ interface FakeNode {
   innerHTML: string;
   childNodes: FakeNode[];
   attrs: Map<string, string>;
+  dataset: Record<string, string>;
   parentElement: FakeNode | null;
   ownerDocument: FakeDoc;
   setAttribute(name: string, value: string): void;
@@ -59,6 +60,7 @@ const makeNode = (doc: FakeDoc): FakeNode => {
     innerHTML: '',
     childNodes: [],
     attrs: new Map(),
+    dataset: {},
     parentElement: null,
     ownerDocument: doc,
     setAttribute: (n, v) => {
