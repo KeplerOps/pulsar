@@ -1,0 +1,6 @@
+# Defense-in-depth for the changelog fragment workflow (see
+# changelog.d/README.md). The fragments are what actually prevent
+# top-of-changelog merge conflicts; `merge=union` only helps for the
+# release-collation commit itself, and only after both branches carry
+# this file.
+CHANGELOG.md merge=union
