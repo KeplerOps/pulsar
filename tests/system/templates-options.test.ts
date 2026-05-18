@@ -30,6 +30,12 @@ import {
   titleSlam,
 } from '../../src/system/templates';
 
+interface FakeClassList {
+  add(name: string): void;
+  remove(name: string): void;
+  contains(name: string): boolean;
+}
+
 interface FakeNode {
   className: string;
   textContent: string;
@@ -37,9 +43,11 @@ interface FakeNode {
   childNodes: FakeNode[];
   attrs: Map<string, string>;
   dataset: Record<string, string>;
+  classList: FakeClassList;
   parentElement: FakeNode | null;
   ownerDocument: FakeDoc;
   setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
   getAttribute(name: string): string | null;
   appendChild(child: FakeNode): FakeNode;
   remove(): void;
@@ -52,6 +60,7 @@ interface FakeDoc {
 }
 
 const makeNode = (doc: FakeDoc): FakeNode => {
+  const classes = new Set<string>();
   const node: FakeNode = {
     className: '',
     textContent: '',
@@ -59,11 +68,24 @@ const makeNode = (doc: FakeDoc): FakeNode => {
     childNodes: [],
     attrs: new Map(),
     dataset: {},
+    classList: {
+      add: (n) => {
+        classes.add(n);
+      },
+      remove: (n) => {
+        classes.delete(n);
+      },
+      contains: (n) => classes.has(n),
+    },
     parentElement: null,
     ownerDocument: doc,
     setAttribute: (n, v) => {
       node.attrs.set(n, v);
       if (n === 'class') node.className = v;
+    },
+    removeAttribute: (n) => {
+      node.attrs.delete(n);
+      if (n === 'class') node.className = '';
     },
     getAttribute: (n) => node.attrs.get(n) ?? null,
     appendChild: (child) => {
@@ -78,8 +100,49 @@ const makeNode = (doc: FakeDoc): FakeNode => {
         node.parentElement = null;
       }
     },
-    querySelector: () => null,
-    querySelectorAll: () => [],
+    querySelector: (selector) => {
+      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
+      if (match === null) {
+        const cm = selector.match(/^\.([\w-]+)$/);
+        if (cm === null) return null;
+        const cls = cm[1] ?? '';
+        const search = (n: FakeNode): FakeNode | null => {
+          if (n.className.split(' ').includes(cls)) return n;
+          for (const c of n.childNodes) {
+            const f = search(c);
+            if (f !== null) return f;
+          }
+          return null;
+        };
+        return search(node);
+      }
+      const attr = match[1] ?? '';
+      const wanted = match[3];
+      const search = (n: FakeNode): FakeNode | null => {
+        const v = n.attrs.get(attr);
+        if (v !== undefined && (wanted === undefined || v === wanted)) return n;
+        for (const c of n.childNodes) {
+          const f = search(c);
+          if (f !== null) return f;
+        }
+        return null;
+      };
+      return search(node);
+    },
+    querySelectorAll: (selector) => {
+      const out: FakeNode[] = [];
+      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
+      if (match === null) return out;
+      const attr = match[1] ?? '';
+      const wanted = match[3];
+      const search = (n: FakeNode): void => {
+        const v = n.attrs.get(attr);
+        if (v !== undefined && (wanted === undefined || v === wanted)) out.push(n);
+        for (const c of n.childNodes) search(c);
+      };
+      search(node);
+      return out;
+    },
   };
   return node;
 };
@@ -93,11 +156,22 @@ const makeStage = (): FakeNode => {
 
 const ctx = (stage: FakeNode): unknown => ({ stage, mode: 'present', gsap });
 
-const runLifecycle = (scene: ReturnType<typeof titleSlam>, fakeCtx: unknown): void => {
+const runLifecycle = (
+  scene: ReturnType<typeof titleSlam>,
+  fakeCtx: unknown,
+): gsap.core.Timeline | null => {
   scene.create(fakeCtx);
   const tl = scene.timeline(fakeCtx);
-  if (tl !== null && tl !== undefined) (tl as gsap.core.Timeline).kill();
+  const out = tl === null || tl === undefined ? null : (tl as gsap.core.Timeline);
+  if (out !== null) out.kill();
   scene.cleanup(fakeCtx);
+  return out;
+};
+
+/** Asserts the scene's lifecycle ran successfully (returned a timeline). */
+const assertLifecycle = (scene: ReturnType<typeof titleSlam>, fakeCtx: unknown): void => {
+  const tl = runLifecycle(scene, fakeCtx);
+  expect(tl).not.toBeNull();
 };
 
 describe('L2 templates — optional-branch coverage', () => {
@@ -108,7 +182,7 @@ describe('L2 templates — optional-branch coverage', () => {
       glitch: true,
     });
     expect(() => assertSceneModule(scene)).not.toThrow();
-    runLifecycle(scene, ctx(makeStage()));
+    assertLifecycle(scene, ctx(makeStage()));
   });
 
   it('outro with qrSrc + subtitle', () => {
@@ -119,19 +193,19 @@ describe('L2 templates — optional-branch coverage', () => {
       qrAlt: 'qr',
     });
     expect(scene.assets).toEqual(['/qr.png']);
-    runLifecycle(scene, ctx(makeStage()));
+    assertLifecycle(scene, ctx(makeStage()));
   });
 
   it('statRow / statPairGrid / definitionTable / quoteStack / bulletList with eyebrow', () => {
-    runLifecycle(
+    assertLifecycle(
       statRow('opt-stat-row', { eyebrow: 'eb', title: 't', rows: [['a', 'b']] }),
       ctx(makeStage()),
     );
-    runLifecycle(
+    assertLifecycle(
       statPairGrid('opt-pair', { eyebrow: 'eb', title: 't', pairs: [['1', 'one']] }),
       ctx(makeStage()),
     );
-    runLifecycle(
+    assertLifecycle(
       definitionTable('opt-defs', {
         eyebrow: 'eb',
         title: 't',
@@ -144,7 +218,7 @@ describe('L2 templates — optional-branch coverage', () => {
       }),
       ctx(makeStage()),
     );
-    runLifecycle(
+    assertLifecycle(
       quoteStack('opt-qstack', {
         eyebrow: 'eb',
         title: 't',
@@ -152,7 +226,7 @@ describe('L2 templates — optional-branch coverage', () => {
       }),
       ctx(makeStage()),
     );
-    runLifecycle(
+    assertLifecycle(
       bulletList('opt-bullets', {
         eyebrow: 'eb',
         title: 't',
@@ -164,7 +238,7 @@ describe('L2 templates — optional-branch coverage', () => {
   });
 
   it('introGrid roles with logos and primary flag', () => {
-    runLifecycle(
+    assertLifecycle(
       introGrid('opt-intro', {
         title: 't',
         roles: [{ logoSrc: '/a.png', logoAlt: 'a', role: 'lead', primary: true }, { role: 'co' }],
@@ -174,14 +248,14 @@ describe('L2 templates — optional-branch coverage', () => {
   });
 
   it('compare with headline', () => {
-    runLifecycle(
+    assertLifecycle(
       compare('opt-compare', { headline: 'vs', left: 'a', right: 'b' }),
       ctx(makeStage()),
     );
   });
 
   it('screenshotCallouts with multiple callouts', () => {
-    runLifecycle(
+    assertLifecycle(
       screenshotCallouts('opt-shot', {
         imageSrc: '/img.png',
         imageAlt: 'alt',
@@ -205,12 +279,12 @@ describe('L2 templates — optional-branch coverage', () => {
       tickMs: 50,
     });
     const stage = makeStage();
-    scene.create(ctx(stage));
-    scene.cleanup(ctx(stage)); // should stop the interval
+    expect(() => scene.create(ctx(stage))).not.toThrow();
+    expect(() => scene.cleanup(ctx(stage))).not.toThrow(); // should stop the interval
   });
 
   it('terminal exercises every script step kind', () => {
-    runLifecycle(
+    assertLifecycle(
       terminal('opt-term', {
         script: [
           { t: 'user', text: 'ls' },
@@ -227,17 +301,17 @@ describe('L2 templates — optional-branch coverage', () => {
   });
 
   it('placard with no subtitle + quote with no attribution + centerpiece with no attr', () => {
-    runLifecycle(placard('opt-pl', { line1: 'solo' }), ctx(makeStage()));
-    runLifecycle(quote('opt-q', { text: 'lone' }), ctx(makeStage()));
-    runLifecycle(centerpiece('opt-cp', { quote: 'lonely' }), ctx(makeStage()));
+    assertLifecycle(placard('opt-pl', { line1: 'solo' }), ctx(makeStage()));
+    assertLifecycle(quote('opt-q', { text: 'lone' }), ctx(makeStage()));
+    assertLifecycle(centerpiece('opt-cp', { quote: 'lonely' }), ctx(makeStage()));
   });
 
   it('actHeader + outlineTitle with custom prefix', () => {
-    runLifecycle(actHeader('opt-ah', { act: 'X', section: 'Late' }), ctx(makeStage()));
-    runLifecycle(
+    assertLifecycle(actHeader('opt-ah', { act: 'X', section: 'Late' }), ctx(makeStage()));
+    assertLifecycle(
       outlineTitle('opt-ot', { index: 99, title: 'Beyond', prefix: 'Chapter' }),
       ctx(makeStage()),
     );
-    runLifecycle(outlineTitle('opt-ot2', { index: 5, title: 'Mid' }), ctx(makeStage()));
+    assertLifecycle(outlineTitle('opt-ot2', { index: 5, title: 'Mid' }), ctx(makeStage()));
   });
 });
