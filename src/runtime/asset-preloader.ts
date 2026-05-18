@@ -167,6 +167,7 @@ export function createAssetPreloader(
   const init = options.init;
   const baseUrl = options.baseUrl;
   const allowedSchemes = options.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 16). Two-phase resolve/fetch with per-asset error collection and an abort fence; refactor tracked in docs/design/complexity-backlog.md.
   return async (scene) => {
     if (scene.assets.length === 0) return;
 
