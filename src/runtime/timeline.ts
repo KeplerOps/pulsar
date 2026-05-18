@@ -437,10 +437,111 @@ class GsapMasterTimeline implements MasterTimeline {
  * (A timeline already nested into a partial master is killed redundantly
  * — GSAP's `kill()` is idempotent.)
  */
+/**
+ * Inter-scene transition contract (L2-owned implementations live in
+ * `src/system/transitions/`; the runtime carries the type so the
+ * timeline composer can invoke them).
+ *
+ * A transition is invoked between two scene segments in a composition
+ * slice. It receives the live master GSAP timeline, the master-time
+ * position where the transition should land (the current end of the
+ * master), an optional overlay element it can mutate, and the
+ * caller-requested duration in milliseconds (overriding the
+ * transition's own default if supplied).
+ *
+ * The transition returns the master-time duration its insertion
+ * consumed (in seconds). The composer uses the return value to know
+ * how far the master has advanced before adding the next scene.
+ * `cut`-style transitions return 0 (no master-time consumed).
+ */
+export interface TransitionContext {
+  readonly master: GsapTimeline;
+  readonly insertAt: number;
+  readonly overlay: HTMLElement | null;
+  readonly durationMs: number;
+}
+
+export interface Transition {
+  readonly name: string;
+  readonly defaultDurationMs: number;
+  /**
+   * Insert this transition's effect into `ctx.master` at `ctx.insertAt`.
+   * Return the master-time duration consumed (in seconds).
+   */
+  insert(ctx: TransitionContext): number;
+}
+
+/**
+ * Map of transition name → implementation. Supplied to
+ * {@link composeMasterTimeline} (via `createGsapCompositionTimeline`'s
+ * `transitions` option) so the composer can resolve manifest-declared
+ * transitions at slice-composition time.
+ */
+export type TransitionRegistry = ReadonlyMap<string, Transition>;
+
+/**
+ * Carry-through for the optional inter-scene transition declared in
+ * `BehaviorOverride` for object-form composition entries. The
+ * composer reads this shape; the L2 system layer's
+ * `src/system/transitions/registry.ts` ships default implementations.
+ */
+export interface TransitionDeclaration {
+  readonly name: string;
+  readonly durationMs?: number;
+}
+
+const isTransitionDeclaration = (value: unknown): value is TransitionDeclaration => {
+  if (typeof value !== 'object' || value === null) return false;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.name !== 'string' || rec.name.length === 0) return false;
+  if (rec.durationMs !== undefined && typeof rec.durationMs !== 'number') return false;
+  return true;
+};
+
+/**
+ * Read a manifest entry's `behavior.transition` declaration (if any)
+ * and apply the registered transition to the master at its current
+ * end. No-op when the segment is the first, no registry is supplied,
+ * the declaration is malformed, or the named transition is not
+ * registered. Hoisted out of `composeMasterTimeline` to keep its
+ * cognitive complexity under the Biome gate.
+ */
+function applySegmentTransition(
+  master: GsapTimeline,
+  segment: SceneTimelineSegment,
+  segmentIndex: number,
+  transitions: TransitionRegistry | undefined,
+  overlay: HTMLElement | null,
+): void {
+  if (segmentIndex === 0 || transitions === undefined) return;
+  const decl = (segment.behavior as { transition?: unknown } | undefined)?.transition;
+  if (!isTransitionDeclaration(decl)) return;
+  const t = transitions.get(decl.name);
+  if (t === undefined) return;
+  const dur = decl.durationMs ?? t.defaultDurationMs;
+  t.insert({ master, insertAt: master.duration(), overlay, durationMs: dur });
+}
+
+/**
+ * Compose options for {@link composeMasterTimeline}. Lifted into a
+ * dedicated interface so the optional transitions registry + overlay
+ * element can be added without breaking the existing positional-
+ * arguments callers (the function still accepts the old signature).
+ */
+export interface ComposeMasterTimelineOptions {
+  /** Transition implementations available to manifest entries. Absent = transitions ignored. */
+  readonly transitions?: TransitionRegistry;
+  /** Optional overlay element the registered transitions may mutate. */
+  readonly transitionOverlay?: HTMLElement | null;
+}
+
 export function composeMasterTimeline(
   engine: TimelineEngine,
   segments: readonly SceneTimelineSegment[],
+  options: ComposeMasterTimelineOptions = {},
 ): MasterTimeline {
+  const transitions = options.transitions;
+  const overlay = options.transitionOverlay ?? null;
   let master: GsapTimeline | undefined;
   try {
     for (const segment of segments) {
@@ -448,7 +549,14 @@ export function composeMasterTimeline(
     }
     master = engine.gsap.timeline({ paused: true });
     const occurrences = new Map<string, number>();
+    let segmentIndex = 0;
     for (const segment of segments) {
+      // Insert an inter-scene transition before every segment after
+      // the first, if the entry declared one via `behavior.transition`
+      // and the registry has the named transition. Transitions
+      // consume master time; the segment that follows is positioned
+      // at the new end via `'>'` so the ordering is natural.
+      applySegmentTransition(master, segment, segmentIndex, transitions, overlay);
       const occurrence = occurrences.get(segment.id) ?? 0;
       occurrences.set(segment.id, occurrence + 1);
       // `master.duration()` before the add is the position the segment
@@ -474,6 +582,7 @@ export function composeMasterTimeline(
           );
         }
       }
+      segmentIndex++;
     }
     return new GsapMasterTimeline(master);
   } catch (err) {
@@ -495,6 +604,22 @@ export interface GsapCompositionTimelineOptions {
    * this to drive `play` / `pause` / `seek` / `setSpeed`. Optional.
    */
   readonly onMaster?: (master: MasterTimeline) => void;
+  /**
+   * Inter-scene transitions registry. When supplied, manifest entries
+   * whose `behavior.transition` declares a name present in the
+   * registry get an inserted transition tween between scenes during
+   * master composition (see {@link composeMasterTimeline}). Absent =
+   * transitions ignored (default behavior is `cut`, no master-time
+   * consumed between scenes).
+   */
+  readonly transitions?: TransitionRegistry;
+  /**
+   * Overlay element transitions may mutate. Typically a transient
+   * `<div data-pulsar-transition>` parented to `#stage` — never a
+   * scene-owned element, so transitions cannot desynchronize scene
+   * GSAP state.
+   */
+  readonly transitionOverlay?: HTMLElement | null;
 }
 
 /**
@@ -666,13 +791,24 @@ function runMasterUntilDone(
 export function createGsapCompositionTimeline(
   options: GsapCompositionTimelineOptions,
 ): CompositionTimelineAdapter {
-  const { engine, onMaster } = options;
+  const { engine, onMaster, transitions, transitionOverlay } = options;
   return {
     run(segments, opts) {
       let master: MasterTimeline;
       let mode: MasterRunMode;
       try {
-        master = composeMasterTimeline(engine, segments);
+        // Build the options object piecewise so the
+        // exactOptionalPropertyTypes-strict signature doesn't see
+        // `undefined` for unset keys.
+        const composeOpts: ComposeMasterTimelineOptions = {};
+        if (transitions !== undefined) {
+          (composeOpts as { transitions?: TransitionRegistry }).transitions = transitions;
+        }
+        if (transitionOverlay !== undefined) {
+          (composeOpts as { transitionOverlay?: HTMLElement | null }).transitionOverlay =
+            transitionOverlay;
+        }
+        master = composeMasterTimeline(engine, segments, composeOpts);
         mode = positionMaster(master, segments[0]?.id, opts);
       } catch (err) {
         return Promise.reject(err);
