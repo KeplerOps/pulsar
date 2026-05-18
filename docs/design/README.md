@@ -8,6 +8,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [issue-078-osv-scanner-preflight.md](issue-078-osv-scanner-preflight.md) | CI security-scanner boundary and guardrails for advisory OSV coverage. |
 | [issue-090-complexity-gate-preflight.md](issue-090-complexity-gate-preflight.md) | Guardrails for hardening the existing Biome lint gate with one per-function cognitive-complexity rule. |
 | [issue-091-towncrier-fragments-preflight.md](issue-091-towncrier-fragments-preflight.md) | Guardrails for adopting Towncrier-managed changelog fragments without duplicating release workflow logic. |
+| [issue-097-browser-runtime-smoke-preflight.md](issue-097-browser-runtime-smoke-preflight.md) | Guardrails for expanding browser runtime smoke coverage through the existing Playwright workbench gate. |
 | [positioning-and-landscape.md](positioning-and-landscape.md) | Category, adjacent OSS projects, differentiation, strategic risks. |
 | [pul-p002-validation-ci-preflight.md](pul-p002-validation-ci-preflight.md) | Guardrails for gating pull-request CI on the canonical runtime validation pass. |
 | [pul-p003-adr-format-preflight.md](pul-p003-adr-format-preflight.md) | Guardrails for keeping ADR markdown and Ground Control ADR records aligned without duplicate schemas or workflow logic. |
