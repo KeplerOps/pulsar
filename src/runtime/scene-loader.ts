@@ -95,9 +95,28 @@ export interface StageElement {
  * itself never inspects ctx — it is purely a scene-to-environment
  * carrier.
  */
+/**
+ * Optional refs for the L2 chrome slot DOM that `src/main.ts`
+ * mounts into the workbench chrome surface. Scenes built from the
+ * L2 template library read `ctx.chrome` to address title/brand/
+ * centerpiece/lower-third/tag/act-frame/flash slots without reaching
+ * for ambient `document` lookups. Runtime contract does not require
+ * a specific shape — the field is declared as a generic record so
+ * the runtime engine stays L2-agnostic; the L2 system layer's
+ * `ChromeSlots` type narrows it at the consumer boundary.
+ */
+export type WorkbenchChromeSlots = Readonly<Record<string, unknown>>;
+
 export interface WorkbenchSceneCtx {
   /** The workbench stage element, or `null` when the runtime has no stage. */
   readonly stage: StageElement | null;
+  /**
+   * Optional L2 chrome slot refs. Templates that compose against the
+   * cinematic chrome pack read this field; engine-level fixtures and
+   * the trivial placeholder scene leave it `undefined` and operate
+   * stage-only.
+   */
+  readonly chrome?: WorkbenchChromeSlots;
   /**
    * The effective workbench mode for the current navigation per
    * PUL-F012 / ADR-007. Set by the loader from

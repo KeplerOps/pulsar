@@ -40,6 +40,13 @@ import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loade
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { createDomWorkbenchChrome } from './runtime/workbench-chrome';
+// Pulsar L2 — register, chrome, templates, transitions.
+import './system/register/tokens.css';
+import './system/chrome/atmospheric.css';
+import './system/chrome/chrome.css';
+import './system/templates/templates.css';
+import { type ChromeSlots, mountChromeSlots } from './system/chrome';
+import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
 const stage = document.querySelector('#stage');
@@ -132,7 +139,28 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // are not interpreted here yet — both land on this adapter's
 // `MasterTimeline` transport seam when their requirements are
 // implemented.
-const timeline = createGsapCompositionTimeline({ engine: timelineEngine });
+// Inter-scene transition overlay — a transient `<div>` parented to
+// `document.body` (above the chrome surface). The L2 transitions
+// library (cut / dissolve / hard-slam / hold-on-black / push) tweens
+// this element via the master timeline; it lives outside the scene
+// roots so a transition can never desynchronize scene-owned GSAP
+// state. Created here so it survives across navigations within a
+// composition.
+const transitionOverlay = document.createElement('div');
+transitionOverlay.dataset.pulsarTransition = 'overlay';
+transitionOverlay.style.position = 'fixed';
+transitionOverlay.style.inset = '0';
+transitionOverlay.style.pointerEvents = 'none';
+transitionOverlay.style.zIndex = 'var(--pulsar-z-transition)';
+transitionOverlay.style.opacity = '0';
+transitionOverlay.style.display = 'none';
+document.body.appendChild(transitionOverlay);
+
+const timeline = createGsapCompositionTimeline({
+  engine: timelineEngine,
+  transitions: defaultTransitions(),
+  transitionOverlay,
+});
 
 // Scene context carries the stage handle, the per-navigation effective
 // workbench mode (PUL-F012 / ADR-007), the GSAP instance scenes build
@@ -148,12 +176,19 @@ const timeline = createGsapCompositionTimeline({ engine: timelineEngine });
 // globals) is satisfied by passing `stage`, `gsap`, and `audio` through
 // ctx rather than reaching for `document`, importing GSAP, or importing
 // Howler directly in scene modules.
-const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => ({
-  stage,
-  mode,
-  gsap: timelineEngine.gsap,
-  audio,
-});
+// Filled in after the chrome surface is mounted (below).
+let chromeSlots: ChromeSlots | undefined;
+
+const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
+  const base: WorkbenchSceneCtx = {
+    stage,
+    mode,
+    gsap: timelineEngine.gsap,
+    audio,
+  };
+  if (chromeSlots === undefined) return base;
+  return { ...base, chrome: chromeSlots as unknown as Readonly<Record<string, unknown>> };
+};
 
 // Prompter renderer placeholder (PUL-F019 / ADR-022). Under
 // `mode=prompter` the loader bypasses the resolver lifecycle
@@ -238,6 +273,20 @@ const chrome = createDomWorkbenchChrome({
   },
 });
 
+// Populate the chrome surface with the L2 slot DOM (vignette,
+// scanlines, grain, letterbox bars, title/brand/centerpiece/
+// lower-third/tag/act-frame/flash slots). Scenes built from the L2
+// template library read these refs via `ctx.chrome`.
+const chromeSurfaceEl = document.querySelector(
+  '[data-pulsar-chrome="surface"]',
+) as HTMLElement | null;
+if (chromeSurfaceEl !== null) {
+  chromeSlots = mountChromeSlots({
+    surface: chromeSurfaceEl,
+    ownerDocument: document,
+  });
+}
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -277,4 +326,7 @@ import.meta.hot?.dispose(() => {
   // PUL-F031 / ADR-031: remove the chrome surface so HMR re-evaluation
   // does not accumulate workbench chrome roots on `document.body`.
   chrome.dispose();
+  // L2: drop the transition overlay so a re-evaluated entry does not
+  // accumulate fixed-position children on `document.body`.
+  transitionOverlay.remove();
 });
