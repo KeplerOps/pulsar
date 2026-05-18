@@ -17,7 +17,7 @@ export const outro = (id: string, content: OutroContent): SceneModule =>
     id,
     title: `Outro — ${content.title}`,
     captions: [{ at: 'outro-in', text: content.title }],
-    assets: content.qrSrc !== undefined ? [content.qrSrc] : [],
+    assets: content.qrSrc === undefined ? [] : [content.qrSrc],
     create: (ctx) => {
       mountTemplateRoot({
         ctx,

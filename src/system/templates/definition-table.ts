@@ -45,7 +45,8 @@ export const definitionTable = (id: string, content: DefinitionTableContent): Sc
             const art = ownerDoc.createElement('article');
             art.setAttribute('style', `--row-delay: ${500 + i * 200}ms`);
             const cat = ownerDoc.createElement('span');
-            cat.setAttribute('class', `cat${r.mod !== undefined ? ` mod-${r.mod}` : ''}`);
+            const modSuffix = r.mod === undefined ? '' : ` mod-${r.mod}`;
+            cat.setAttribute('class', `cat${modSuffix}`);
             cat.textContent = r.cat;
             art.appendChild?.(cat);
             const rule = ownerDoc.createElement('span');

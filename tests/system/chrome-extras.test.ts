@@ -61,6 +61,7 @@ const makeFakeDom = (): {
       childNodes: children,
       parentElement: null as HTMLElement | null,
       offsetWidth: 0,
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 0, height: 0 }),
       get firstChild() {
         return children[0] ?? null;
       },

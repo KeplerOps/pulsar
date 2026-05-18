@@ -11,7 +11,6 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   cleanupTemplateRoot,
-  findTemplateRoot,
   isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
@@ -52,9 +51,9 @@ const applyTickerFrame = (
   if (!isTemplateCtx(ctx) || ctx.stage === null) return;
   const rootEl = ctx.stage.querySelector?.(`[data-pulsar-template="${id}"]`);
   if (rootEl === null) return;
-  const r = rootEl as unknown as { querySelectorAll?: (s: string) => unknown };
+  const r = rootEl as { querySelectorAll?: (s: string) => unknown };
   if (typeof r.querySelectorAll !== 'function') return;
-  const nodes = r.querySelectorAll('[data-metric]') as unknown as Iterable<{
+  const nodes = r.querySelectorAll('[data-metric]') as Iterable<{
     textContent: string | null;
     getAttribute?: (n: string) => string | null;
   }>;
@@ -108,7 +107,7 @@ export const metricTicker = (id: string, content: MetricTickerContent): SceneMod
             art.appendChild?.(lab);
             const val = ownerDoc.createElement('span');
             val.setAttribute('class', 'value');
-            val.setAttribute('data-metric', String(i));
+            if (val.dataset !== undefined) val.dataset.metric = String(i);
             val.textContent = format(m, m.start);
             art.appendChild?.(val);
             const dir = ownerDoc.createElement('span');
@@ -144,7 +143,6 @@ export const metricTicker = (id: string, content: MetricTickerContent): SceneMod
         timer = null;
       }
       cleanupTemplateRoot(id)(ctx);
-      void findTemplateRoot; // referenced for type stability if extended
     },
   });
 };

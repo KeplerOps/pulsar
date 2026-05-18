@@ -41,6 +41,7 @@ interface FakeElement extends FakeAttrMap {
   firstChild: FakeElement | null;
   parentElement: FakeElement | null;
   offsetWidth: number;
+  getBoundingClientRect(): { x: number; y: number; width: number; height: number };
   appendChild(child: FakeElement): FakeElement;
   removeChild(child: FakeElement): FakeElement;
   remove(): void;
@@ -78,6 +79,7 @@ const makeDoc = (): FakeDoc => {
       },
       parentElement: null,
       offsetWidth: 0,
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 0, height: 0 }),
       setAttribute: (n, v) => {
         attrs.set(n, v);
       },

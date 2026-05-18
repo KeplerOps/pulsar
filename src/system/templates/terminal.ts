@@ -94,18 +94,18 @@ interface TerminalDomRefs {
 
 const resolveTerminalDom = (id: string, ctx: unknown): TerminalDomRefs | null => {
   if (!isTemplateCtx(ctx) || ctx.stage === null) return null;
-  const root = findTemplateRoot(ctx, id) as unknown as {
+  const root = findTemplateRoot(ctx, id) as {
     querySelector?: (sel: string) => unknown;
     appendChild?: (n: unknown) => unknown;
   } | null;
   if (root === null || typeof root.querySelector !== 'function') return null;
   if (typeof root.appendChild !== 'function') return null;
-  const term = root.querySelector('.term') as unknown as {
+  const term = root.querySelector('.term') as {
     ownerDocument?: Document | null;
     appendChild?: (el: unknown) => unknown;
   } | null;
   if (term === null || typeof term.appendChild !== 'function') return null;
-  const ownerDoc = (term.ownerDocument ?? null) as Document | null;
+  const ownerDoc = term.ownerDocument ?? null;
   if (ownerDoc === null) return null;
   return {
     root: root as { appendChild: (n: unknown) => unknown },
@@ -137,7 +137,7 @@ const runStep = async (refs: TerminalDomRefs, step: TerminalStep, base: number):
   if (step.t === 'output') {
     line.textContent = step.text;
   } else {
-    await typeNode(line as unknown as ParentNode, step.text, { base });
+    await typeNode(line, step.text, { base });
   }
   await aSleep(160);
 };

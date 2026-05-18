@@ -12,6 +12,12 @@
 
 import type { PrompterRenderer, PrompterScript } from '../../runtime/prompter';
 
+const buildPrompterUrl = (baseUrl: string): string => {
+  if (baseUrl.includes('mode=')) return baseUrl.replace(/mode=[^&]*/, 'mode=prompter');
+  if (baseUrl.includes('?')) return `${baseUrl}&mode=prompter`;
+  return `${baseUrl}?mode=prompter`;
+};
+
 /**
  * Open a new browser window pointed at the current composition in
  * `mode=prompter`. The caller passes the current `?composition=` or
@@ -22,11 +28,7 @@ export const openPrompterWindow = (
   baseUrl: string,
   features = 'width=900,height=700,menubar=no,toolbar=no',
 ): Window | null => {
-  const url = baseUrl.includes('mode=')
-    ? baseUrl.replace(/mode=[^&]*/, 'mode=prompter')
-    : baseUrl.includes('?')
-      ? `${baseUrl}&mode=prompter`
-      : `${baseUrl}?mode=prompter`;
+  const url = buildPrompterUrl(baseUrl);
   return globalThis.window?.open(url, '_blank', features) ?? null;
 };
 

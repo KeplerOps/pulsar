@@ -124,12 +124,15 @@ export const mountTemplateRoot = (host: MountTemplateRootHost): TemplateDomEleme
   const kind = templateKind ?? rootValue;
   const classes = ['pulsar-template', `pulsar-template--${kind}`, ...extraClasses];
   root.setAttribute('class', classes.join(' '));
+  // The data-pulsar-template id is read by querySelector for cleanup
+  // / activation lookups, so we set it as a true attribute (not via
+  // dataset) so the value is queryable regardless of the
+  // dataset->attribute-name camelCase translation.
   root.setAttribute(TEMPLATE_ROOT_ATTR, rootValue);
   // Initially inactive. CSS selector
   // `.pulsar-template[data-pulsar-template-active="true"]` reveals it
-  // when the timeline activates the scene; mount-then-play stays
-  // visually coherent because inactive scenes stay hidden.
-  root.setAttribute('data-pulsar-template-active', 'false');
+  // when the timeline activates the scene.
+  writeTemplateActive(root, false);
   if (buildChildren !== undefined && typeof root.appendChild === 'function') {
     buildChildren(root, ownerDoc);
   }
@@ -152,13 +155,38 @@ export const findTemplateRoot = (
   return stage.querySelector(`[${TEMPLATE_ROOT_ATTR}="${rootValue}"]`);
 };
 
-/** Flip a template root's visibility marker. CSS handles the actual show/hide via the attribute selector. */
-export const setTemplateActive = (
-  root: { setAttribute?(name: string, value: string): void } | null,
+/**
+ * Internal: write the activation marker on a DOM element. Prefers
+ * the `dataset` surface (Sonar `prefer-dataset` rule) when present,
+ * falls back to `setAttribute` for fake/off-DOM elements.
+ */
+const writeTemplateActive = (
+  root: {
+    setAttribute?(name: string, value: string): void;
+    dataset?: Record<string, string>;
+  },
   active: boolean,
 ): void => {
-  if (root === null || typeof root.setAttribute !== 'function') return;
-  root.setAttribute('data-pulsar-template-active', active ? 'true' : 'false');
+  const value = active ? 'true' : 'false';
+  if (root.dataset !== undefined) {
+    root.dataset.pulsarTemplateActive = value;
+    return;
+  }
+  if (typeof root.setAttribute === 'function') {
+    root.setAttribute('data-pulsar-template-active', value);
+  }
+};
+
+/** Flip a template root's visibility marker. CSS handles the actual show/hide via the attribute selector. */
+export const setTemplateActive = (
+  root: {
+    setAttribute?(name: string, value: string): void;
+    dataset?: Record<string, string>;
+  } | null,
+  active: boolean,
+): void => {
+  if (root === null) return;
+  writeTemplateActive(root, active);
 };
 
 // ---------- timeline envelope -----------------------------------------
