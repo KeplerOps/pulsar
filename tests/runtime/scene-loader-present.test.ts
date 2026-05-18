@@ -575,7 +575,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       });
 
       expect(rec.calls).toHaveLength(1);
-      expect(rec.calls[0]?.opts.presenter).toBeDefined();
+      expect(typeof rec.calls[0]?.opts.presenter?.subscribe).toBe('function');
       expect(rec.calls[0]?.segments.map((s) => s.id)).toEqual(['scene-a', 'scene-b', 'scene-c']);
     });
 
@@ -1052,6 +1052,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       readonly compositionScenes?: readonly string[];
       readonly engine?: AudioEngine;
       readonly runnerReceived?: string[];
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: test fixture mount helper that threads optional presenter / audio / composition / engine wiring for every mode permutation; complexity is intrinsic to the option-by-option permutation.
     }): MountedPresent => {
       const fake = buildFakeSource();
       const engine = opts?.engine ?? freshAudioEngine();
@@ -1520,9 +1521,17 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
       expect(secondAudio).toBeDefined();
       fake.emit({ kind: 'toggle-master-mute' });
       expect(firstAudio?.isMuted()).toBe(true);
-      // Engine-level state: both services backed by the same engine
-      // observe the toggle.
       expect(secondAudio?.isMuted()).toBe(true);
+      // Engine-level probe: `secondAudio === firstAudio` under the
+      // current single-service navigation contract, so re-asserting on
+      // `secondAudio.isMuted()` would only be a second probe of the
+      // same object. Probe the engine directly so the assertion still
+      // exercises engine-level state if per-scene `AudioService`
+      // facades are introduced later (`WorkbenchSceneCtx` resolver
+      // follow-up) — a regression that failed to propagate mute state
+      // across distinct service instances would fail here even though
+      // each service's own `isMuted()` would return the wrong value.
+      expect(engine.isMasterMuted()).toBe(true);
       loader.dispose();
       await loader.idle();
     });

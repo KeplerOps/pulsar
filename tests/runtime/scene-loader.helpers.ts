@@ -167,6 +167,7 @@ export interface LegacyRunInput {
 export const asTimeline = (
   runner: (input: LegacyRunInput) => void | Promise<void>,
 ): CompositionTimelineAdapter => ({
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: test helper that fan-in maps a CompositionTimelineAdapter's per-segment options into the legacy single-input runner shape; complexity is intrinsic to the option-by-option shape adaptation.
   run(segments, opts) {
     const head = segments[0];
     const input: LegacyRunInput = {

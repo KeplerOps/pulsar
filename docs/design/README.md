@@ -6,6 +6,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 |----------|---------|
 | [architecture-recommendations.md](architecture-recommendations.md) | Stack choices, runtime layers, library notes, migration plan. |
 | [issue-078-osv-scanner-preflight.md](issue-078-osv-scanner-preflight.md) | CI security-scanner boundary and guardrails for advisory OSV coverage. |
+| [issue-090-complexity-gate-preflight.md](issue-090-complexity-gate-preflight.md) | Guardrails for hardening the existing Biome lint gate with one per-function cognitive-complexity rule. |
 | [issue-091-towncrier-fragments-preflight.md](issue-091-towncrier-fragments-preflight.md) | Guardrails for adopting Towncrier-managed changelog fragments without duplicating release workflow logic. |
 | [positioning-and-landscape.md](positioning-and-landscape.md) | Category, adjacent OSS projects, differentiation, strategic risks. |
 | [pul-p002-validation-ci-preflight.md](pul-p002-validation-ci-preflight.md) | Guardrails for gating pull-request CI on the canonical runtime validation pass. |

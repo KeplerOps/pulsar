@@ -975,6 +975,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
     unlockGate: UnlockGate | null,
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 18). buildLoad is the navigation-mode dispatch seam — derives effective mode, builds audio + presenter pipes, and threads abort signals; refactor tracked in docs/design/complexity-backlog.md.
   ): InFlightLoad | null => {
     const controller = new AbortController();
     // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core seam.
@@ -1111,6 +1112,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ? undefined
         : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
     );
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 21). runLifecycle wires every per-target option (preload, timeline, abort, presenter, screenshot, error envelope) into the scene-loader lifecycle; refactor tracked in docs/design/complexity-backlog.md.
     const runLifecycle = (): Promise<void> =>
       loadSceneNavigationTarget(resolved, {
         ctx,
@@ -1352,6 +1354,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 23). runTarget is the per-navigation orchestrator — beat/mode grammar validation, dispatch routing across prompter / screenshot / present, and abort handling; refactor tracked in docs/design/complexity-backlog.md.
   const runTarget = async (target: NavigationTarget): Promise<void> => {
     const beatErr = validateBeatGrammar(target);
     if (beatErr !== null) {

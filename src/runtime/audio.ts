@@ -271,6 +271,7 @@ export function createHowlerAudioEngine(): AudioEngine {
     //     `resume()`, REJECT. Idempotent: a second unlock with a
     //     running ctx just calls `resume()` again (no-op when
     //     already running).
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 22). Audio-unlock branching covers Howler's setup, ctx-resume, and silent-fallback paths inside a single user-activation tick; refactor tracked in docs/design/complexity-backlog.md.
     async unlock() {
       const howlerHandle = Howler as unknown as {
         ctx: AudioContext | null | undefined;
@@ -923,6 +924,7 @@ export function createAudioService(
     }
   };
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 17). Source list normalizer enforces non-empty + per-item scheme/type validation with detailed error envelopes; refactor tracked in docs/design/complexity-backlog.md.
   const normalizeSources = (soundId: string, src: string | readonly string[]): string[] => {
     const list = typeof src === 'string' ? [src] : [...src];
     if (list.length === 0) {
@@ -1026,6 +1028,7 @@ export function createAudioService(
       sounds.set(soundId, { handle, spriteNames, src, sprite: definition.sprite });
     },
 
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 24). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
     play(soundId, options) {
       if (disposed) return;
       assertPlayOptions(soundId, options);

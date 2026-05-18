@@ -216,6 +216,7 @@ describe('domCssAccessibilityFixtureScene', () => {
     if (!root) throw new Error('expected scene root');
 
     const offending: string[] = [];
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: accessibility-attribute scan walks a synthetic DOM checking three independent attribute predicates per node; complexity is intrinsic to the multi-predicate audit.
     const walk = (n: FakeChild): void => {
       for (const [name, value] of n.attrs.entries()) {
         if (name === 'tabindex' && /^[1-9]\d*$/.test(value)) {
