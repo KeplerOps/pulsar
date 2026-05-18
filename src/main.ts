@@ -46,6 +46,7 @@ import './system/chrome/atmospheric.css';
 import './system/chrome/chrome.css';
 import './system/templates/templates.css';
 import { type ChromeSlots, mountChromeSlots } from './system/chrome';
+import { createChromePrompterRenderer, createKeyboardPresenterSource } from './system/presenter';
 import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
@@ -200,14 +201,13 @@ const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx 
 // suppression is delivered by the loader's lifecycle bypass, not by
 // this adapter.
 //
-// The placeholder mounts nothing persistent and returns
-// `undefined`. Per the `PrompterRenderer` contract, that signals
-// "no cleanup obligation" — the loader does not park waiting for
-// abort. A future captions UI that mounts persistent DOM will
-// return a `PrompterDispose` callback the loader invokes on the
-// next navigation. ADR-022 records the DRAFT → ACTIVE bar for
-// PUL-F019 (visible captions UI + end-to-end tests).
-const renderPrompter: PrompterRenderer = () => undefined;
+// Pulsar L2 renderer: paints the full prompter script (composition
+// id + per-scene captions) into the workbench. Falls back to
+// `document.body` if the chrome slot resolution returns null. The
+// returned dispose callback removes the panel on next navigation.
+const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
+  () => chromeSlots?.lowerThird ?? document.body,
+);
 
 // Presenter command source (PUL-F020 / PUL-F021 / ADR-023 /
 // ADR-024): intentionally OMITTED here. The runtime-side contract
@@ -287,6 +287,17 @@ if (chromeSurfaceEl !== null) {
   });
 }
 
+// Pulsar L2 keyboard presenter source. Arrows / Space / P / M / Escape.
+// `onHome` navigates to the default composition; `bootstrapNavigation`
+// in this file owns history state, so we just push the URL and let
+// the existing navigate-on-popstate listener handle the rest.
+const presenterKeyboard = createKeyboardPresenterSource({
+  onHome: () => {
+    globalThis.history.pushState(null, '', '?composition=default');
+    globalThis.dispatchEvent(new PopStateEvent('popstate'));
+  },
+});
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -298,6 +309,7 @@ const loader = createSceneLoader({
   renderPrompter,
   audioUnlockAdapter,
   chrome,
+  presenterCommands: presenterKeyboard.source,
 });
 
 const onNavigate = (event: Event): void => {
@@ -329,4 +341,7 @@ import.meta.hot?.dispose(() => {
   // L2: drop the transition overlay so a re-evaluated entry does not
   // accumulate fixed-position children on `document.body`.
   transitionOverlay.remove();
+  // L2: drop the keyboard listener so HMR does not stack duplicate
+  // command sources.
+  presenterKeyboard.dispose();
 });
