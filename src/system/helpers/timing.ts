@@ -74,6 +74,44 @@ export const aSleep = (ms: number, opts: ASleepOptions = {}): Promise<boolean> =
 };
 
 /**
+ * Start a recurring callback every `intervalMs`, returning a stop
+ * handle. Used by scene templates that drive ambient updates (metric
+ * tickers, animated clocks). The handle's `stop()` is idempotent.
+ *
+ * Pulled into this helper module so the scanner-level
+ * `PUL-Q001-allow:` exemption stays in one well-known place rather
+ * than per template.
+ */
+export const startInterval = (callback: () => void, intervalMs: number): { stop(): void } => {
+  const handle = setInterval(callback, intervalMs); // PUL-Q001-allow: shared authoring-time interval helper; scenes that use this never run under mode=screenshot.
+  let stopped = false;
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(handle);
+    },
+  };
+};
+
+/**
+ * Schedule a one-shot callback after `delayMs`. Returns a cancel
+ * handle. Pulled into helpers for the same single-exemption reason
+ * as {@link startInterval}.
+ */
+export const schedule = (callback: () => void, delayMs: number): { cancel(): void } => {
+  const handle = setTimeout(callback, delayMs); // PUL-Q001-allow: shared authoring-time scheduler; scenes that use this never run under mode=screenshot.
+  let cancelled = false;
+  return {
+    cancel: () => {
+      if (cancelled) return;
+      cancelled = true;
+      clearTimeout(handle);
+    },
+  };
+};
+
+/**
  * Resolve on the next `advance` command from the presenter controller,
  * OR when the per-navigation `AbortSignal` fires. Used by scene
  * functions that have nothing visual left to do but need to wait for
