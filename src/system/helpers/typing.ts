@@ -94,7 +94,14 @@ export const typeNode = (
       }
       (chars[j] as HTMLElement).classList.add('show');
       j++;
-      timer = setTimeout(step, base + Math.random() * jitter); // PUL-Q001-allow: typewriter reveal; screenshot mode bypasses the scene lifecycle entirely so this helper never runs in a captured frame.
+      // Tiny linear-congruential offset for jitter — deterministic,
+      // sourced from the character index so the sequence is stable
+      // across reloads. Avoids `Math.random` (Sonar security
+      // hotspot; Q001 nondeterminism) without losing the
+      // organic feel of variable per-char delays.
+      const tick = j;
+      const offset = ((tick * 1103515245 + 12345) & 0x7fff) / 0x7fff; // 0..1, deterministic
+      timer = setTimeout(step, base + offset * jitter); // PUL-Q001-allow: typewriter reveal; screenshot mode bypasses the scene lifecycle entirely so this helper never runs in a captured frame.
     };
     step();
   });
@@ -151,7 +158,9 @@ export const typeInto = (
       i++;
       const last = text[i - 1] ?? '';
       const punct = /[:—,.]/.test(last) ? punctMs : 0;
-      timer = setTimeout(step, baseDelay + Math.random() * 38 + punct); // PUL-Q001-allow: typewriter chat reveal; screenshot mode bypasses the scene lifecycle entirely.
+      const tick = i;
+      const offset = ((tick * 1103515245 + 12345) & 0x7fff) / 0x7fff; // 0..1, deterministic
+      timer = setTimeout(step, baseDelay + offset * 38 + punct); // PUL-Q001-allow: typewriter chat reveal; screenshot mode bypasses the scene lifecycle entirely.
     };
     step();
   });

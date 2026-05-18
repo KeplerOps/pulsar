@@ -7,6 +7,18 @@
  * primitives used by scene templates.
  */
 
+/* All chrome slot containers are pointer-events: none by default so
+ * the L2 chrome NEVER intercepts clicks meant for #stage content
+ * (fixture scenes, accessibility test paragraphs, etc.). L2
+ * templates re-enable pointer-events on their own root via the
+ * `.pulsar-template[data-pulsar-template-active="true"]` rule. */
+.pulsar-title,
+.pulsar-brand,
+.pulsar-tag,
+.pulsar-act {
+  pointer-events: none;
+}
+
 /* ----- title slot (left-rail headline) -------------------------- */
 .pulsar-title {
   position: absolute;
@@ -192,7 +204,11 @@
   opacity: 1;
 }
 
-/* ----- lower-third slot (presenter HUD area) -------------------- */
+/* ----- lower-third slot (presenter HUD area) --------------------
+ * Pointer-events: none by default so it doesn't intercept clicks
+ * the fixture / authoring scenes need. The practice / prompter
+ * renderers re-enable pointer-events on the panel element they
+ * inject (a div inside the slot), so interactive HUDs still work. */
 .pulsar-lower-third {
   position: absolute;
   left: clamp(28px, var(--pulsar-space-rail), 96px);
@@ -202,7 +218,7 @@
   color: var(--pulsar-color-fg-dim);
   font-family: var(--pulsar-type-sans);
   font-size: var(--pulsar-type-caption-size);
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 /* ----- tag slot (top-right watermark) --------------------------- */
@@ -231,7 +247,12 @@
   position: relative;
   width: 100%;
   height: 100%;
-  pointer-events: auto;
+  /* Pointer-events: none by default — the L2 scene templates own
+   * their own roots and re-enable per-template via the
+   * data-pulsar-template-active attribute selector. The fixture
+   * scenes that mount directly into #stage (not the act-frame)
+   * must not lose pointer events to a chrome layer overlaying them. */
+  pointer-events: none;
 }
 
 /* ----- typewriter character primitives (typeNode / typeInto) ---- */

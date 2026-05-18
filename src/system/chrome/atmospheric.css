@@ -11,18 +11,28 @@
  */
 
 .pulsar-stage {
+  /* The L2 chrome surface is a SIBLING of #stage (mounted on
+   * document.body by WorkbenchChromeController). It overlays the
+   * page to provide the atmospheric stack; #stage holds the scene
+   * content. Background is intentionally transparent so the page
+   * body's background reads through and #stage's contents are not
+   * hidden by an opaque chrome surface. pointer-events: none so
+   * scene-mounted controls (focus, selection) still reach #stage. */
   position: fixed;
   inset: 0;
-  background: radial-gradient(
-      ellipse 42% 42% at 26% 50%,
-      rgba(22, 24, 30, 0.78) 0%,
-      rgba(8, 9, 12, 0.5) 45%,
-      rgba(0, 0, 0, 0) 75%
-    ), var(--pulsar-color-bg-ink);
+  background: transparent;
   color: var(--pulsar-color-fg-white);
   font-family: var(--pulsar-type-sans);
   isolation: isolate;
+  pointer-events: none;
   overflow: hidden;
+}
+
+/* Page-level backdrop: deck content reads on the body's dark color
+ * via the chrome surface's transparent backdrop. Decks override per
+ * their own tokens.css. */
+body {
+  background: var(--pulsar-color-bg-ink, #08090c);
 }
 
 /* Letterbox bars — top/bottom black framing. */
