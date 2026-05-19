@@ -188,12 +188,17 @@ const timeline = createGsapCompositionTimeline({
 // Filled in after the chrome surface is mounted (below).
 let chromeSlots: ChromeSlots | undefined;
 
-const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
+const buildCtx = (
+  mode: NavigationMode,
+  audio: AudioService,
+  presenter?: import('./runtime/presenter').PresenterController,
+): WorkbenchSceneCtx => {
   const base: WorkbenchSceneCtx = {
     stage,
     mode,
     gsap: timelineEngine.gsap,
     audio,
+    ...(presenter === undefined ? {} : { presenter }),
   };
   if (chromeSlots === undefined) return base;
   return { ...base, chrome: chromeSlots as unknown as Readonly<Record<string, unknown>> };

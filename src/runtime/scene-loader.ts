@@ -51,7 +51,11 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
-import { type PresenterCommandSource, createPresenterController } from './presenter';
+import {
+  type PresenterCommandSource,
+  type PresenterController,
+  createPresenterController,
+} from './presenter';
 import {
   type PrompterDispose,
   type PrompterRenderer,
@@ -110,6 +114,17 @@ export type WorkbenchChromeSlots = Readonly<Record<string, unknown>>;
 export interface WorkbenchSceneCtx {
   /** The workbench stage element, or `null` when the runtime has no stage. */
   readonly stage: StageElement | null;
+  /**
+   * Optional per-navigation `PresenterController` (`mode=present` only,
+   * undefined under every other mode). Scenes that need to subscribe
+   * to presenter `advance` commands directly — for ambient loops that
+   * break on advance (`while (!state.advanceSignal)` style decks) —
+   * pass this into `aSleep(ms, { signal, controller })` or
+   * `holdUntilAdvance(controller, signal)`. The controller auto-detaches
+   * on the navigation's `AbortSignal`, so a scene that subscribes and
+   * forgets to unsubscribe cannot leak across navigations.
+   */
+  readonly presenter?: PresenterController;
   /**
    * Optional L2 chrome slot refs. Templates that compose against the
    * cinematic chrome pack read this field; engine-level fixtures and
@@ -201,7 +216,11 @@ export interface SceneLoaderOptions {
    * or when the navigation event is a parse-error event, because
    * those paths run no lifecycle.
    */
-  readonly buildCtx: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
+  readonly buildCtx: (
+    mode: NavigationMode,
+    audio: AudioService,
+    presenter?: PresenterController,
+  ) => WorkbenchSceneCtx;
   /**
    * The audio engine (PUL-F024 / ADR-004) — a process singleton, like
    * the timeline engine (ADR-003). The loader builds a fresh
@@ -1051,6 +1070,14 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const outputPolicy = audioOutputPolicyFor(mode);
     let ctx: unknown;
     let audio: AudioService;
+    // Per-navigation presenter pipe is built BEFORE buildCtx so the
+    // controller can be threaded onto `ctx.presenter` for scenes that
+    // subscribe to presenter `advance` commands directly (calgary-style
+    // `while (!state.advanceSignal)` loop scenes). Declared here so the
+    // try/catch can construct audio first (the pipe's mute handler
+    // closes over audio), then ctx with both refs.
+    let presenter: ReturnType<typeof createPresenterController> | undefined;
+    let presenterAbort: AbortController | null = null;
     try {
       audio = createAudioService(audioEngine, {
         signal: controller.signal,
@@ -1059,7 +1086,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         onError,
         ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
       });
-      ctx = options.buildCtx(mode, audio);
+      const pipe = buildPresenterPipe(mode, controller, audio);
+      presenter = pipe.presenter;
+      presenterAbort = pipe.presenterAbort;
+      ctx = options.buildCtx(mode, audio, presenter);
     } catch (err) {
       // Abort the freshly-created controller before bailing so any
       // signal-tied resource (the preloader factory's fetch listener,
@@ -1123,7 +1153,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // exclusive at the URL boundary, so at most one of `repeat` /
     // `hold` / `cueGate` / `screenshot` is non-undefined here.
     const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
-    const { presenter, presenterAbort } = buildPresenterPipe(mode, controller, audio);
+    // `presenter` / `presenterAbort` already built above (before
+    // buildCtx) so the controller could be threaded onto `ctx.presenter`.
     const onSceneFailed = buildOnSceneFailed(
       controller.signal,
       mode,
