@@ -132,6 +132,13 @@ export interface AudioSoundHandle {
   loop(enabled: boolean, playId?: number): void;
   /** Set the volume of one (or every) instance, 0..1. */
   volume(value: number, playId?: number): void;
+  /**
+   * Set the playback rate (speed) of one (or every) instance.
+   * 1.0 = normal speed; 1.25 = 25% faster; 0.5 = half speed. Howler
+   * uses the Web Audio playback-rate node which preserves pitch in
+   * the WebAudio path (PUL-F024 / ADR-004).
+   */
+  rate(value: number, playId?: number): void;
   /** Free this sound's buffers. Idempotent. */
   unload(): void;
 }
@@ -180,6 +187,10 @@ function wrapHowl(howl: Howl): AudioSoundHandle {
     volume: (value, playId) => {
       if (playId === undefined) howl.volume(value);
       else howl.volume(value, playId);
+    },
+    rate: (value, playId) => {
+      if (playId === undefined) howl.rate(value);
+      else howl.rate(value, playId);
     },
     unload: () => {
       // Howler's `unload()` dereferences a sound node that its no-audio
@@ -341,6 +352,7 @@ export const noopAudioEngine: AudioEngine = (() => {
     fade: () => undefined,
     loop: () => undefined,
     volume: () => undefined,
+    rate: () => undefined,
     unload: () => undefined,
   };
   return {
@@ -388,6 +400,12 @@ export interface PlayOptions {
   readonly volume?: number;
   /** Tag this play with a named group (kebab-case) so `stopGroup` can stop it. */
   readonly group?: string;
+  /**
+   * Playback rate (speed) multiplier for this play instance. 1.0 =
+   * normal; 1.25 = 25% faster; 0.5 = half speed. Must be a finite
+   * number > 0. Howler preserves pitch in the WebAudio path.
+   */
+  readonly rate?: number;
 }
 
 /**
@@ -677,7 +695,13 @@ function assertPlayOptions(
   if (!isPlainRecord(options)) {
     throw new AudioSoundError(`audio sound "${soundId}" play options must be an object or omitted`);
   }
-  const opts = options as { sprite?: unknown; loop?: unknown; volume?: unknown; group?: unknown };
+  const opts = options as {
+    sprite?: unknown;
+    loop?: unknown;
+    volume?: unknown;
+    group?: unknown;
+    rate?: unknown;
+  };
   if (opts.sprite !== undefined && typeof opts.sprite !== 'string') {
     throw new AudioSoundError(
       `audio sound "${soundId}" play option "sprite" must be a string; got ${typeof opts.sprite}`,
@@ -697,6 +721,13 @@ function assertPlayOptions(
     throw new AudioRangeError(
       `audio sound "${soundId}" play option "volume" must be a number; got ${typeof opts.volume}`,
     );
+  }
+  if (opts.rate !== undefined) {
+    if (typeof opts.rate !== 'number' || !Number.isFinite(opts.rate) || opts.rate <= 0) {
+      throw new AudioRangeError(
+        `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof opts.rate === 'number' ? opts.rate : typeof opts.rate}`,
+      );
+    }
   }
 }
 
@@ -1042,6 +1073,7 @@ export function createAudioService(
       const playId = sound.handle.play(opts.sprite);
       if (opts.loop === true) sound.handle.loop(true, playId);
       if (opts.volume !== undefined) sound.handle.volume(opts.volume, playId);
+      if (opts.rate !== undefined) sound.handle.rate(opts.rate, playId);
       if (opts.group !== undefined) {
         const list = groups.get(opts.group);
         if (list === undefined) groups.set(opts.group, [{ handle: sound.handle, playId }]);
@@ -1059,6 +1091,7 @@ export function createAudioService(
         ...(opts.group === undefined ? {} : { group: opts.group }),
         ...(opts.volume === undefined ? {} : { volume: opts.volume }),
         ...(opts.loop === undefined ? {} : { loop: opts.loop }),
+        ...(opts.rate === undefined ? {} : { rate: opts.rate }),
       });
     },
 

@@ -1013,6 +1013,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
         fade: () => undefined,
         loop: () => undefined,
         volume: () => undefined,
+        rate: () => undefined,
         unload: () => undefined,
       };
       return {
@@ -1848,6 +1849,7 @@ describe('createSceneLoader — present-mode & presenter seams (PUL-F008)', () =
         fade: () => undefined,
         loop: () => undefined,
         volume: () => undefined,
+        rate: () => undefined,
         unload: () => undefined,
       };
       return {

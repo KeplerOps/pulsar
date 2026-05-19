@@ -35,6 +35,9 @@ export type { OutroContent } from './outro';
 export { placard } from './placard';
 export type { PlacardContent } from './placard';
 
+export { presenterDrivenScene } from './presenter-driven';
+export type { PresenterDrivenContent, PresenterDrivenCtx } from './presenter-driven';
+
 export { quote } from './quote';
 export type { QuoteContent } from './quote';
 

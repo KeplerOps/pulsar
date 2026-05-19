@@ -397,6 +397,15 @@ export interface SceneLoaderOptions {
  */
 export interface WorkbenchChromeAdapter {
   applyMode(mode: NavigationMode): void;
+  /**
+   * Optional composition-level override: force chrome visibility hidden
+   * regardless of the mode-derived default. Used when a composition's
+   * head entry declares `behavior.chrome: 'hidden'` (e.g. a deck that
+   * owns its own atmospherics). Pass `null` to clear the override.
+   * Optional on the adapter so existing chrome implementations stay
+   * compatible — the loader only calls it when defined.
+   */
+  setForcedVisibility?(visibility: 'hidden' | null): void;
 }
 
 /**
@@ -1025,6 +1034,22 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // selects whether the audio service is `silent` (screenshot /
     // paused suppress audible playback — ADR-019 / ADR-021).
     const mode = effectiveMode(target);
+    // Composition-level chrome opt-out: when the head manifest entry's
+    // `behavior.chrome === 'hidden'`, the deck owns its own atmospherics
+    // and pulsar's chrome surface is hidden for the whole composition.
+    // Clears any prior override when the deck doesn't declare it, so a
+    // back-nav from a chrome-hidden deck to a chrome-on deck restores
+    // the surface.
+    if (options.chrome !== undefined && options.chrome.setForcedVisibility !== undefined) {
+      const head = resolved.composition?.manifestSlice[0];
+      const headBehavior =
+        head !== undefined && typeof head === 'object' && head !== null && 'behavior' in head
+          ? (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior
+          : undefined;
+      const chromeOverride = headBehavior?.chrome === 'hidden' ? 'hidden' : null;
+      options.chrome.setForcedVisibility(chromeOverride);
+      options.chrome.applyMode(mode);
+    }
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);

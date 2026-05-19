@@ -40,7 +40,7 @@ import {
 
 interface HandleCall {
   readonly sound: string;
-  readonly method: 'play' | 'stop' | 'fade' | 'loop' | 'volume' | 'unload';
+  readonly method: 'play' | 'stop' | 'fade' | 'loop' | 'volume' | 'rate' | 'unload';
   readonly args: readonly unknown[];
 }
 
@@ -86,6 +86,7 @@ const fakeEngine = (): FakeEngine => {
           fade: record('fade'),
           loop: record('loop'),
           volume: record('volume'),
+          rate: record('rate'),
           unload: record('unload'),
         };
         return handle;
@@ -379,6 +380,38 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
     service.play('bed');
     service.play('bed', { loop: false });
     expect(fake.calls.some((c) => c.method === 'loop')).toBe(false);
+  });
+
+  it('applies a per-play rate override to the play instance', () => {
+    const { fake, service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed', { rate: 1.25 });
+    const rateCall = fake.calls.find((c) => c.method === 'rate');
+    expect(rateCall).toBeDefined();
+    expect(rateCall?.args[0]).toBe(1.25);
+    expect(rateCall?.args[1]).toBe(1);
+  });
+
+  it('does not set rate when absent', () => {
+    const { fake, service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    service.play('bed');
+    expect(fake.calls.some((c) => c.method === 'rate')).toBe(false);
+  });
+
+  it('rejects a non-numeric rate', () => {
+    const { service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(() => service.play('bed', { rate: 'fast' as unknown as number })).toThrow(
+      AudioRangeError,
+    );
+  });
+
+  it('rejects a non-positive rate', () => {
+    const { service } = buildService();
+    service.load('bed', { src: '/audio/bed.mp3' });
+    expect(() => service.play('bed', { rate: 0 })).toThrow(AudioRangeError);
+    expect(() => service.play('bed', { rate: -0.5 })).toThrow(AudioRangeError);
   });
 
   it('applies a per-play volume override to the play instance', () => {
