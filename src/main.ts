@@ -46,7 +46,15 @@ import './system/chrome/atmospheric.css';
 import './system/chrome/chrome.css';
 import './system/templates/templates.css';
 import { type ChromeSlots, mountChromeSlots } from './system/chrome';
-import { createChromePrompterRenderer, createKeyboardPresenterSource } from './system/presenter';
+import {
+  type PracticeRendererHandle,
+  type PresenterBridgeHandle,
+  combinePresenterSources,
+  createChromePrompterRenderer,
+  createKeyboardPresenterSource,
+  createPracticeRenderer,
+  createPresenterBridge,
+} from './system/presenter';
 import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
@@ -298,6 +306,52 @@ const presenterKeyboard = createKeyboardPresenterSource({
   },
 });
 
+// Cross-window bridge: same-origin pulsar windows (present + popped-
+// out prompter) share `BroadcastChannel('pulsar-presenter')` so a
+// keystroke in either window drives the same controller. Every local
+// keyboard command is broadcast outbound; inbound commands fan into
+// the loader alongside the local keyboard source via
+// `combinePresenterSources`.
+const presenterBridge: PresenterBridgeHandle = createPresenterBridge();
+presenterKeyboard.source.subscribe((cmd) => presenterBridge.send(cmd));
+const combinedPresenterSource = combinePresenterSources(
+  presenterKeyboard.source,
+  presenterBridge.source,
+);
+
+// Practice / speaker-notes renderer. Mounts into the chrome
+// lower-third slot and toggles on `toggle-practice` (KeyN). On each
+// scene change it re-queries the registry for the active scene's
+// captions and rerenders.
+let practiceRenderer: PracticeRendererHandle | null = null;
+let stageObserver: MutationObserver | null = null;
+if (chromeSlots !== undefined) {
+  practiceRenderer = createPracticeRenderer({ target: chromeSlots.lowerThird });
+  const refresh = (): void => {
+    const stageEl = document.getElementById('stage');
+    const sceneId = stageEl?.getAttribute('data-pulsar-scene-target') ?? null;
+    if (sceneId === null) {
+      practiceRenderer?.render([]);
+      return;
+    }
+    const scene = sceneRegistry.get(sceneId);
+    practiceRenderer?.render(scene?.captions ?? []);
+  };
+  const stageEl = document.getElementById('stage');
+  if (stageEl !== null) {
+    stageObserver = new MutationObserver(refresh);
+    stageObserver.observe(stageEl, {
+      attributes: true,
+      attributeFilter: ['data-pulsar-scene-target'],
+    });
+  }
+  refresh();
+  combinedPresenterSource.subscribe((cmd) => {
+    if (cmd.kind !== 'toggle-practice') return;
+    practiceRenderer?.toggle();
+  });
+}
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -309,7 +363,7 @@ const loader = createSceneLoader({
   renderPrompter,
   audioUnlockAdapter,
   chrome,
-  presenterCommands: presenterKeyboard.source,
+  presenterCommands: combinedPresenterSource,
 });
 
 const onNavigate = (event: Event): void => {
@@ -344,4 +398,11 @@ import.meta.hot?.dispose(() => {
   // L2: drop the keyboard listener so HMR does not stack duplicate
   // command sources.
   presenterKeyboard.dispose();
+  // L2: close the cross-window bridge so the previous BroadcastChannel
+  // stops echoing keystrokes after the entry re-evaluates.
+  presenterBridge.dispose();
+  // L2: stop the stage-attribute observer + drop the practice renderer
+  // so HMR re-evaluation does not stack duplicates.
+  stageObserver?.disconnect();
+  practiceRenderer?.dispose();
 });

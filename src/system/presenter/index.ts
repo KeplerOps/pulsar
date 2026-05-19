@@ -14,3 +14,10 @@ export { createPracticeRenderer, splitCaptionText } from './practice-renderer';
 export type { PracticeRendererHandle, PracticeRendererHost } from './practice-renderer';
 
 export { createChromePrompterRenderer, openPrompterWindow } from './prompter-window';
+
+export {
+  combinePresenterSources,
+  createPresenterBridge,
+  DEFAULT_PRESENTER_CHANNEL,
+} from './bridge';
+export type { PresenterBridgeHandle, PresenterBridgeOptions } from './bridge';

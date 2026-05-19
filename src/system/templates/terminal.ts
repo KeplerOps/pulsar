@@ -13,7 +13,7 @@
 // inside the scene root.
 
 import type { SceneModule } from '../../runtime/scene';
-import { aSleep, schedule, typeNode } from '../helpers';
+import { aSleep, markedTextHtml, schedule, typeNode } from '../helpers';
 import {
   buildTemplateScene,
   buildTemplateTimeline,
@@ -135,7 +135,10 @@ const runStep = async (refs: TerminalDomRefs, step: TerminalStep, base: number):
   line.className = `ph-line ph-line--${step.t}`;
   refs.term.appendChild(line);
   if (step.t === 'output') {
-    line.textContent = step.text;
+    // Strip `[[...]]` markers + glow the wrapped chars, mirroring
+    // typeNode's per-char span treatment so output and typed lines
+    // share the same accent styling.
+    line.innerHTML = markedTextHtml(step.text);
   } else {
     await typeNode(line, step.text, { base });
   }

@@ -166,6 +166,15 @@ export function assertSceneTimeline(
 export const SCENE_LABEL_SEPARATOR = ':';
 
 /**
+ * Scene-local label name that, when present on a scene's child timeline,
+ * causes the master to pause at the corresponding master-time. The
+ * presenter `advance` command resumes playback. Multiple gates per
+ * scene use {@link ADVANCE_GATE_PREFIX} + unique suffix.
+ */
+export const ADVANCE_GATE_LABEL = '_advance-gate';
+export const ADVANCE_GATE_PREFIX = '_advance-gate:';
+
+/**
  * The master label that marks where a scene segment starts.
  * `occurrence` disambiguates a composition that reuses the same scene
  * id: occurrence `0` (the first / only use) is the bare scene id;
@@ -535,6 +544,28 @@ export interface ComposeMasterTimelineOptions {
   readonly transitionOverlay?: HTMLElement | null;
 }
 
+/**
+ * Copy a scene's child-timeline labels onto the master under the
+ * namespaced `sceneTimelineLabel(...)` name, and emit a
+ * `master.addPause(...)` at any label that opts into the advance-gate
+ * convention. Hoisted out of `composeMasterTimeline` so the latter
+ * stays within the cognitive-complexity gate.
+ */
+function copyChildLabelsAndAdvanceGates(
+  master: GsapTimeline,
+  child: GsapTimeline,
+  segmentId: string,
+  occurrence: number,
+  start: number,
+): void {
+  for (const [localLabel, localTime] of Object.entries(child.labels)) {
+    master.addLabel(sceneTimelineLabel(segmentId, localLabel, occurrence), start + localTime);
+    if (localLabel === ADVANCE_GATE_LABEL || localLabel.startsWith(ADVANCE_GATE_PREFIX)) {
+      master.addPause(start + localTime);
+    }
+  }
+}
+
 export function composeMasterTimeline(
   engine: TimelineEngine,
   segments: readonly SceneTimelineSegment[],
@@ -575,12 +606,7 @@ export function composeMasterTimeline(
         child.seek(0);
         master.add(child, '>');
         child.paused(false);
-        for (const [localLabel, localTime] of Object.entries(child.labels)) {
-          master.addLabel(
-            sceneTimelineLabel(segment.id, localLabel, occurrence),
-            start + localTime,
-          );
-        }
+        copyChildLabelsAndAdvanceGates(master, child, segment.id, occurrence, start);
       }
       segmentIndex++;
     }
@@ -704,6 +730,112 @@ function positionMaster(
 }
 
 /**
+ * Per-segment occurrence counter used to compute the master label name
+ * that anchors each segment. Mirrors the counting `composeMasterTimeline`
+ * does when it adds `sceneSegmentLabel` markers so navigation handlers
+ * can locate the same label after the fact.
+ */
+function buildSegmentLabelMap(
+  segments: readonly SceneTimelineSegment[],
+  master: MasterTimeline,
+): readonly { id: string; label: string; time: number }[] {
+  const occurrences = new Map<string, number>();
+  const out: { id: string; label: string; time: number }[] = [];
+  for (const segment of segments) {
+    const n = occurrences.get(segment.id) ?? 0;
+    occurrences.set(segment.id, n + 1);
+    const label = sceneSegmentLabel(segment.id, n);
+    const time = master.labels[label];
+    if (typeof time === 'number') {
+      out.push({ id: segment.id, label, time });
+    }
+  }
+  return out;
+}
+
+/**
+ * Translate a {@link PresenterCommand} into a master-timeline transport
+ * action. Wired by {@link createGsapCompositionTimeline} so the
+ * presenter keyboard / cross-window bridge / future remote source all
+ * drive playback the same way:
+ *
+ *  - `advance` — if paused (at an addPause gate or a `hold`), resume.
+ *    Otherwise seek forward to the next authored beat label OR next
+ *    segment boundary (whichever is closer), then keep playing.
+ *  - `hold` — toggle pause/resume at the current playhead.
+ *  - `skip-forward` — seek to the start of the next segment.
+ *  - `skip-backward` — seek to the start of the previous segment, or
+ *    frame 0 if before the first segment.
+ *  - `pause` / `resume` — explicit pause/play.
+ *  - `toggle-master-mute` — handled by the loader against the audio
+ *    service; ignored here.
+ */
+function presenterAdvance(master: MasterTimeline, segments: readonly SceneTimelineSegment[]): void {
+  if (master.isPaused()) {
+    master.play();
+    return;
+  }
+  const now = master.time();
+  const beatTimes = master.beats().map((b) => b.time);
+  const segmentTimes = buildSegmentLabelMap(segments, master).map((s) => s.time);
+  const next = [...beatTimes, ...segmentTimes]
+    .filter((t) => t > now + 0.05)
+    .sort((a, b) => a - b)[0];
+  if (next !== undefined) master.seek(next);
+  if (master.isPaused()) master.play();
+}
+
+function presenterSkipForward(
+  master: MasterTimeline,
+  segments: readonly SceneTimelineSegment[],
+): void {
+  const segs = buildSegmentLabelMap(segments, master);
+  const next = segs.find((s) => s.time > master.time() + 0.05);
+  if (next !== undefined) master.seek(next.time);
+  if (master.isPaused()) master.play();
+}
+
+function presenterSkipBackward(
+  master: MasterTimeline,
+  segments: readonly SceneTimelineSegment[],
+): void {
+  const segs = buildSegmentLabelMap(segments, master);
+  const prev = [...segs].reverse().find((s) => s.time < master.time() - 0.2);
+  master.seek(prev?.time ?? 0);
+  if (master.isPaused()) master.play();
+}
+
+function applyPresenterCommandToMaster(
+  master: MasterTimeline,
+  segments: readonly SceneTimelineSegment[],
+  cmd: { readonly kind: string },
+): void {
+  switch (cmd.kind) {
+    case 'hold':
+      if (master.isPaused()) master.play();
+      else master.pause();
+      return;
+    case 'pause':
+      master.pause();
+      return;
+    case 'resume':
+      master.play();
+      return;
+    case 'advance':
+      presenterAdvance(master, segments);
+      return;
+    case 'skip-forward':
+      presenterSkipForward(master, segments);
+      return;
+    case 'skip-backward':
+      presenterSkipBackward(master, segments);
+      return;
+    default:
+      return; // toggle-master-mute / toggle-practice / unknown — not master's concern
+  }
+}
+
+/**
  * Run the positioned master and resolve when the composition activation
  * is done — the master reached its natural end (so the resolver tears
  * every scene down — ADR-002's "advance" becomes "the composition
@@ -820,6 +952,15 @@ export function createGsapCompositionTimeline(
         // master before propagating so it does not leak.
         master.kill();
         return Promise.reject(err);
+      }
+      // Wire the per-navigation presenter controller to master-timeline
+      // navigation. The controller is signal-bound (per-handler
+      // auto-detach on navigation abort), so we never accumulate
+      // subscriptions across activations.
+      if (opts.presenter !== undefined) {
+        opts.presenter.subscribe((cmd) => {
+          applyPresenterCommandToMaster(master, segments, cmd);
+        });
       }
       return runMasterUntilDone(master, mode, opts.signal);
     },

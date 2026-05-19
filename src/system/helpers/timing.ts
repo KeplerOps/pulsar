@@ -11,6 +11,41 @@
 // explicitly instead of reaching for a module-level mutable.
 
 import type { PresenterCommand, PresenterController } from '../../runtime/presenter';
+import { ADVANCE_GATE_LABEL, ADVANCE_GATE_PREFIX } from '../../runtime/timeline';
+
+/**
+ * Minimal GSAP-timeline shape `addAdvanceGate` writes against. Avoids a
+ * direct dependency on `gsap.core.Timeline` here so the helper is
+ * importable from unit tests with plain object stubs.
+ */
+interface AdvanceGateTimeline {
+  addLabel(name: string, time?: number): unknown;
+  duration?(): number;
+}
+
+/**
+ * Mark "wait for the presenter to advance" at the current end of a
+ * scene's timeline (or at an explicit `time`). When the master is
+ * composed from this scene's timeline, the gate becomes a `master.addPause`
+ * at the corresponding master-time; the presenter `advance` command
+ * resumes playback.
+ *
+ * Pass `name` to author multiple gates per scene — each becomes a
+ * unique `_advance-gate:<name>` label.
+ */
+export const addAdvanceGate = (
+  tl: AdvanceGateTimeline,
+  options: { readonly name?: string; readonly time?: number } = {},
+): void => {
+  const labelBase =
+    options.name === undefined ? ADVANCE_GATE_LABEL : ADVANCE_GATE_PREFIX + options.name;
+  const at = options.time ?? tl.duration?.();
+  if (at === undefined) {
+    tl.addLabel(labelBase);
+  } else {
+    tl.addLabel(labelBase, at);
+  }
+};
 
 /**
  * Promise-returning `setTimeout` wrapper. Not abortable — for abortable

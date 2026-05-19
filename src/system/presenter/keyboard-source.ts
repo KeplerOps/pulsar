@@ -32,6 +32,7 @@ export const DEFAULT_KEYBOARD_BINDINGS: KeyboardPresenterBindings = {
   ArrowLeft: 'skip-backward',
   KeyP: 'hold',
   KeyM: 'toggle-master-mute',
+  KeyN: 'toggle-practice',
   Escape: 'home',
 };
 
