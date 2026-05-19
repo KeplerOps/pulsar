@@ -82,3 +82,11 @@ playwright-report/
 test-results/
 .playwright/
 .playwright-mcp/
+
+# Local dev screenshot scratch (never check in)
+r-*.png
+snap-*.png
+snap2-*.png
+scene-*.png
+probe*.png
+g-pi-*.png
