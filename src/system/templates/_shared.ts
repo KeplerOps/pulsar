@@ -141,6 +141,30 @@ export const mountTemplateRoot = (host: MountTemplateRootHost): TemplateDomEleme
   return root;
 };
 
+/**
+ * Force every template root in the stage tree inactive EXCEPT the
+ * one matching `keepValue`. Used by `buildTemplateTimeline` on
+ * scene activation so the cross-fade race between a previous
+ * scene's trailing `onComplete` and the next scene's leading
+ * `setActive(true)` never leaves two roots visible simultaneously.
+ */
+const deactivateOtherRoots = (ctx: unknown, keepValue: string): void => {
+  if (typeof ctx !== 'object' || ctx === null) return;
+  const stage = (ctx as { stage?: unknown }).stage as TemplateStageElement | null;
+  if (stage === null) return;
+  const docHost = stage as unknown as {
+    querySelectorAll?: (sel: string) => ArrayLike<{ dataset?: Record<string, string> }>;
+  };
+  const others = docHost.querySelectorAll?.(
+    `[${TEMPLATE_ROOT_ATTR}]:not([${TEMPLATE_ROOT_ATTR}="${keepValue}"])`,
+  );
+  if (others === undefined) return;
+  for (let i = 0; i < others.length; i += 1) {
+    const other = others[i];
+    if (other?.dataset !== undefined) other.dataset.pulsarTemplateActive = 'false';
+  }
+};
+
 /** Find a previously-mounted template root by `rootValue`. */
 export const findTemplateRoot = (
   ctx: unknown,
@@ -237,10 +261,18 @@ export const buildTemplateTimeline = (
   const suffix = host.suffixDurationSeconds ?? 0.5;
   const hold = host.holdForAdvance !== false;
   const tl = host.ctx.gsap.timeline();
-  tl.call(() => setTemplateActive(root, true));
+  tl.call(() => {
+    deactivateOtherRoots(host.ctx, host.rootValue);
+    setTemplateActive(root, true);
+  });
   host.buildSegments(tl, root);
   if (hold) addAdvanceGate(tl);
   const userOnDeactivate = host.onDeactivate;
+  // Trailing tween whose onComplete deactivates the root. Suffix
+  // duration is intentionally small so the window between "this
+  // scene's onComplete" and "next scene's leading setActive(true)"
+  // is imperceptible — otherwise both roots briefly stack on the
+  // stage during the cross-fade.
   tl.to(
     {},
     {
