@@ -175,7 +175,10 @@ const resolveTerminalDom = (id: string, ctx: unknown): TerminalDomRefs | null =>
 
 // ---------- step handlers ----------------------------------------------
 
-const renderToolLine = (refs: TerminalDomRefs, step: Extract<TerminalStep, { t: 'tool' }>): HTMLElement => {
+const renderToolLine = (
+  refs: TerminalDomRefs,
+  step: Extract<TerminalStep, { t: 'tool' }>,
+): HTMLElement => {
   const line = refs.ownerDoc.createElement('span');
   line.className = 'ph-line ph-line--tool';
   if (step.name !== undefined) {
@@ -197,7 +200,10 @@ const renderToolLine = (refs: TerminalDomRefs, step: Extract<TerminalStep, { t: 
   return line;
 };
 
-const renderOutputLine = (refs: TerminalDomRefs, step: Extract<TerminalStep, { t: 'output' }>): HTMLElement => {
+const renderOutputLine = (
+  refs: TerminalDomRefs,
+  step: Extract<TerminalStep, { t: 'output' }>,
+): HTMLElement => {
   const line = refs.ownerDoc.createElement('span');
   line.className = 'ph-line ph-line--output';
   const text = step.text ?? (step.lines ?? []).join('\n');

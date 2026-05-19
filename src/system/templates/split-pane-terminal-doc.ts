@@ -10,6 +10,8 @@
 import type { SceneModule } from '../../runtime/scene';
 import { aSleep, typeNode } from '../helpers';
 import {
+  type TemplateDomElement,
+  type TemplateDomFactory,
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
@@ -67,43 +69,13 @@ export const splitPaneTerminalDoc = (
         rootValue: id,
         templateKind: 'split-pane-terminal-doc',
         buildChildren: (root, ownerDoc) => {
-          if (content.eyebrow !== undefined || content.headline !== undefined) {
-            const head = ownerDoc.createElement('header');
-            head.setAttribute('class', 'splitpane__head');
-            if (content.eyebrow !== undefined) {
-              const eb = ownerDoc.createElement('p');
-              eb.setAttribute('class', 'splitpane__eyebrow');
-              eb.textContent = content.eyebrow;
-              head.appendChild?.(eb);
-            }
-            if (content.headline !== undefined) {
-              const h = ownerDoc.createElement('h2');
-              h.setAttribute('class', 'splitpane__headline');
-              h.textContent = content.headline;
-              head.appendChild?.(h);
-            }
-            root.appendChild?.(head);
-          }
+          appendHeader(root, ownerDoc, content);
           const panes = ownerDoc.createElement('div');
           panes.setAttribute('class', 'splitpane__grid');
           const left = ownerDoc.createElement('pre');
           left.setAttribute('class', 'splitpane__terminal term');
           panes.appendChild?.(left);
-          const right = ownerDoc.createElement('figure');
-          right.setAttribute('class', 'splitpane__doc');
-          if (content.rightDoc.cantDegrees !== undefined) {
-            right.setAttribute('style', `transform: rotate(${content.rightDoc.cantDegrees}deg)`);
-          }
-          const img = ownerDoc.createElement('img');
-          img.setAttribute('src', content.rightDoc.imgSrc);
-          if (content.rightDoc.imgAlt !== undefined) img.setAttribute('alt', content.rightDoc.imgAlt);
-          right.appendChild?.(img);
-          if (content.rightDoc.caption !== undefined) {
-            const cap = ownerDoc.createElement('figcaption');
-            cap.textContent = content.rightDoc.caption;
-            right.appendChild?.(cap);
-          }
-          panes.appendChild?.(right);
+          panes.appendChild?.(buildDocFigure(ownerDoc, content.rightDoc));
           root.appendChild?.(panes);
         },
       });
@@ -131,6 +103,47 @@ export const splitPaneTerminalDoc = (
       if (root !== null && typeof root.remove === 'function') root.remove();
     },
   });
+
+const appendHeader = (
+  root: TemplateDomElement,
+  ownerDoc: TemplateDomFactory,
+  content: SplitPaneTerminalDocContent,
+): void => {
+  if (content.eyebrow === undefined && content.headline === undefined) return;
+  const head = ownerDoc.createElement('header');
+  head.setAttribute('class', 'splitpane__head');
+  if (content.eyebrow !== undefined) {
+    const eb = ownerDoc.createElement('p');
+    eb.setAttribute('class', 'splitpane__eyebrow');
+    eb.textContent = content.eyebrow;
+    head.appendChild?.(eb);
+  }
+  if (content.headline !== undefined) {
+    const h = ownerDoc.createElement('h2');
+    h.setAttribute('class', 'splitpane__headline');
+    h.textContent = content.headline;
+    head.appendChild?.(h);
+  }
+  root.appendChild?.(head);
+};
+
+const buildDocFigure = (ownerDoc: TemplateDomFactory, doc: SplitDocSpec): TemplateDomElement => {
+  const right = ownerDoc.createElement('figure');
+  right.setAttribute('class', 'splitpane__doc');
+  if (doc.cantDegrees !== undefined) {
+    right.setAttribute('style', `transform: rotate(${doc.cantDegrees}deg)`);
+  }
+  const img = ownerDoc.createElement('img');
+  img.setAttribute('src', doc.imgSrc);
+  if (doc.imgAlt !== undefined) img.setAttribute('alt', doc.imgAlt);
+  right.appendChild?.(img);
+  if (doc.caption !== undefined) {
+    const cap = ownerDoc.createElement('figcaption');
+    cap.textContent = doc.caption;
+    right.appendChild?.(cap);
+  }
+  return right;
+};
 
 const playScript = (id: string, ctx: unknown, content: SplitPaneTerminalDocContent): void => {
   if (!isTemplateCtx(ctx) || ctx.stage === null) return;

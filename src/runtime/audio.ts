@@ -702,32 +702,60 @@ function assertPlayOptions(
     group?: unknown;
     rate?: unknown;
   };
-  if (opts.sprite !== undefined && typeof opts.sprite !== 'string') {
-    throw new AudioSoundError(
-      `audio sound "${soundId}" play option "sprite" must be a string; got ${typeof opts.sprite}`,
+  assertPlayOptionTypeString(soundId, 'sprite', opts.sprite, AudioSoundError);
+  assertPlayOptionTypeBoolean(soundId, 'loop', opts.loop, AudioSoundError);
+  assertPlayOptionTypeString(soundId, 'group', opts.group, AudioGroupError);
+  assertPlayOptionTypeNumber(soundId, 'volume', opts.volume, AudioRangeError);
+  assertPlayOptionRate(soundId, opts.rate);
+}
+
+type AudioErrorCtor = new (message: string) => Error;
+
+function assertPlayOptionTypeString(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'string') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a string; got ${typeof value}`,
     );
   }
-  if (opts.loop !== undefined && typeof opts.loop !== 'boolean') {
-    throw new AudioSoundError(
-      `audio sound "${soundId}" play option "loop" must be a boolean; got ${typeof opts.loop}`,
+}
+
+function assertPlayOptionTypeBoolean(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a boolean; got ${typeof value}`,
     );
   }
-  if (opts.group !== undefined && typeof opts.group !== 'string') {
-    throw new AudioGroupError(
-      `audio sound "${soundId}" play option "group" must be a string; got ${typeof opts.group}`,
+}
+
+function assertPlayOptionTypeNumber(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'number') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a number; got ${typeof value}`,
     );
   }
-  if (opts.volume !== undefined && typeof opts.volume !== 'number') {
+}
+
+function assertPlayOptionRate(soundId: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new AudioRangeError(
-      `audio sound "${soundId}" play option "volume" must be a number; got ${typeof opts.volume}`,
+      `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof value === 'number' ? value : typeof value}`,
     );
-  }
-  if (opts.rate !== undefined) {
-    if (typeof opts.rate !== 'number' || !Number.isFinite(opts.rate) || opts.rate <= 0) {
-      throw new AudioRangeError(
-        `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof opts.rate === 'number' ? opts.rate : typeof opts.rate}`,
-      );
-    }
   }
 }
 

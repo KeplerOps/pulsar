@@ -22,10 +22,7 @@ export interface OperatorDossierContent {
   readonly rows: readonly DossierRow[];
 }
 
-export const operatorDossier = (
-  id: string,
-  content: OperatorDossierContent,
-): SceneModule =>
+export const operatorDossier = (id: string, content: OperatorDossierContent): SceneModule =>
   buildTemplateScene({
     id,
     title: `Operator — ${content.handle}`,

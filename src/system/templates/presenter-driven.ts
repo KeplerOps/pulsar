@@ -36,8 +36,8 @@
 import { gsap as gsapDefault } from 'gsap';
 import type { PresenterController } from '../../runtime/presenter';
 import { type Caption, type SceneModule, assertSceneModule } from '../../runtime/scene';
-import { addAdvanceGate } from '../helpers/timing';
 import type { ChromeSlots } from '../chrome';
+import { addAdvanceGate } from '../helpers/timing';
 
 /**
  * Subset of `WorkbenchSceneCtx` the presenter-driven body is contracted
@@ -75,8 +75,7 @@ interface RawCtx {
   readonly stage?: unknown;
 }
 
-const isRawCtx = (value: unknown): value is RawCtx =>
-  typeof value === 'object' && value !== null;
+const isRawCtx = (value: unknown): value is RawCtx => typeof value === 'object' && value !== null;
 
 interface ActiveRun {
   readonly signal: { aborted: boolean };
@@ -88,10 +87,7 @@ interface ActiveRun {
  * files; the returned SceneModule is registered in the composition
  * manifest just like any other scene.
  */
-export const presenterDrivenScene = (
-  id: string,
-  content: PresenterDrivenContent,
-): SceneModule => {
+export const presenterDrivenScene = (id: string, content: PresenterDrivenContent): SceneModule => {
   // One active run record per scene id. The loader serializes scene
   // lifecycle, so a scene cannot be active twice at once — but a
   // navigation-superseded re-entry must wipe the prior record.

@@ -11,18 +11,28 @@ import { describe, expect, it } from 'vitest';
 import { assertSceneModule } from '../../src/runtime/scene';
 import {
   actHeader,
+  activityFeedPayoff,
   bulletList,
+  cardCarousel,
   centerpiece,
+  chatPickList,
+  chatTranscript,
   compare,
   definitionTable,
+  dropList,
+  haulCitations,
+  incidentPlate,
   introGrid,
   metricTicker,
+  operatorDossier,
   outlineTitle,
   outro,
   placard,
   quote,
   quoteStack,
   screenshotCallouts,
+  splitDialogueEmail,
+  splitPaneTerminalDoc,
   statBig,
   statPairGrid,
   statRow,
@@ -313,5 +323,175 @@ describe('L2 templates — optional-branch coverage', () => {
       ctx(makeStage()),
     );
     assertLifecycle(outlineTitle('opt-ot2', { index: 5, title: 'Mid' }), ctx(makeStage()));
+  });
+
+  it('incidentPlate with bg + sub', () => {
+    assertLifecycle(
+      incidentPlate('opt-ip', {
+        time: '03:14 UTC',
+        headline: 'BRIDGE COLLAPSE',
+        sub: 'no casualties yet',
+        bgSrc: '/bg.png',
+        bgAlt: 'bridge',
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('operatorDossier renders all rows', () => {
+    assertLifecycle(
+      operatorDossier('opt-od', {
+        handle: '@drift',
+        rows: [
+          { k: 'origin', v: 'unknown' },
+          { k: 'first seen', v: '2025-04' },
+          { k: 'reach', v: 'global' },
+        ],
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('splitPaneTerminalDoc with eyebrow + headline + canted doc + caption', () => {
+    assertLifecycle(
+      splitPaneTerminalDoc('opt-sptd', {
+        eyebrow: 'EB',
+        headline: 'CHATBOT',
+        leftScript: [
+          { role: 'user', text: 'q' },
+          { role: 'agent', text: 'a' },
+          { role: 'tool', text: 'curl', base: 5 },
+          { role: 'output', text: 'ok', afterMs: 5 },
+        ],
+        rightDoc: { imgSrc: '/d.png', imgAlt: 'd', caption: 'cap', cantDegrees: 4 },
+        typeBaseMs: 1,
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('activityFeedPayoff with eyebrow + headline + all entry types + payoff title', () => {
+    assertLifecycle(
+      activityFeedPayoff('opt-afp', {
+        eyebrow: 'EB',
+        headline: 'OSINT',
+        feed: [
+          { type: 'search', text: 'who is X' },
+          { type: 'read', text: 'wiki', afterMs: 5 },
+          { type: 'think', text: 'reasoning' },
+        ],
+        payoff: {
+          title: 'Dossier',
+          rows: [
+            { label: 'name', value: 'X' },
+            { label: 'role', value: '[[CEO]]' },
+          ],
+        },
+        typeBaseMs: 1,
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('haulCitations with eyebrow + headline + hot row mod + citation title', () => {
+    assertLifecycle(
+      haulCitations('opt-hc', {
+        eyebrow: 'EB',
+        headline: 'HAUL',
+        haul: [
+          { count: '12,847', label: 'records', mod: 'hot' },
+          { count: '100%', label: 'coverage' },
+        ],
+        citations: {
+          title: 'Sources',
+          rows: [
+            { source: 'foo.com', quote: 'breach' },
+            { source: 'bar.com', quote: 'leaked' },
+          ],
+        },
+        staggerMs: 100,
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('chatTranscript with title + alert flag + doc', () => {
+    assertLifecycle(
+      chatTranscript('opt-ct', {
+        title: 'Signal export',
+        messages: [
+          { handle: '@a', text: 'safe' },
+          { handle: '@b', text: 'unsafe', alert: true, afterMs: 5 },
+        ],
+        perBeatMs: 50,
+        doc: { imgSrc: '/d.png', imgAlt: 'd', caption: 'doc', cantDegrees: -3 },
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('cardCarousel with eyebrow + sub + src + per-card dwell', () => {
+    assertLifecycle(
+      cardCarousel('opt-cc', {
+        eyebrow: 'EB',
+        dwellMs: 50,
+        cards: [
+          { headline: 'A', sub: 'subA', src: 'src.com' },
+          { headline: 'B', dwellMs: 25 },
+        ],
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('splitDialogueEmail with eyebrow + headline + signoff + footer + base override', () => {
+    assertLifecycle(
+      splitDialogueEmail('opt-sde', {
+        eyebrow: 'EB',
+        headline: 'PHISH',
+        dialogue: [
+          { handle: '@a', text: 'plan it' },
+          { handle: '@b', text: 'go', base: 5, afterMs: 5 },
+        ],
+        email: {
+          from: 'a@x',
+          to: 'b@x',
+          subject: 'urgent',
+          bodyParagraphs: ['line one', 'line [[two]]'],
+          signoff: '— [[alex]]',
+          footer: 'sent 09:12 MDT',
+        },
+        typeBaseMs: 1,
+        emailRevealAfterMs: 10,
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('dropList with eyebrow + headline + sub + hot mod', () => {
+    assertLifecycle(
+      dropList('opt-dl', {
+        eyebrow: 'EB',
+        headline: 'UPGRADES',
+        staggerMs: 50,
+        items: [{ label: 'fast', sub: 'really fast', mod: 'hot' }, { label: 'cheap' }],
+      }),
+      ctx(makeStage()),
+    );
+  });
+
+  it('chatPickList with promptHandle + sub + pickCaption', () => {
+    assertLifecycle(
+      chatPickList('opt-cpl', {
+        promptHandle: '@orch',
+        promptMessage: 'pick one',
+        items: [{ label: 'A', sub: 'option A' }, { label: 'B' }, { label: 'C' }],
+        pickIndex: 2,
+        staggerMs: 25,
+        pickAfterMs: 25,
+        pickCaption: 'committed',
+      }),
+      ctx(makeStage()),
+    );
   });
 });

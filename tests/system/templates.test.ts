@@ -11,18 +11,28 @@ import { describe, expect, it } from 'vitest';
 import { type SceneModule, assertSceneModule } from '../../src/runtime/scene';
 import {
   actHeader,
+  activityFeedPayoff,
   bulletList,
+  cardCarousel,
   centerpiece,
+  chatPickList,
+  chatTranscript,
   compare,
   definitionTable,
+  dropList,
+  haulCitations,
+  incidentPlate,
   introGrid,
   metricTicker,
+  operatorDossier,
   outlineTitle,
   outro,
   placard,
   quote,
   quoteStack,
   screenshotCallouts,
+  splitDialogueEmail,
+  splitPaneTerminalDoc,
   statBig,
   statPairGrid,
   statRow,
@@ -254,6 +264,89 @@ const CASES: readonly TemplateCase[] = [
   },
   { id: 'placard-smoke', build: (id) => placard(id, { line1: 'PLACARD', line2: 'subtitle' }) },
   { id: 'outline-title-smoke', build: (id) => outlineTitle(id, { index: 3, title: 'Detection' }) },
+  {
+    id: 'incident-plate-smoke',
+    build: (id) => incidentPlate(id, { time: '14:32 MDT', headline: 'INCIDENT' }),
+  },
+  {
+    id: 'operator-dossier-smoke',
+    build: (id) =>
+      operatorDossier(id, {
+        handle: '@operator',
+        rows: [
+          { k: 'origin', v: 'unknown' },
+          { k: 'first seen', v: '2025-04-01' },
+        ],
+      }),
+  },
+  {
+    id: 'split-pane-terminal-doc-smoke',
+    build: (id) =>
+      splitPaneTerminalDoc(id, {
+        leftScript: [{ role: 'user', text: 'go' }],
+        rightDoc: { imgSrc: '/img.png' },
+      }),
+  },
+  {
+    id: 'activity-feed-payoff-smoke',
+    build: (id) =>
+      activityFeedPayoff(id, {
+        feed: [{ type: 'search', text: 'who is X' }],
+        payoff: { rows: [{ label: 'name', value: 'X' }] },
+      }),
+  },
+  {
+    id: 'haul-citations-smoke',
+    build: (id) =>
+      haulCitations(id, {
+        haul: [{ count: '12k', label: 'records' }],
+        citations: { rows: [{ source: 'src', quote: 'q' }] },
+      }),
+  },
+  {
+    id: 'chat-transcript-smoke',
+    build: (id) =>
+      chatTranscript(id, {
+        messages: [
+          { handle: '@a', text: 'hello' },
+          { handle: '@b', text: 'world' },
+        ],
+      }),
+  },
+  {
+    id: 'card-carousel-smoke',
+    build: (id) =>
+      cardCarousel(id, {
+        cards: [{ headline: 'A' }, { headline: 'B' }],
+        dwellMs: 100,
+      }),
+  },
+  {
+    id: 'split-dialogue-email-smoke',
+    build: (id) =>
+      splitDialogueEmail(id, {
+        dialogue: [{ handle: '@a', text: 'lets do it' }],
+        email: {
+          from: 'a@x',
+          to: 'b@x',
+          subject: 'hi',
+          bodyParagraphs: ['line one'],
+        },
+      }),
+  },
+  {
+    id: 'drop-list-smoke',
+    build: (id) => dropList(id, { items: [{ label: 'one' }, { label: 'two' }] }),
+  },
+  {
+    id: 'chat-pick-list-smoke',
+    build: (id) =>
+      chatPickList(id, {
+        promptMessage: 'pick one',
+        items: [{ label: 'A' }, { label: 'B' }, { label: 'C' }],
+        pickIndex: 1,
+      }),
+  },
 ];
 
 describe('L2 templates — shape + smoke (Batch E)', () => {
@@ -280,7 +373,7 @@ describe('L2 templates — shape + smoke (Batch E)', () => {
     expect(ids.size).toBe(CASES.length);
   });
 
-  it('covers all 18 shipped templates', () => {
-    expect(CASES.length).toBe(18);
+  it('covers all 28 shipped templates', () => {
+    expect(CASES.length).toBe(28);
   });
 });
