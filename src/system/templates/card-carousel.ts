@@ -54,23 +54,25 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
         },
       });
     },
-    timeline: (ctx) => {
-      const tl = buildTemplateTimeline({
+    timeline: (ctx) =>
+      buildTemplateTimeline({
         ctx,
         rootValue: id,
         suffixDurationSeconds: 1.4,
         buildSegments: (innerTl) => {
           innerTl.addLabel('cc-in', 0);
+          // Gate carousel playback so the cards don't auto-advance
+          // while the scene is still inactive in the composition.
+          innerTl.call(() => {
+            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
+          });
           const totalMs = content.cards.reduce(
             (sum, c) => sum + (c.dwellMs ?? content.dwellMs ?? 5000),
             0,
           );
           innerTl.to({}, { duration: Math.max(1, totalMs / 1000) });
         },
-      });
-      if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-      return tl;
-    },
+      }),
     cleanup: (ctx) => {
       const s = sessions.get(id);
       if (s !== undefined) {

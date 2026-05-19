@@ -89,21 +89,29 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
         },
       });
     },
-    timeline: (ctx) => {
-      const tl = buildTemplateTimeline({
+    timeline: (ctx) =>
+      buildTemplateTimeline({
         ctx,
         rootValue: id,
         suffixDurationSeconds: 0.8,
         buildSegments: (innerTl) => {
           innerTl.addLabel('term-start', 0);
+          // Gate playback behind master entry — otherwise every
+          // terminal scene in the composition kicks off its clock
+          // + typing at mount time.
+          innerTl.call(() => {
+            if (isTemplateCtx(ctx) && ctx.stage !== null) {
+              playScript(id, ctx, content);
+            }
+          });
           innerTl.to({}, { duration: 1 });
         },
-      });
-      if (isTemplateCtx(ctx) && ctx.stage !== null) {
-        playScript(id, ctx, content);
-      }
-      return tl;
-    },
+        // Strip chrome side-effects (clock / srcMark / FF overlay)
+        // when master leaves the segment. The scene root is
+        // deactivated by `buildTemplateTimeline` itself; this hook
+        // covers the elements mounted on `document.body`.
+        onDeactivate: () => sessionTeardown(id),
+      }),
     cleanup: (ctx) => {
       // Best-effort teardown of clock + srcMark + ff overlay (the
       // scene root.remove() handled by cleanupTemplateRoot covers the

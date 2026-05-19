@@ -92,6 +92,10 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
   // lifecycle, so a scene cannot be active twice at once — but a
   // navigation-superseded re-entry must wipe the prior record.
   let active: ActiveRun | null = null;
+  // Captured at create() time, consumed by timeline()'s leading
+  // tl.call() when master enters the segment. Decouples body kick-
+  // off from mount so all scenes don't fire bodies concurrently.
+  let pendingCtx: PresenterDrivenCtx | null = null;
 
   const scene: SceneModule = {
     id,
@@ -105,17 +109,21 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
     standalone: true,
     trailerSafe: false,
     create: (rawCtx) => {
+      // The body only runs once the master timeline reaches this
+      // scene's segment (gated by `tl.call(startBody)` in `timeline()`
+      // below). Firing it from `create()` would race every
+      // presenter-driven scene's body at composition load — all decks
+      // mount every scene's create() up front. Stash the ctx and a
+      // freshly-armed abort signal so `timeline()` can wire the
+      // gated kickoff and `cleanup()` can flip the signal.
       if (!isRawCtx(rawCtx)) return;
       const presenter = rawCtx.presenter;
       const chrome = rawCtx.chrome;
       if (presenter === undefined || chrome === undefined) return;
-      // Wipe any prior run record (paranoid — loader serializes
-      // lifecycle, so this shouldn't happen, but a navigation race
-      // could in principle leave a stale signal).
       if (active !== null) active.signal.aborted = true;
       const signal = { aborted: false };
       active = { signal };
-      const driveCtx: PresenterDrivenCtx = {
+      pendingCtx = {
         presenter,
         signal,
         chrome,
@@ -123,20 +131,6 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
         gsap: rawCtx.gsap,
         stage: rawCtx.stage,
       };
-      // Fire the body off externally. It paces itself via the helpers
-      // (aSleep / holdUntilAdvance) that consume the presenter
-      // controller; cleanup flips signal.aborted so the body bails on
-      // its next await.
-      void (async (): Promise<void> => {
-        try {
-          await content.run(driveCtx);
-        } catch (err) {
-          // A throw from the body is the deck author's bug — log and
-          // bail; do NOT propagate (the master timeline is independent
-          // of the body's lifecycle).
-          console.error(`presenterDrivenScene[${id}] body error:`, err);
-        }
-      })();
     },
     timeline: (rawCtx) => {
       if (!isRawCtx(rawCtx)) return null;
@@ -144,10 +138,25 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
       const tl = (gsapApi as { timeline(opts?: unknown): unknown }).timeline() as ReturnType<
         typeof gsapDefault.timeline
       >;
+      // Leading kick-off — fires the body only when master enters
+      // this segment, not when the scene is mounted. The body still
+      // runs externally (off the timeline tick) and paces itself via
+      // aSleep / holdUntilAdvance against the presenter controller.
+      tl.call(() => {
+        const ctxToRun = pendingCtx;
+        if (ctxToRun === null) return;
+        pendingCtx = null;
+        void (async (): Promise<void> => {
+          try {
+            await content.run(ctxToRun);
+          } catch (err) {
+            console.error(`presenterDrivenScene[${id}] body error:`, err);
+          }
+        })();
+      });
       // Tiny leading spacer so the segment has non-zero duration on
       // master (composeMasterTimeline positions following segments at
-      // the new end via '>'; a 0-duration segment is unusual but
-      // technically valid — the spacer just keeps the math friendly).
+      // the new end via '>').
       tl.to({}, { duration: 0.1 });
       // Trailing advance gate. composeMasterTimeline detects the
       // `_advance-gate` label and inserts a master.addPause at the

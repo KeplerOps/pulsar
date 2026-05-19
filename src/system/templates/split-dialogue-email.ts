@@ -70,19 +70,19 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
         },
       });
     },
-    timeline: (ctx) => {
-      const tl = buildTemplateTimeline({
+    timeline: (ctx) =>
+      buildTemplateTimeline({
         ctx,
         rootValue: id,
         suffixDurationSeconds: 1.6,
         buildSegments: (innerTl) => {
           innerTl.addLabel('sde-in', 0);
+          innerTl.call(() => {
+            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
+          });
           innerTl.to({}, { duration: 1 });
         },
-      });
-      if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-      return tl;
-    },
+      }),
     cleanup: (ctx) => {
       const s = sessions.get(id);
       if (s !== undefined) {

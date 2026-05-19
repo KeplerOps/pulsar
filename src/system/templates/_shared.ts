@@ -14,6 +14,7 @@ import { NAVIGATION_MODES } from '../../runtime/navigation';
 import type { Caption, SceneLifecycleFn, SceneModule } from '../../runtime/scene';
 import type { WorkbenchSceneCtx } from '../../runtime/scene-loader';
 import type { ChromeSlots } from '../chrome';
+import { addAdvanceGate } from '../helpers/timing';
 
 // ---------- ctx narrowing (shared with the scene authoring contract) ----
 
@@ -195,6 +196,22 @@ export interface BuildTemplateTimelineHost {
   ) => void;
   /** Duration (s) of the trailing tween whose onComplete deactivates the root. */
   readonly suffixDurationSeconds?: number;
+  /**
+   * When `true` (default), a trailing `addAdvanceGate(tl)` is inserted
+   * after the scene's `buildSegments` content so master pauses at the
+   * scene boundary until the presenter advances. Decks that want a
+   * scene to flow into the next without a hold (auto-flow demo
+   * sequences) pass `false`.
+   */
+  readonly holdForAdvance?: boolean;
+  /**
+   * Optional teardown callback fired by the suffix tween's
+   * `onComplete` alongside the template root's deactivation. Used by
+   * templates that mount chrome elements outside the scene root
+   * (e.g. terminal's clock + srcMark on `document.body`) so those
+   * elements are stripped when master leaves the segment.
+   */
+  readonly onDeactivate?: () => void;
 }
 
 /**
@@ -218,15 +235,19 @@ export const buildTemplateTimeline = (
   if (stage === null) return null;
   const root = findTemplateRoot(host.ctx, host.rootValue);
   const suffix = host.suffixDurationSeconds ?? 0.5;
+  const hold = host.holdForAdvance !== false;
   const tl = host.ctx.gsap.timeline();
   tl.call(() => setTemplateActive(root, true));
   host.buildSegments(tl, root);
+  if (hold) addAdvanceGate(tl);
+  const userOnDeactivate = host.onDeactivate;
   tl.to(
     {},
     {
       duration: suffix,
       onComplete: () => {
         setTemplateActive(root, false);
+        if (userOnDeactivate !== undefined) userOnDeactivate();
       },
     },
   );

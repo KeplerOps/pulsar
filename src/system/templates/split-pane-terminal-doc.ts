@@ -80,19 +80,19 @@ export const splitPaneTerminalDoc = (
         },
       });
     },
-    timeline: (ctx) => {
-      const tl = buildTemplateTimeline({
+    timeline: (ctx) =>
+      buildTemplateTimeline({
         ctx,
         rootValue: id,
         suffixDurationSeconds: 1.2,
         buildSegments: (innerTl) => {
           innerTl.addLabel('panes-in', 0);
+          innerTl.call(() => {
+            if (isTemplateCtx(ctx) && ctx.stage !== null) playScript(id, ctx, content);
+          });
           innerTl.to({}, { duration: 1 });
         },
-      });
-      if (isTemplateCtx(ctx) && ctx.stage !== null) playScript(id, ctx, content);
-      return tl;
-    },
+      }),
     cleanup: (ctx) => {
       const s = sessions.get(id);
       if (s !== undefined) {

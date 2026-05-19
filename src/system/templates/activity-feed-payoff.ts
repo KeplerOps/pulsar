@@ -90,19 +90,19 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
         },
       });
     },
-    timeline: (ctx) => {
-      const tl = buildTemplateTimeline({
+    timeline: (ctx) =>
+      buildTemplateTimeline({
         ctx,
         rootValue: id,
         suffixDurationSeconds: 1.4,
         buildSegments: (innerTl) => {
           innerTl.addLabel('afp-in', 0);
+          innerTl.call(() => {
+            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
+          });
           innerTl.to({}, { duration: 1 });
         },
-      });
-      if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-      return tl;
-    },
+      }),
     cleanup: (ctx) => {
       const s = sessions.get(id);
       if (s !== undefined) {
