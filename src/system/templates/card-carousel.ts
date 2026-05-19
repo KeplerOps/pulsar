@@ -72,6 +72,13 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
           );
           innerTl.to({}, { duration: Math.max(1, totalMs / 1000) });
         },
+        // Stop the async card-cycling loop when master leaves the
+        // segment, otherwise it keeps writing to the stage long
+        // after the next scene has taken over.
+        onDeactivate: () => {
+          const s = sessions.get(id);
+          if (s !== undefined) s.abortedFlag.aborted = true;
+        },
       }),
     cleanup: (ctx) => {
       const s = sessions.get(id);
