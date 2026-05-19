@@ -29,3 +29,6 @@ export type { ClockHandle, ClockHost } from './clock';
 
 export { firePopout } from './popout';
 export type { PopoutHost } from './popout';
+
+export { createCounter, formatHms } from './counter';
+export type { CounterHandle, CounterHost } from './counter';

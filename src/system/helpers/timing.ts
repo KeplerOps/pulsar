@@ -47,6 +47,55 @@ export const addAdvanceGate = (
   }
 };
 
+/** Minimal GSAP shape `runLoopUntilCleanup` writes against. */
+interface LoopableTimeline {
+  play(): unknown;
+  kill(): unknown;
+  to(target: unknown, vars: Record<string, unknown>, position?: number | string): unknown;
+  from(target: unknown, vars: Record<string, unknown>, position?: number | string): unknown;
+  set(target: unknown, vars: Record<string, unknown>, position?: number | string): unknown;
+}
+interface LoopableGsap {
+  timeline(opts?: { readonly paused?: boolean; readonly repeat?: number }): LoopableTimeline;
+}
+
+/**
+ * Spawn an ambient looping animation that lives outside the master
+ * timeline. Used by cold-open-style scenes that want a background
+ * action loop (topology pulse, scanning rays, ambient drift) that
+ * keeps running while the master is paused at an advance gate. Kill
+ * the returned handle from the scene's `cleanup(ctx)` so the loop
+ * does not leak across navigations.
+ *
+ *     const handle = runLoopUntilCleanup(ctx.gsap, (tl) => {
+ *       tl.to('.pulse', { opacity: 1, duration: 0.4 });
+ *       tl.to('.pulse', { opacity: 0, duration: 0.6 });
+ *     });
+ *     // later, in cleanup:
+ *     handle.stop();
+ *
+ * The body runs on its own GSAP root timeline at `repeat: -1`; it
+ * does NOT count toward `master.duration()` and therefore does not
+ * block the master from reaching its natural end at scene boundary.
+ */
+export const runLoopUntilCleanup = (
+  gsap: LoopableGsap | undefined,
+  build: (tl: LoopableTimeline) => void,
+): { stop(): void } => {
+  if (gsap === undefined) return { stop: () => {} };
+  const tl = gsap.timeline({ repeat: -1 });
+  build(tl);
+  tl.play();
+  let stopped = false;
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      tl.kill();
+    },
+  };
+};
+
 /**
  * Promise-returning `setTimeout` wrapper. Not abortable — for abortable
  * dwells use {@link aSleep}.

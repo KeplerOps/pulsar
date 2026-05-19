@@ -94,3 +94,4 @@ cv-*.png
 
 # Local-only decks (per-developer scratch, never check in)
 src/decks/local-*/
+public/local-*/

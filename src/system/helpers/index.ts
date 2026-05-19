@@ -5,6 +5,7 @@ export {
   addAdvanceGate,
   aSleep,
   holdUntilAdvance,
+  runLoopUntilCleanup,
   schedule,
   sleep,
   startInterval,

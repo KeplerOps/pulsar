@@ -149,6 +149,19 @@ export function assertSceneTimeline(
   }
   const duration = value.duration();
   for (const [label, time] of Object.entries(value.labels)) {
+    // Underscore-prefixed labels are runtime sentinels (advance gates,
+    // future flow-control hints) — they are NOT beats, are never
+    // addressable from the URL `beat=` grammar, and are not surfaced
+    // by `MasterTimeline.beats()`. The kebab-case rule is a contract
+    // for beat names only.
+    if (label.startsWith('_')) {
+      if (!Number.isFinite(time) || time < 0 || time > duration) {
+        throw new SceneTimelineLabelError(
+          `scene "${sceneId}" timeline sentinel label "${label}" is at an invalid time ${time}: a label time must be a finite number between 0 and the scene timeline duration (${duration}s)`,
+        );
+      }
+      continue;
+    }
     if (!isKebabIdentifier(label)) {
       throw new SceneTimelineLabelError(
         `scene "${sceneId}" timeline label "${label}" is not a valid beat: beat labels must be lowercase kebab-case identifiers (${KEBAB_IDENTIFIER_FORM})`,
