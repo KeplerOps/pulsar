@@ -90,3 +90,7 @@ snap2-*.png
 scene-*.png
 probe*.png
 g-pi-*.png
+cv-*.png
+
+# Local-only decks (per-developer scratch, never check in)
+src/decks/local-*/

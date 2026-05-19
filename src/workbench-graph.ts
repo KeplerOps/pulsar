@@ -20,6 +20,25 @@ import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
 import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-fixture';
 import { placeholderScene } from './scenes/placeholder';
 
+// Optional local decks live under `src/decks/local-*/index.ts` and
+// are gitignored — never enter the public repo, but auto-register at
+// build time so `?composition=<id>` resolves them locally. Each module
+// must export `scenes: SceneModule[]` and `composition:
+// CompositionRegistryEntry`. Missing files are silently skipped.
+interface LocalDeckModule {
+  readonly scenes: readonly SceneModule[];
+  readonly composition: CompositionRegistryEntry;
+}
+const LOCAL_DECK_MODULES = import.meta.glob<LocalDeckModule>('./decks/local-*/index.ts', {
+  eager: true,
+});
+const LOCAL_SCENES: readonly SceneModule[] = Object.values(LOCAL_DECK_MODULES).flatMap(
+  (m) => m.scenes,
+);
+const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
+  LOCAL_DECK_MODULES,
+).map((m) => m.composition);
+
 // PUL-Q002 / ADR-030: the browser-support fixture scene is registered
 // alongside the placeholder so the PUL-Q002 CI gate can exercise a
 // real GSAP timeline + present-mode completion + cleanup path.
@@ -39,9 +58,11 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   browserSupportFixtureScene,
   domCssAccessibilityFixtureScene,
   ...PULSAR_INTRO_SCENES,
+  ...LOCAL_SCENES,
 ];
 
 export const WORKBENCH_COMPOSITIONS: readonly CompositionRegistryEntry[] = [
   { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
   pulsarIntroCompositionEntry,
+  ...LOCAL_COMPOSITIONS,
 ];
