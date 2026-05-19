@@ -26,6 +26,7 @@ export const dissolve: Transition = {
       { opacity: 0, duration: half, ease: 'power2.inOut' },
       ctx.insertAt + half,
     );
+    ctx.master.set(ctx.overlay, { display: 'none' }, ctx.insertAt + seconds);
     return seconds;
   },
 };

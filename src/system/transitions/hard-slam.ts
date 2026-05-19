@@ -23,6 +23,7 @@ export const hardSlam: Transition = {
       { opacity: 0, duration: seconds - hold, ease: 'power3.out' },
       ctx.insertAt + hold,
     );
+    ctx.master.set(ctx.overlay, { display: 'none' }, ctx.insertAt + seconds);
     return seconds;
   },
 };

@@ -21,7 +21,7 @@
   pointer-events: none;
 }
 
-.pulsar-template[data-pulsar-template-active="true"] {
+.pulsar-template:where([data-pulsar-template-active="true"]) {
   display: block;
   pointer-events: auto;
 }

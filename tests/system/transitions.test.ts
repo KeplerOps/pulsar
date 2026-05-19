@@ -133,6 +133,32 @@ describe('composeMasterTimeline + transitions registry', () => {
     master.kill();
   });
 
+  it.each([
+    ['dissolve', dissolve],
+    ['hard-slam', hardSlam],
+    ['hold-on-black', holdOnBlack],
+    ['push', push],
+  ] as const)(
+    'leaves the overlay invisible at the end of the transition (%s)',
+    (_name, transition) => {
+      // Regression: an earlier `push` left opacity=1 + display=block at
+      // end, so every scene downstream was hidden by an opaque overlay
+      // pinned at z-index 60. Every transition must end in a state
+      // that doesn't occlude the next scene.
+      const overlay = { opacity: 1, display: 'block', backgroundColor: '', x: '0%' };
+      const master = gsap.timeline({ paused: true });
+      transition.insert({
+        master,
+        insertAt: 0,
+        overlay: overlay as unknown as HTMLElement,
+        durationMs: transition.defaultDurationMs,
+      });
+      master.seek(master.duration());
+      expect(overlay.opacity === 0 || overlay.display === 'none').toBe(true);
+      master.kill();
+    },
+  );
+
   it('cut transition consumes zero master-time even when declared', () => {
     const engine = createTimelineEngine();
     const overlay = { value: 0 } as unknown as HTMLElement;

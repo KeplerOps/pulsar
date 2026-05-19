@@ -26,6 +26,7 @@ export const holdOnBlack: Transition = {
       { opacity: 0, duration: fade, ease: 'power2.inOut' },
       ctx.insertAt + fade + hold,
     );
+    ctx.master.set(ctx.overlay, { display: 'none' }, ctx.insertAt + seconds);
     return seconds;
   },
 };

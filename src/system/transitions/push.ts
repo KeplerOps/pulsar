@@ -31,7 +31,7 @@ export const push: Transition = {
       { x: '100%', duration: half, ease: 'power3.in' },
       ctx.insertAt + half,
     );
-    ctx.master.set(ctx.overlay, { x: '0%' }, ctx.insertAt + seconds);
+    ctx.master.set(ctx.overlay, { x: '0%', opacity: 0, display: 'none' }, ctx.insertAt + seconds);
     return seconds;
   },
 };
