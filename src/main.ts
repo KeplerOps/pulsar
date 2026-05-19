@@ -252,6 +252,30 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
     button.type = 'button';
     button.dataset.pulsarAudioUnlock = 'gesture';
     button.textContent = 'Start presentation';
+    // Center the gate on screen at the highest z-index. Without
+    // these inline styles the bare button sits at the top-left of
+    // #stage, defaults the browser-native styling, and is occluded
+    // by the chrome surface (the dancing atmospheric overlays).
+    button.setAttribute(
+      'style',
+      [
+        'position: fixed',
+        'top: 50%',
+        'left: 50%',
+        'transform: translate(-50%, -50%)',
+        'z-index: 9999',
+        'padding: 18px 36px',
+        'font: 600 18px/1 system-ui, -apple-system, "Segoe UI", sans-serif',
+        'letter-spacing: 0.08em',
+        'text-transform: uppercase',
+        'color: #08090c',
+        'background: #7df5ff',
+        'border: none',
+        'border-radius: 6px',
+        'cursor: pointer',
+        'box-shadow: 0 18px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,0.08) inset',
+      ].join('; '),
+    );
     return button;
   },
 });
