@@ -66,12 +66,12 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
           root.appendChild?.(prompt);
           const list = ownerDoc.createElement('ol');
           list.setAttribute('class', 'cpl__list');
-          list.setAttribute('data-cpl-list', '');
+          list.dataset.cplList = '';
           const stagger = content.staggerMs ?? 220;
           content.items.forEach((item, i) => {
             const li = ownerDoc.createElement('li');
             li.setAttribute('class', 'cpl__item');
-            li.setAttribute('data-cpl-index', String(i));
+            li.dataset.cplIndex = String(i);
             li.setAttribute('style', `--cpl-delay: ${i * stagger}ms`);
             const lab = ownerDoc.createElement('span');
             lab.setAttribute('class', 'cpl__label');
@@ -89,7 +89,7 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
           if (content.pickCaption !== undefined) {
             const cap = ownerDoc.createElement('p');
             cap.setAttribute('class', 'cpl__pick-caption');
-            cap.setAttribute('data-cpl-caption', '');
+            cap.dataset.cplCaption = '';
             cap.setAttribute('style', 'opacity:0');
             cap.textContent = content.pickCaption;
             root.appendChild?.(cap);
@@ -133,7 +133,7 @@ const play = (id: string, ctx: unknown, content: ChatPickListContent): void => {
   } | null;
   if (root === null || typeof root.querySelectorAll !== 'function') return;
   const itemsRaw = root.querySelectorAll('[data-cpl-index]');
-  const items = (itemsRaw as unknown as { length: number; item(i: number): HTMLElement }) ?? null;
+  const items = (itemsRaw as { length: number; item(i: number): HTMLElement }) ?? null;
   if (items === null) return;
   const stagger = content.staggerMs ?? 220;
   const pickAfter = content.pickAfterMs ?? 600;

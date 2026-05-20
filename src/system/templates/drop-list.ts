@@ -55,10 +55,8 @@ export const dropList = (id: string, content: DropListContent): SceneModule =>
           const stagger = content.staggerMs ?? 280;
           content.items.forEach((item, i) => {
             const li = ownerDoc.createElement('li');
-            li.setAttribute(
-              'class',
-              `dl__item${item.mod !== undefined ? ` dl__item--${item.mod}` : ''}`,
-            );
+            const mod = item.mod === undefined ? '' : ` dl__item--${item.mod}`;
+            li.setAttribute('class', `dl__item${mod}`);
             li.setAttribute('style', `--drop-delay: ${i * stagger}ms`);
             const lab = ownerDoc.createElement('span');
             lab.setAttribute('class', 'dl__label');

@@ -63,14 +63,37 @@ interface FakeDoc {
   createElement(tag: string): FakeNode;
 }
 
+// Kebab-cases a `dataset` key the way the DOM does (`fooBar` →
+// `foo-bar`) so the proxy below mirrors `el.dataset.fooBar` onto the
+// `data-foo-bar` attribute.
+const datasetKebab = (key: string): string => key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+
+// A `dataset` surface that writes through to the attribute map, so a
+// template's `el.dataset.fooBar = ''` is observable via
+// `querySelector('[data-foo-bar]')` exactly as in a real browser.
+const makeDataset = (attrs: Map<string, string>): Record<string, string> =>
+  new Proxy({} as Record<string, string>, {
+    get: (_t, p) => (typeof p === 'string' ? attrs.get(`data-${datasetKebab(p)}`) : undefined),
+    set: (_t, p, v) => {
+      if (typeof p === 'string') attrs.set(`data-${datasetKebab(p)}`, String(v));
+      return true;
+    },
+    has: (_t, p) => typeof p === 'string' && attrs.has(`data-${datasetKebab(p)}`),
+    deleteProperty: (_t, p) => {
+      if (typeof p === 'string') attrs.delete(`data-${datasetKebab(p)}`);
+      return true;
+    },
+  });
+
 const makeNode = (doc: FakeDoc): FakeNode => {
+  const attrs = new Map<string, string>();
   const node: FakeNode = {
     className: '',
     textContent: '',
     innerHTML: '',
     childNodes: [],
-    attrs: new Map(),
-    dataset: {},
+    attrs,
+    dataset: makeDataset(attrs),
     parentElement: null,
     ownerDocument: doc,
     setAttribute: (n, v) => {

@@ -23,7 +23,7 @@ export interface TemplateDomElement {
   appendChild?(node: unknown): unknown;
   textContent?: string;
   innerHTML?: string;
-  dataset?: Record<string, string>;
+  dataset: Record<string, string>;
   style?: { [k: string]: string };
 }
 
@@ -153,15 +153,14 @@ const deactivateOtherRoots = (ctx: unknown, keepValue: string): void => {
   const stage = (ctx as { stage?: unknown }).stage as TemplateStageElement | null;
   if (stage === null) return;
   const docHost = stage as unknown as {
-    querySelectorAll?: (sel: string) => ArrayLike<{ dataset?: Record<string, string> }>;
+    querySelectorAll?: (sel: string) => Iterable<{ dataset?: Record<string, string> }>;
   };
   const others = docHost.querySelectorAll?.(
     `[${TEMPLATE_ROOT_ATTR}]:not([${TEMPLATE_ROOT_ATTR}="${keepValue}"])`,
   );
   if (others === undefined) return;
-  for (let i = 0; i < others.length; i += 1) {
-    const other = others[i];
-    if (other?.dataset !== undefined) other.dataset.pulsarTemplateActive = 'false';
+  for (const other of others) {
+    if (other.dataset !== undefined) other.dataset.pulsarTemplateActive = 'false';
   }
 };
 

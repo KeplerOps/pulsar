@@ -110,7 +110,8 @@ const buildHaulRow = (
   stagger: number,
 ): TemplateDomElement => {
   const li = ownerDoc.createElement('li');
-  li.setAttribute('class', `hc__row${row.mod !== undefined ? ` hc__row--${row.mod}` : ''}`);
+  const mod = row.mod === undefined ? '' : ` hc__row--${row.mod}`;
+  li.setAttribute('class', `hc__row${mod}`);
   li.setAttribute('style', `--row-delay: ${i * stagger}ms`);
   const c = ownerDoc.createElement('span');
   c.setAttribute('class', 'hc__count');

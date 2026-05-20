@@ -40,7 +40,7 @@ export const chatTranscript = (id: string, content: ChatTranscriptContent): Scen
   buildTemplateScene({
     id,
     title: content.title ?? 'Chat transcript',
-    assets: content.doc !== undefined ? [content.doc.imgSrc] : [],
+    assets: content.doc === undefined ? [] : [content.doc.imgSrc],
     captions: content.messages.map((m, i) => ({ at: `msg-${i}`, text: `${m.handle}: ${m.text}` })),
     create: (ctx) => {
       mountTemplateRoot({
@@ -51,7 +51,7 @@ export const chatTranscript = (id: string, content: ChatTranscriptContent): Scen
           const wrap = ownerDoc.createElement('div');
           wrap.setAttribute(
             'class',
-            content.doc !== undefined ? 'ct__grid ct__grid--with-doc' : 'ct__grid',
+            content.doc === undefined ? 'ct__grid' : 'ct__grid ct__grid--with-doc',
           );
           wrap.appendChild?.(buildFrame(ownerDoc, content));
           if (content.doc !== undefined) {

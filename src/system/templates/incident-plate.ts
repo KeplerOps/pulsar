@@ -27,7 +27,7 @@ export const incidentPlate = (id: string, content: IncidentPlateContent): SceneM
     id,
     title: `Incident plate — ${content.time} — ${content.headline}`,
     captions: [{ at: 'plate-in', text: `${content.time} — ${content.headline}` }],
-    assets: content.bgSrc !== undefined ? [content.bgSrc] : [],
+    assets: content.bgSrc === undefined ? [] : [content.bgSrc],
     create: (ctx) => {
       mountTemplateRoot({
         ctx,

@@ -1018,6 +1018,27 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     return buildUnlockGate(options.audioUnlockAdapter, composition);
   };
 
+  /**
+   * Composition-level chrome opt-out: when the head manifest entry's
+   * `behavior.chrome === 'hidden'`, the deck owns its own atmospherics
+   * and pulsar's chrome surface is hidden for the whole composition.
+   * Clears any prior override when the deck doesn't declare it, so a
+   * back-nav from a chrome-hidden deck to a chrome-on deck restores
+   * the surface. Hoisted out of `buildLoad` to keep that function
+   * within Sonar's cognitive-complexity budget (S3776).
+   */
+  const applyChromeOverride = (resolved: SceneNavigationTarget, mode: NavigationMode): void => {
+    const chrome = options.chrome;
+    if (chrome === undefined || chrome.setForcedVisibility === undefined) return;
+    const head = resolved.composition?.manifestSlice[0];
+    const headBehavior =
+      head === null || typeof head !== 'object'
+        ? undefined
+        : (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior;
+    chrome.setForcedVisibility(headBehavior?.chrome === 'hidden' ? 'hidden' : null);
+    chrome.applyMode(mode);
+  };
+
   const buildLoad = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
@@ -1034,22 +1055,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // selects whether the audio service is `silent` (screenshot /
     // paused suppress audible playback — ADR-019 / ADR-021).
     const mode = effectiveMode(target);
-    // Composition-level chrome opt-out: when the head manifest entry's
-    // `behavior.chrome === 'hidden'`, the deck owns its own atmospherics
-    // and pulsar's chrome surface is hidden for the whole composition.
-    // Clears any prior override when the deck doesn't declare it, so a
-    // back-nav from a chrome-hidden deck to a chrome-on deck restores
-    // the surface.
-    if (options.chrome !== undefined && options.chrome.setForcedVisibility !== undefined) {
-      const head = resolved.composition?.manifestSlice[0];
-      const headBehavior =
-        head !== undefined && typeof head === 'object' && head !== null && 'behavior' in head
-          ? (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior
-          : undefined;
-      const chromeOverride = headBehavior?.chrome === 'hidden' ? 'hidden' : null;
-      options.chrome.setForcedVisibility(chromeOverride);
-      options.chrome.applyMode(mode);
-    }
+    applyChromeOverride(resolved, mode);
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);

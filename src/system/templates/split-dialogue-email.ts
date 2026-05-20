@@ -63,7 +63,7 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
           grid.setAttribute('class', 'sde__grid');
           const dialogue = ownerDoc.createElement('ol');
           dialogue.setAttribute('class', 'sde__dialogue');
-          dialogue.setAttribute('data-sde-dialogue', '');
+          dialogue.dataset.sdeDialogue = '';
           grid.appendChild?.(dialogue);
           grid.appendChild?.(buildEmail(ownerDoc, content.email));
           root.appendChild?.(grid);
@@ -124,7 +124,7 @@ const appendHeader = (
 const buildEmail = (ownerDoc: TemplateDomFactory, email: EmailSpec): TemplateDomElement => {
   const article = ownerDoc.createElement('article');
   article.setAttribute('class', 'sde__email');
-  article.setAttribute('data-sde-email', '');
+  article.dataset.sdeEmail = '';
   article.setAttribute('style', 'opacity:0');
   article.appendChild?.(buildEmailMeta(ownerDoc, email));
   article.appendChild?.(buildEmailBody(ownerDoc, email));

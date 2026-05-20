@@ -67,7 +67,7 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
       .map((s, i) => {
         if (s.t === 'user' || s.t === 'agent') return { at: `term-${i}`, text: s.text };
         if (s.t === 'tool') {
-          const text = s.text ?? (s.name !== undefined ? `${s.name}(${s.args ?? ''})` : '');
+          const text = s.text ?? (s.name === undefined ? '' : `${s.name}(${s.args ?? ''})`);
           return { at: `term-${i}`, text };
         }
         if (s.t === 'output') {

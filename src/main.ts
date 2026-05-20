@@ -358,7 +358,7 @@ if (chromeSlots !== undefined) {
   practiceRenderer = createPracticeRenderer({ target: chromeSlots.lowerThird });
   const refresh = (): void => {
     const stageEl = document.getElementById('stage');
-    const sceneId = stageEl?.getAttribute('data-pulsar-scene-target') ?? null;
+    const sceneId = stageEl?.dataset.pulsarSceneTarget ?? null;
     if (sceneId === null) {
       practiceRenderer?.render([]);
       return;

@@ -472,6 +472,7 @@ export interface AudioCueLogPlay extends AudioCueLogBase {
   readonly group?: string;
   readonly volume?: number;
   readonly loop?: boolean;
+  readonly rate?: number;
 }
 
 /** A `fade` cue (PUL-F026 / ADR-004). `soundId` and `fade` are always present. */
@@ -816,6 +817,24 @@ function describeRawOption(value: unknown): string {
   return `${typeof value}(${String(value)})`;
 }
 
+/**
+ * Build the `play` rehearsal-cue payload (PUL-F026): the soundId plus
+ * every play option the scene actually supplied, with NO source URL.
+ * Hoisted out of `play()` so that function stays within Sonar's
+ * cognitive-complexity budget (S3776).
+ */
+function buildPlayCue(soundId: string, opts: PlayOptions): Omit<AudioCueLogPlay, 'sequence'> {
+  return {
+    operation: 'play',
+    soundId,
+    ...(opts.sprite === undefined ? {} : { sprite: opts.sprite }),
+    ...(opts.group === undefined ? {} : { group: opts.group }),
+    ...(opts.volume === undefined ? {} : { volume: opts.volume }),
+    ...(opts.loop === undefined ? {} : { loop: opts.loop }),
+    ...(opts.rate === undefined ? {} : { rate: opts.rate }),
+  };
+}
+
 export function createAudioService(
   engine: AudioEngine,
   options: AudioServiceOptions,
@@ -1087,7 +1106,7 @@ export function createAudioService(
       sounds.set(soundId, { handle, spriteNames, src, sprite: definition.sprite });
     },
 
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 24). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 22). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
     play(soundId, options) {
       if (disposed) return;
       assertPlayOptions(soundId, options);
@@ -1110,17 +1129,9 @@ export function createAudioService(
       // Rehearsal cue log (PUL-F026): emitted only when `outputPolicy
       // === 'log-cues'` AND `onCue` is set (the `emitCue` helper
       // short-circuits otherwise so non-log-cues services pay no
-      // per-op cost). Captures every play option the scene supplied,
-      // with NO source URL.
-      emitCue({
-        operation: 'play',
-        soundId,
-        ...(opts.sprite === undefined ? {} : { sprite: opts.sprite }),
-        ...(opts.group === undefined ? {} : { group: opts.group }),
-        ...(opts.volume === undefined ? {} : { volume: opts.volume }),
-        ...(opts.loop === undefined ? {} : { loop: opts.loop }),
-        ...(opts.rate === undefined ? {} : { rate: opts.rate }),
-      });
+      // per-op cost). `buildPlayCue` captures every play option the
+      // scene supplied, with NO source URL.
+      emitCue(buildPlayCue(soundId, opts));
     },
 
     fade(soundId, from, to, durationMs) {

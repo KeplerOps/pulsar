@@ -71,7 +71,7 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
           grid.setAttribute('class', 'afp__grid');
           const feed = ownerDoc.createElement('ol');
           feed.setAttribute('class', 'afp__feed');
-          feed.setAttribute('data-afp-feed', '');
+          feed.dataset.afpFeed = '';
           grid.appendChild?.(feed);
           const payoff = ownerDoc.createElement('div');
           payoff.setAttribute('class', 'afp__payoff');
@@ -83,7 +83,7 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
           }
           const table = ownerDoc.createElement('dl');
           table.setAttribute('class', 'afp__payoff-table');
-          table.setAttribute('data-afp-payoff', '');
+          table.dataset.afpPayoff = '';
           payoff.appendChild?.(table);
           grid.appendChild?.(payoff);
           root.appendChild?.(grid);

@@ -49,7 +49,7 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
           }
           const stage = ownerDoc.createElement('div');
           stage.setAttribute('class', 'cc__stage');
-          stage.setAttribute('data-cc-stage', '');
+          stage.dataset.ccStage = '';
           root.appendChild?.(stage);
         },
       });
