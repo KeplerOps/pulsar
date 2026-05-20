@@ -79,7 +79,6 @@ const isRawCtx = (value: unknown): value is RawCtx => typeof value === 'object' 
 
 interface ActiveRun {
   readonly signal: { aborted: boolean };
-  readonly userCleanup?: () => void;
 }
 
 /**
@@ -173,13 +172,6 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
     cleanup: () => {
       if (active !== null) {
         active.signal.aborted = true;
-        if (active.userCleanup !== undefined) {
-          try {
-            active.userCleanup();
-          } catch (err) {
-            console.error(`presenterDrivenScene[${id}] user cleanup error:`, err);
-          }
-        }
         active = null;
       }
       if (content.cleanup !== undefined) {
