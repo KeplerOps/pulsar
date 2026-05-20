@@ -132,6 +132,13 @@ export interface AudioSoundHandle {
   loop(enabled: boolean, playId?: number): void;
   /** Set the volume of one (or every) instance, 0..1. */
   volume(value: number, playId?: number): void;
+  /**
+   * Set the playback rate (speed) of one (or every) instance.
+   * 1.0 = normal speed; 1.25 = 25% faster; 0.5 = half speed. Howler
+   * uses the Web Audio playback-rate node which preserves pitch in
+   * the WebAudio path (PUL-F024 / ADR-004).
+   */
+  rate(value: number, playId?: number): void;
   /** Free this sound's buffers. Idempotent. */
   unload(): void;
 }
@@ -180,6 +187,10 @@ function wrapHowl(howl: Howl): AudioSoundHandle {
     volume: (value, playId) => {
       if (playId === undefined) howl.volume(value);
       else howl.volume(value, playId);
+    },
+    rate: (value, playId) => {
+      if (playId === undefined) howl.rate(value);
+      else howl.rate(value, playId);
     },
     unload: () => {
       // Howler's `unload()` dereferences a sound node that its no-audio
@@ -341,6 +352,7 @@ export const noopAudioEngine: AudioEngine = (() => {
     fade: () => undefined,
     loop: () => undefined,
     volume: () => undefined,
+    rate: () => undefined,
     unload: () => undefined,
   };
   return {
@@ -388,6 +400,12 @@ export interface PlayOptions {
   readonly volume?: number;
   /** Tag this play with a named group (kebab-case) so `stopGroup` can stop it. */
   readonly group?: string;
+  /**
+   * Playback rate (speed) multiplier for this play instance. 1.0 =
+   * normal; 1.25 = 25% faster; 0.5 = half speed. Must be a finite
+   * number > 0. Howler preserves pitch in the WebAudio path.
+   */
+  readonly rate?: number;
 }
 
 /**
@@ -454,6 +472,7 @@ export interface AudioCueLogPlay extends AudioCueLogBase {
   readonly group?: string;
   readonly volume?: number;
   readonly loop?: boolean;
+  readonly rate?: number;
 }
 
 /** A `fade` cue (PUL-F026 / ADR-004). `soundId` and `fade` are always present. */
@@ -677,25 +696,66 @@ function assertPlayOptions(
   if (!isPlainRecord(options)) {
     throw new AudioSoundError(`audio sound "${soundId}" play options must be an object or omitted`);
   }
-  const opts = options as { sprite?: unknown; loop?: unknown; volume?: unknown; group?: unknown };
-  if (opts.sprite !== undefined && typeof opts.sprite !== 'string') {
-    throw new AudioSoundError(
-      `audio sound "${soundId}" play option "sprite" must be a string; got ${typeof opts.sprite}`,
+  const opts = options as {
+    sprite?: unknown;
+    loop?: unknown;
+    volume?: unknown;
+    group?: unknown;
+    rate?: unknown;
+  };
+  assertPlayOptionTypeString(soundId, 'sprite', opts.sprite, AudioSoundError);
+  assertPlayOptionTypeBoolean(soundId, 'loop', opts.loop, AudioSoundError);
+  assertPlayOptionTypeString(soundId, 'group', opts.group, AudioGroupError);
+  assertPlayOptionTypeNumber(soundId, 'volume', opts.volume, AudioRangeError);
+  assertPlayOptionRate(soundId, opts.rate);
+}
+
+type AudioErrorCtor = new (message: string) => Error;
+
+function assertPlayOptionTypeString(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'string') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a string; got ${typeof value}`,
     );
   }
-  if (opts.loop !== undefined && typeof opts.loop !== 'boolean') {
-    throw new AudioSoundError(
-      `audio sound "${soundId}" play option "loop" must be a boolean; got ${typeof opts.loop}`,
+}
+
+function assertPlayOptionTypeBoolean(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a boolean; got ${typeof value}`,
     );
   }
-  if (opts.group !== undefined && typeof opts.group !== 'string') {
-    throw new AudioGroupError(
-      `audio sound "${soundId}" play option "group" must be a string; got ${typeof opts.group}`,
+}
+
+function assertPlayOptionTypeNumber(
+  soundId: string,
+  name: string,
+  value: unknown,
+  ErrorCtor: AudioErrorCtor,
+): void {
+  if (value !== undefined && typeof value !== 'number') {
+    throw new ErrorCtor(
+      `audio sound "${soundId}" play option "${name}" must be a number; got ${typeof value}`,
     );
   }
-  if (opts.volume !== undefined && typeof opts.volume !== 'number') {
+}
+
+function assertPlayOptionRate(soundId: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new AudioRangeError(
-      `audio sound "${soundId}" play option "volume" must be a number; got ${typeof opts.volume}`,
+      `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof value === 'number' ? value : typeof value}`,
     );
   }
 }
@@ -755,6 +815,24 @@ function describeRawOption(value: unknown): string {
     // Fall through to the typeof path for BigInt / cyclic / etc.
   }
   return `${typeof value}(${String(value)})`;
+}
+
+/**
+ * Build the `play` rehearsal-cue payload (PUL-F026): the soundId plus
+ * every play option the scene actually supplied, with NO source URL.
+ * Hoisted out of `play()` so that function stays within Sonar's
+ * cognitive-complexity budget (S3776).
+ */
+function buildPlayCue(soundId: string, opts: PlayOptions): Omit<AudioCueLogPlay, 'sequence'> {
+  return {
+    operation: 'play',
+    soundId,
+    ...(opts.sprite === undefined ? {} : { sprite: opts.sprite }),
+    ...(opts.group === undefined ? {} : { group: opts.group }),
+    ...(opts.volume === undefined ? {} : { volume: opts.volume }),
+    ...(opts.loop === undefined ? {} : { loop: opts.loop }),
+    ...(opts.rate === undefined ? {} : { rate: opts.rate }),
+  };
 }
 
 export function createAudioService(
@@ -1028,7 +1106,7 @@ export function createAudioService(
       sounds.set(soundId, { handle, spriteNames, src, sprite: definition.sprite });
     },
 
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 24). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 22). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
     play(soundId, options) {
       if (disposed) return;
       assertPlayOptions(soundId, options);
@@ -1042,6 +1120,7 @@ export function createAudioService(
       const playId = sound.handle.play(opts.sprite);
       if (opts.loop === true) sound.handle.loop(true, playId);
       if (opts.volume !== undefined) sound.handle.volume(opts.volume, playId);
+      if (opts.rate !== undefined) sound.handle.rate(opts.rate, playId);
       if (opts.group !== undefined) {
         const list = groups.get(opts.group);
         if (list === undefined) groups.set(opts.group, [{ handle: sound.handle, playId }]);
@@ -1050,16 +1129,9 @@ export function createAudioService(
       // Rehearsal cue log (PUL-F026): emitted only when `outputPolicy
       // === 'log-cues'` AND `onCue` is set (the `emitCue` helper
       // short-circuits otherwise so non-log-cues services pay no
-      // per-op cost). Captures every play option the scene supplied,
-      // with NO source URL.
-      emitCue({
-        operation: 'play',
-        soundId,
-        ...(opts.sprite === undefined ? {} : { sprite: opts.sprite }),
-        ...(opts.group === undefined ? {} : { group: opts.group }),
-        ...(opts.volume === undefined ? {} : { volume: opts.volume }),
-        ...(opts.loop === undefined ? {} : { loop: opts.loop }),
-      });
+      // per-op cost). `buildPlayCue` captures every play option the
+      // scene supplied, with NO source URL.
+      emitCue(buildPlayCue(soundId, opts));
     },
 
     fade(soundId, from, to, durationMs) {

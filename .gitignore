@@ -81,3 +81,18 @@ archive/
 playwright-report/
 test-results/
 .playwright/
+.playwright-mcp/
+
+# Local dev screenshot scratch (never check in)
+r-*.png
+snap-*.png
+snap2-*.png
+scene-*.png
+probe*.png
+g-pi-*.png
+cv-*.png
+
+# Local-only decks (per-developer scratch, never check in)
+src/decks/local-*/
+public/local-*/
+public/assets/

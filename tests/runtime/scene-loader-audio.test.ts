@@ -46,7 +46,7 @@ import {
 
 interface HandleCall {
   readonly sound: number;
-  readonly method: 'play' | 'stop' | 'fade' | 'loop' | 'volume' | 'unload';
+  readonly method: 'play' | 'stop' | 'fade' | 'loop' | 'volume' | 'rate' | 'unload';
 }
 
 interface RecordingEngine {
@@ -79,6 +79,7 @@ const recordingAudioEngine = (): RecordingEngine => {
           fade: record('fade'),
           loop: record('loop'),
           volume: record('volume'),
+          rate: record('rate'),
           unload: record('unload'),
         };
         return handle;

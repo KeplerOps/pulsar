@@ -1,0 +1,236 @@
+/* Pulsar L2 chrome — atmospheric layer stack.
+ *
+ * Full-bleed fixed overlays providing the cinematic-thriller register
+ * across every deck: letterbox bars, vignette, scanlines, grain,
+ * screen flash, camera shake, glitch text. Z-layer stack is defined
+ * in `register/tokens.css` (vignette 47 → scanlines 48 → grain 49 →
+ * bars 50 → flash 51) so per-deck CSS overrides can compose without
+ * fighting the runtime.
+ *
+ * All overlays are pointer-events: none — they never absorb input.
+ */
+
+.pulsar-stage {
+  /* The L2 chrome surface is a SIBLING of #stage (mounted on
+   * document.body by WorkbenchChromeController). It overlays the
+   * page to provide the atmospheric stack; #stage holds the scene
+   * content. Background is intentionally transparent so the page
+   * body's background reads through and #stage's contents are not
+   * hidden by an opaque chrome surface. pointer-events: none so
+   * scene-mounted controls (focus, selection) still reach #stage. */
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  color: var(--pulsar-color-fg-white);
+  font-family: var(--pulsar-type-sans);
+  isolation: isolate;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Page-level backdrop: deck content reads on the body's dark color
+ * via the chrome surface's transparent backdrop. Decks override per
+ * their own tokens.css. */
+body {
+  background: var(--pulsar-color-bg-ink, #08090c);
+}
+
+/* Letterbox bars — top/bottom black framing. */
+.pulsar-bars {
+  position: absolute;
+  inset: 0;
+  z-index: var(--pulsar-z-bars);
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    var(--pulsar-color-bg-deep) 0 var(--pulsar-space-letterbox),
+    transparent var(--pulsar-space-letterbox) calc(100% - var(--pulsar-space-letterbox)),
+    var(--pulsar-color-bg-deep) calc(100% - var(--pulsar-space-letterbox))
+  );
+}
+
+/* Radial darkening at edges, inset by letterbox so the bars stay solid. */
+.pulsar-vignette {
+  position: absolute;
+  inset: var(--pulsar-space-letterbox) 0;
+  z-index: var(--pulsar-z-vignette);
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 85% 88% at 50% 50%,
+    transparent 55%,
+    rgba(0, 0, 0, 0.1) 88%,
+    rgba(0, 0, 0, 0.22) 100%
+  );
+  mix-blend-mode: multiply;
+  opacity: var(--pulsar-opacity-vignette);
+}
+
+/* CRT scan lines. Mix-blend multiply so they darken rather than fight content. */
+.pulsar-scanlines {
+  position: absolute;
+  inset: var(--pulsar-space-letterbox) 0;
+  z-index: var(--pulsar-z-scanlines);
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, 0.12) 2px 3px);
+  mix-blend-mode: multiply;
+  opacity: var(--pulsar-opacity-scanlines);
+}
+
+/* Procedural grain. Two offset radial-gradient layers + a 0.6s stepped
+ * keyframe give the right amount of temporal jitter without WebGL. */
+.pulsar-grain {
+  position: absolute;
+  inset: -4%;
+  z-index: var(--pulsar-z-grain);
+  pointer-events: none;
+  opacity: var(--pulsar-opacity-grain);
+  mix-blend-mode: overlay;
+  background-image: repeating-radial-gradient(
+      circle at 23% 31%,
+      rgba(255, 255, 255, 0.55) 0 1px,
+      transparent 1px 4px
+    ), repeating-radial-gradient(circle at 74% 62%, rgba(0, 0, 0, 0.5) 0 1px, transparent 1px 5px);
+  background-size: 170px 170px, 230px 230px;
+  animation: pulsar-grain 0.6s steps(2, end) infinite;
+}
+
+@keyframes pulsar-grain {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  25% {
+    transform: translate3d(-1.2%, 0.7%, 0);
+  }
+  50% {
+    transform: translate3d(0.8%, -0.8%, 0);
+  }
+  75% {
+    transform: translate3d(-0.6%, -0.5%, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Camera shake — added to the stage, removed/re-added by JS to retrigger. */
+.pulsar-stage.shake {
+  animation: pulsar-shake 320ms var(--pulsar-motion-ease-shake);
+}
+
+@keyframes pulsar-shake {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  16% {
+    transform: translate3d(-8px, 3px, 0);
+  }
+  34% {
+    transform: translate3d(7px, -4px, 0);
+  }
+  52% {
+    transform: translate3d(-4px, 5px, 0);
+  }
+  72% {
+    transform: translate3d(3px, -1px, 0);
+  }
+}
+
+/* Screen flash — sits above the bars. .fire triggers the keyframe. */
+.pulsar-flash {
+  position: fixed;
+  inset: 0;
+  z-index: var(--pulsar-z-flash);
+  background: var(--pulsar-color-accent-red-low);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pulsar-flash.fire {
+  animation: pulsar-flash 620ms var(--pulsar-motion-ease-exit);
+}
+
+@keyframes pulsar-flash {
+  0% {
+    opacity: 0;
+  }
+  34% {
+    opacity: 0.34;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Glitch text effect for `.pulsar-glitch` elements with a [data-text]
+ * attribute. Red + cyan pseudo-element layers offset chromatically
+ * with rare flash bursts at the keyframe ends. */
+.pulsar-glitch {
+  position: relative;
+  display: inline-block;
+}
+
+.pulsar-glitch::before,
+.pulsar-glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  white-space: nowrap;
+  mix-blend-mode: screen;
+}
+
+.pulsar-glitch::before {
+  color: var(--pulsar-color-accent-red-mid);
+  transform: translate(4px, -1px);
+  animation: pulsar-glitch-r 16s ease-in-out 2.2s infinite;
+}
+
+.pulsar-glitch::after {
+  color: var(--pulsar-color-accent-cyan);
+  transform: translate(-4px, 1px);
+  animation: pulsar-glitch-b 16s ease-in-out 2.6s infinite;
+}
+
+@keyframes pulsar-glitch-r {
+  0%,
+  96%,
+  100% {
+    opacity: 0;
+    transform: translate(4px, -1px);
+  }
+  97% {
+    opacity: 0.95;
+    transform: translate(6px, -2px);
+  }
+  98% {
+    opacity: 0.55;
+    transform: translate(2px, 1px);
+  }
+  99% {
+    opacity: 0.8;
+    transform: translate(5px, -3px);
+  }
+}
+
+@keyframes pulsar-glitch-b {
+  0%,
+  96%,
+  100% {
+    opacity: 0;
+    transform: translate(-4px, 1px);
+  }
+  97% {
+    opacity: 0.95;
+    transform: translate(-6px, 2px);
+  }
+  98% {
+    opacity: 0.55;
+    transform: translate(-2px, -1px);
+  }
+  99% {
+    opacity: 0.8;
+    transform: translate(-5px, 3px);
+  }
+}

@@ -51,7 +51,11 @@ import {
   type NavigationTarget,
   effectiveMode,
 } from './navigation';
-import { type PresenterCommandSource, createPresenterController } from './presenter';
+import {
+  type PresenterCommandSource,
+  type PresenterController,
+  createPresenterController,
+} from './presenter';
 import {
   type PrompterDispose,
   type PrompterRenderer,
@@ -95,9 +99,39 @@ export interface StageElement {
  * itself never inspects ctx — it is purely a scene-to-environment
  * carrier.
  */
+/**
+ * Optional refs for the L2 chrome slot DOM that `src/main.ts`
+ * mounts into the workbench chrome surface. Scenes built from the
+ * L2 template library read `ctx.chrome` to address title/brand/
+ * centerpiece/lower-third/tag/act-frame/flash slots without reaching
+ * for ambient `document` lookups. Runtime contract does not require
+ * a specific shape — the field is declared as a generic record so
+ * the runtime engine stays L2-agnostic; the L2 system layer's
+ * `ChromeSlots` type narrows it at the consumer boundary.
+ */
+export type WorkbenchChromeSlots = Readonly<Record<string, unknown>>;
+
 export interface WorkbenchSceneCtx {
   /** The workbench stage element, or `null` when the runtime has no stage. */
   readonly stage: StageElement | null;
+  /**
+   * Optional per-navigation `PresenterController` (`mode=present` only,
+   * undefined under every other mode). Scenes that need to subscribe
+   * to presenter `advance` commands directly — for ambient loops that
+   * break on advance (`while (!state.advanceSignal)` style decks) —
+   * pass this into `aSleep(ms, { signal, controller })` or
+   * `holdUntilAdvance(controller, signal)`. The controller auto-detaches
+   * on the navigation's `AbortSignal`, so a scene that subscribes and
+   * forgets to unsubscribe cannot leak across navigations.
+   */
+  readonly presenter?: PresenterController;
+  /**
+   * Optional L2 chrome slot refs. Templates that compose against the
+   * cinematic chrome pack read this field; engine-level fixtures and
+   * the trivial placeholder scene leave it `undefined` and operate
+   * stage-only.
+   */
+  readonly chrome?: WorkbenchChromeSlots;
   /**
    * The effective workbench mode for the current navigation per
    * PUL-F012 / ADR-007. Set by the loader from
@@ -182,7 +216,11 @@ export interface SceneLoaderOptions {
    * or when the navigation event is a parse-error event, because
    * those paths run no lifecycle.
    */
-  readonly buildCtx: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
+  readonly buildCtx: (
+    mode: NavigationMode,
+    audio: AudioService,
+    presenter?: PresenterController,
+  ) => WorkbenchSceneCtx;
   /**
    * The audio engine (PUL-F024 / ADR-004) — a process singleton, like
    * the timeline engine (ADR-003). The loader builds a fresh
@@ -359,6 +397,15 @@ export interface SceneLoaderOptions {
  */
 export interface WorkbenchChromeAdapter {
   applyMode(mode: NavigationMode): void;
+  /**
+   * Optional composition-level override: force chrome visibility hidden
+   * regardless of the mode-derived default. Used when a composition's
+   * head entry declares `behavior.chrome: 'hidden'` (e.g. a deck that
+   * owns its own atmospherics). Pass `null` to clear the override.
+   * Optional on the adapter so existing chrome implementations stay
+   * compatible — the loader only calls it when defined.
+   */
+  setForcedVisibility?(visibility: 'hidden' | null): void;
 }
 
 /**
@@ -971,6 +1018,27 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     return buildUnlockGate(options.audioUnlockAdapter, composition);
   };
 
+  /**
+   * Composition-level chrome opt-out: when the head manifest entry's
+   * `behavior.chrome === 'hidden'`, the deck owns its own atmospherics
+   * and pulsar's chrome surface is hidden for the whole composition.
+   * Clears any prior override when the deck doesn't declare it, so a
+   * back-nav from a chrome-hidden deck to a chrome-on deck restores
+   * the surface. Hoisted out of `buildLoad` to keep that function
+   * within Sonar's cognitive-complexity budget (S3776).
+   */
+  const applyChromeOverride = (resolved: SceneNavigationTarget, mode: NavigationMode): void => {
+    const chrome = options.chrome;
+    if (chrome === undefined || chrome.setForcedVisibility === undefined) return;
+    const head = resolved.composition?.manifestSlice[0];
+    const headBehavior =
+      head === null || typeof head !== 'object'
+        ? undefined
+        : (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior;
+    chrome.setForcedVisibility(headBehavior?.chrome === 'hidden' ? 'hidden' : null);
+    chrome.applyMode(mode);
+  };
+
   const buildLoad = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
@@ -987,6 +1055,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // selects whether the audio service is `silent` (screenshot /
     // paused suppress audible playback — ADR-019 / ADR-021).
     const mode = effectiveMode(target);
+    applyChromeOverride(resolved, mode);
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);
@@ -1032,6 +1101,14 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const outputPolicy = audioOutputPolicyFor(mode);
     let ctx: unknown;
     let audio: AudioService;
+    // Per-navigation presenter pipe is built BEFORE buildCtx so the
+    // controller can be threaded onto `ctx.presenter` for scenes that
+    // subscribe to presenter `advance` commands directly (calgary-style
+    // `while (!state.advanceSignal)` loop scenes). Declared here so the
+    // try/catch can construct audio first (the pipe's mute handler
+    // closes over audio), then ctx with both refs.
+    let presenter: ReturnType<typeof createPresenterController> | undefined;
+    let presenterAbort: AbortController | null = null;
     try {
       audio = createAudioService(audioEngine, {
         signal: controller.signal,
@@ -1040,7 +1117,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         onError,
         ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
       });
-      ctx = options.buildCtx(mode, audio);
+      const pipe = buildPresenterPipe(mode, controller, audio);
+      presenter = pipe.presenter;
+      presenterAbort = pipe.presenterAbort;
+      ctx = options.buildCtx(mode, audio, presenter);
     } catch (err) {
       // Abort the freshly-created controller before bailing so any
       // signal-tied resource (the preloader factory's fetch listener,
@@ -1104,7 +1184,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // exclusive at the URL boundary, so at most one of `repeat` /
     // `hold` / `cueGate` / `screenshot` is non-undefined here.
     const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
-    const { presenter, presenterAbort } = buildPresenterPipe(mode, controller, audio);
+    // `presenter` / `presenterAbort` already built above (before
+    // buildCtx) so the controller could be threaded onto `ctx.presenter`.
     const onSceneFailed = buildOnSceneFailed(
       controller.signal,
       mode,

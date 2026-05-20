@@ -93,6 +93,7 @@ export const PRESENTER_COMMAND_KINDS = Object.freeze([
   'pause',
   'resume',
   'toggle-master-mute',
+  'toggle-practice',
 ] as const);
 
 /** Element type of {@link PRESENTER_COMMAND_KINDS}. */

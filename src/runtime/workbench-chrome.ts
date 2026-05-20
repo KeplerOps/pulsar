@@ -83,8 +83,21 @@ export interface WorkbenchChromeController {
    * mode through {@link chromeVisibilityFor} and updates the
    * `data-pulsar-chrome-visibility` attribute plus the boolean `hidden`
    * IDL property. Inert post-dispose.
+   *
+   * When a forced-visibility override is set via {@link setForcedVisibility},
+   * the override wins over the mode mapping.
    */
   applyMode(mode: NavigationMode): void;
+  /**
+   * Override the mode-derived visibility for compositions that opt out
+   * of pulsar's chrome (e.g. a deck that owns its own atmospherics via
+   * `behavior.chrome: 'hidden'` on a composition entry). Pass `null` to
+   * clear the override and resume mode-driven visibility on the next
+   * `applyMode` call. The loader sets the override BEFORE `applyMode`
+   * on each navigation so the chrome flips correctly when the user
+   * moves between a chrome-on and chrome-hidden composition.
+   */
+  setForcedVisibility(visibility: 'hidden' | null): void;
   /**
    * Tear down the chrome surface. Removes the element from the
    * workbench and makes subsequent `applyMode` calls no-ops.
@@ -151,6 +164,7 @@ export function createDomWorkbenchChrome(host: WorkbenchChromeHost): WorkbenchCh
   const element = host.createSurface();
   host.mount(element);
   let disposed = false;
+  let forced: 'hidden' | null = null;
   return {
     applyMode(mode: NavigationMode): void {
       if (disposed) return;
@@ -159,9 +173,13 @@ export function createDomWorkbenchChrome(host: WorkbenchChromeHost): WorkbenchCh
           `workbench chrome: unknown mode "${String(mode)}" — allowed: ${NAVIGATION_MODES.join(', ')}`,
         );
       }
-      const visibility = chromeVisibilityFor(mode);
+      const visibility = forced ?? chromeVisibilityFor(mode);
       element.setAttribute(VISIBILITY_ATTR, visibility);
       element.hidden = visibility === 'hidden';
+    },
+    setForcedVisibility(visibility: 'hidden' | null): void {
+      if (disposed) return;
+      forced = visibility;
     },
     dispose(): void {
       if (disposed) return;

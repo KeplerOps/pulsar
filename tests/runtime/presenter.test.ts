@@ -60,12 +60,14 @@ const buildSource = (): {
 };
 
 describe('PRESENTER_COMMAND_KINDS', () => {
-  it('lists exactly the seven kinds PUL-F020 + PUL-F021 + PUL-F025 name', () => {
+  it('lists the eight kinds PUL-F020 + PUL-F021 + PUL-F025 + L2 presenter UX name', () => {
     // PUL-F020: advance / hold / skip-forward / skip-backward.
     // PUL-F021 (ADR-024): pause / resume extend the same allowlist.
-    // PUL-F025: toggle-master-mute extends the same allowlist again —
-    // composes ADR-004 (engine-level master mute) without adding a
-    // second command schema, source, controller, or mode.
+    // PUL-F025: toggle-master-mute extends the same allowlist again.
+    // L2 presenter UX: toggle-practice extends it again so the
+    // speaker-notes overlay rides the same command bus as the rest of
+    // the presenter surface (no second command schema, no second
+    // controller, no second source).
     expect([...PRESENTER_COMMAND_KINDS]).toEqual([
       'advance',
       'hold',
@@ -74,6 +76,7 @@ describe('PRESENTER_COMMAND_KINDS', () => {
       'pause',
       'resume',
       'toggle-master-mute',
+      'toggle-practice',
     ]);
   });
 
@@ -160,6 +163,7 @@ describe('createPresenterController (PUL-F020 / PUL-F021 / PUL-F025 / ADR-023 / 
       'pause',
       'resume',
       'toggle-master-mute',
+      'toggle-practice',
     ]);
   });
 

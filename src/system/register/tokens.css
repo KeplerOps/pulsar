@@ -1,0 +1,135 @@
+/* Pulsar L2 — cinematic-thriller design tokens.
+ *
+ * One opinionated register. Decks override individual tokens via their
+ * own `tokens.css` loaded after this file. See `src/decks/<deck>/tokens.css`
+ * for the per-deck override surface.
+ *
+ * Naming convention: --pulsar-<category>-<role>(-<modifier>)?
+ *   --pulsar-color-bg-deep, --pulsar-type-display-size, --pulsar-motion-fast.
+ *
+ * Categories: color, type, space, motion, z, opacity.
+ */
+
+:root {
+  /* ---------------------------------------------------------------------
+   * Color palette
+   *
+   * Background floor → mid → near-black, with white-on-black foreground
+   * shades from soft (95%) down to hair (32%). Two accent stripes:
+   * cyan-pulsar (#7df5ff) for active/alive elements, alert-red (#ff3b3b)
+   * for warnings/punches. PAN-orange and Cortex-green held for brand
+   * mark slots only.
+   */
+  --pulsar-color-bg-deep: #0a0a0d;
+  --pulsar-color-bg-mid: #15161b;
+  --pulsar-color-bg-ink: #08090c;
+
+  --pulsar-color-fg-white: #ffffff;
+  --pulsar-color-fg-soft: rgba(255, 255, 255, 0.95);
+  --pulsar-color-fg-dim: rgba(255, 255, 255, 0.85);
+  --pulsar-color-fg-faint: rgba(255, 255, 255, 0.42);
+  --pulsar-color-fg-hair: rgba(255, 255, 255, 0.32);
+
+  --pulsar-color-accent-cyan: #7df5ff;
+  --pulsar-color-accent-red: #ff3b3b;
+  --pulsar-color-accent-red-mid: #ff5862;
+  --pulsar-color-accent-red-low: #cc1020;
+
+  --pulsar-color-brand-orange: #fa582d; /* PAN */
+  --pulsar-color-brand-green: #00cc66; /* Cortex */
+  --pulsar-color-brand-blue: #2f8cff;
+
+  /* ---------------------------------------------------------------------
+   * Typography
+   *
+   * Four families. Display = compressed-bold sans for title slams.
+   * Serif = italic-capable for centerpiece quotes. Mono = stats, code,
+   * terminal-style scenes. Sans = body, captions, role descriptors.
+   *
+   * Sizes use clamp() so the system reads on a 13" laptop and on a 4K
+   * projector without per-deck media queries.
+   *
+   * Fonts loaded via Google Fonts CDN in index.html. Vendoring local
+   * woff2 files is a future optimization; the CDN's cache + preconnect
+   * is enough for live presentations after a first warm-up.
+   */
+  --pulsar-type-display: "Barlow Condensed", "Oswald", "Helvetica Neue", system-ui, sans-serif;
+  --pulsar-type-serif: "Source Serif 4", "Source Serif Pro", Georgia, serif;
+  --pulsar-type-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --pulsar-type-sans: "Inter", "Helvetica Neue", system-ui, sans-serif;
+
+  --pulsar-type-display-size: clamp(75px, 8vw, 162px);
+  --pulsar-type-h1-size: clamp(48px, 5.4vw, 96px);
+  --pulsar-type-h2-size: clamp(34px, 3.6vw, 64px);
+  --pulsar-type-h3-size: clamp(24px, 2.4vw, 40px);
+  --pulsar-type-body-size: clamp(18px, 1.4vw, 24px);
+  --pulsar-type-caption-size: clamp(14px, 1.05vw, 18px);
+  --pulsar-type-mono-size: clamp(15px, 1.2vw, 22px);
+  --pulsar-type-attribution-size: clamp(16px, 1.3vw, 28px);
+
+  --pulsar-type-display-tracking: -0.01em;
+  --pulsar-type-display-line: 0.92;
+  --pulsar-type-body-line: 1.5;
+  --pulsar-type-mono-line: 1.45;
+
+  /* ---------------------------------------------------------------------
+   * Spacing rhythm
+   *
+   * Letterbox bars (5.5vh) and left rail (5vw) are the canonical edges.
+   * Slot gaps and stack gaps step in a fibonacci-ish rhythm.
+   */
+  --pulsar-space-letterbox: 5.5vh;
+  --pulsar-space-rail: 5vw;
+  --pulsar-space-xs: 4px;
+  --pulsar-space-sm: 8px;
+  --pulsar-space-md: 16px;
+  --pulsar-space-lg: 28px;
+  --pulsar-space-xl: 48px;
+  --pulsar-space-2xl: 80px;
+  --pulsar-space-stack: clamp(16px, 1.6vw, 32px);
+  --pulsar-space-section: clamp(40px, 4vw, 96px);
+
+  /* ---------------------------------------------------------------------
+   * Motion
+   *
+   * Short and sharp. Entries 180–280ms. Cuts 120ms. Slams 600ms.
+   * Pulsar uses GSAP power3.out for entries, power2.inOut for slams.
+   * CSS-only animations match these timing functions.
+   */
+  --pulsar-motion-instant: 80ms;
+  --pulsar-motion-fast: 180ms;
+  --pulsar-motion-base: 280ms;
+  --pulsar-motion-slow: 600ms;
+  --pulsar-motion-grow: 6500ms;
+
+  --pulsar-motion-ease-entry: cubic-bezier(0.18, 0.8, 0.22, 1);
+  --pulsar-motion-ease-exit: cubic-bezier(0.4, 0, 0.6, 1);
+  --pulsar-motion-ease-slam: cubic-bezier(0.22, 0.6, 0.2, 1);
+  --pulsar-motion-ease-shake: cubic-bezier(0.36, 0.07, 0.19, 0.97);
+
+  /* ---------------------------------------------------------------------
+   * Z-layer stack
+   *
+   * Stage is 0. Scene roots mount at 10. Chrome slots mount at 40.
+   * Atmospherics at 47–50 (vignette → scanlines → grain → bars → flash).
+   * Transition overlay at 60. Presenter HUD at 70.
+   */
+  --pulsar-z-stage: 0;
+  --pulsar-z-scene: 10;
+  --pulsar-z-chrome-slot: 40;
+  --pulsar-z-vignette: 47;
+  --pulsar-z-scanlines: 48;
+  --pulsar-z-grain: 49;
+  --pulsar-z-bars: 50;
+  --pulsar-z-flash: 51;
+  --pulsar-z-transition: 60;
+  --pulsar-z-hud: 70;
+
+  /* ---------------------------------------------------------------------
+   * Opacity tokens
+   */
+  --pulsar-opacity-vignette: 0.9;
+  --pulsar-opacity-scanlines: 0.38;
+  --pulsar-opacity-grain: 0.12;
+  --pulsar-opacity-tag: 0.28;
+}

@@ -40,6 +40,22 @@ import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loade
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { createDomWorkbenchChrome } from './runtime/workbench-chrome';
+// Pulsar L2 — register, chrome, templates, transitions.
+import './system/register/tokens.css';
+import './system/chrome/atmospheric.css';
+import './system/chrome/chrome.css';
+import './system/templates/templates.css';
+import { type ChromeSlots, mountChromeSlots } from './system/chrome';
+import {
+  type PracticeRendererHandle,
+  type PresenterBridgeHandle,
+  combinePresenterSources,
+  createChromePrompterRenderer,
+  createKeyboardPresenterSource,
+  createPracticeRenderer,
+  createPresenterBridge,
+} from './system/presenter';
+import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
 const stage = document.querySelector('#stage');
@@ -132,7 +148,28 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // are not interpreted here yet — both land on this adapter's
 // `MasterTimeline` transport seam when their requirements are
 // implemented.
-const timeline = createGsapCompositionTimeline({ engine: timelineEngine });
+// Inter-scene transition overlay — a transient `<div>` parented to
+// `document.body` (above the chrome surface). The L2 transitions
+// library (cut / dissolve / hard-slam / hold-on-black / push) tweens
+// this element via the master timeline; it lives outside the scene
+// roots so a transition can never desynchronize scene-owned GSAP
+// state. Created here so it survives across navigations within a
+// composition.
+const transitionOverlay = document.createElement('div');
+transitionOverlay.dataset.pulsarTransition = 'overlay';
+transitionOverlay.style.position = 'fixed';
+transitionOverlay.style.inset = '0';
+transitionOverlay.style.pointerEvents = 'none';
+transitionOverlay.style.zIndex = 'var(--pulsar-z-transition)';
+transitionOverlay.style.opacity = '0';
+transitionOverlay.style.display = 'none';
+document.body.appendChild(transitionOverlay);
+
+const timeline = createGsapCompositionTimeline({
+  engine: timelineEngine,
+  transitions: defaultTransitions(),
+  transitionOverlay,
+});
 
 // Scene context carries the stage handle, the per-navigation effective
 // workbench mode (PUL-F012 / ADR-007), the GSAP instance scenes build
@@ -148,12 +185,24 @@ const timeline = createGsapCompositionTimeline({ engine: timelineEngine });
 // globals) is satisfied by passing `stage`, `gsap`, and `audio` through
 // ctx rather than reaching for `document`, importing GSAP, or importing
 // Howler directly in scene modules.
-const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => ({
-  stage,
-  mode,
-  gsap: timelineEngine.gsap,
-  audio,
-});
+// Filled in after the chrome surface is mounted (below).
+let chromeSlots: ChromeSlots | undefined;
+
+const buildCtx = (
+  mode: NavigationMode,
+  audio: AudioService,
+  presenter?: import('./runtime/presenter').PresenterController,
+): WorkbenchSceneCtx => {
+  const base: WorkbenchSceneCtx = {
+    stage,
+    mode,
+    gsap: timelineEngine.gsap,
+    audio,
+    ...(presenter === undefined ? {} : { presenter }),
+  };
+  if (chromeSlots === undefined) return base;
+  return { ...base, chrome: chromeSlots as unknown as Readonly<Record<string, unknown>> };
+};
 
 // Prompter renderer placeholder (PUL-F019 / ADR-022). Under
 // `mode=prompter` the loader bypasses the resolver lifecycle
@@ -165,14 +214,13 @@ const buildCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx 
 // suppression is delivered by the loader's lifecycle bypass, not by
 // this adapter.
 //
-// The placeholder mounts nothing persistent and returns
-// `undefined`. Per the `PrompterRenderer` contract, that signals
-// "no cleanup obligation" — the loader does not park waiting for
-// abort. A future captions UI that mounts persistent DOM will
-// return a `PrompterDispose` callback the loader invokes on the
-// next navigation. ADR-022 records the DRAFT → ACTIVE bar for
-// PUL-F019 (visible captions UI + end-to-end tests).
-const renderPrompter: PrompterRenderer = () => undefined;
+// Pulsar L2 renderer: paints the full prompter script (composition
+// id + per-scene captions) into the workbench. Falls back to
+// `document.body` if the chrome slot resolution returns null. The
+// returned dispose callback removes the panel on next navigation.
+const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
+  () => chromeSlots?.lowerThird ?? document.body,
+);
 
 // Presenter command source (PUL-F020 / PUL-F021 / ADR-023 /
 // ADR-024): intentionally OMITTED here. The runtime-side contract
@@ -209,6 +257,30 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
     button.type = 'button';
     button.dataset.pulsarAudioUnlock = 'gesture';
     button.textContent = 'Start presentation';
+    // Center the gate on screen at the highest z-index. Without
+    // these inline styles the bare button sits at the top-left of
+    // #stage, defaults the browser-native styling, and is occluded
+    // by the chrome surface (the dancing atmospheric overlays).
+    button.setAttribute(
+      'style',
+      [
+        'position: fixed',
+        'top: 50%',
+        'left: 50%',
+        'transform: translate(-50%, -50%)',
+        'z-index: 9999',
+        'padding: 18px 36px',
+        'font: 600 18px/1 system-ui, -apple-system, "Segoe UI", sans-serif',
+        'letter-spacing: 0.08em',
+        'text-transform: uppercase',
+        'color: #08090c',
+        'background: #7df5ff',
+        'border: none',
+        'border-radius: 6px',
+        'cursor: pointer',
+        'box-shadow: 0 18px 60px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,0.08) inset',
+      ].join('; '),
+    );
     return button;
   },
 });
@@ -238,6 +310,77 @@ const chrome = createDomWorkbenchChrome({
   },
 });
 
+// Populate the chrome surface with the L2 slot DOM (vignette,
+// scanlines, grain, letterbox bars, title/brand/centerpiece/
+// lower-third/tag/act-frame/flash slots). Scenes built from the L2
+// template library read these refs via `ctx.chrome`.
+const chromeSurfaceEl = document.querySelector(
+  '[data-pulsar-chrome="surface"]',
+) as HTMLElement | null;
+if (chromeSurfaceEl !== null) {
+  chromeSlots = mountChromeSlots({
+    surface: chromeSurfaceEl,
+    ownerDocument: document,
+  });
+}
+
+// Pulsar L2 keyboard presenter source. Arrows / Space / P / M / Escape.
+// `onHome` navigates to the default composition; `bootstrapNavigation`
+// in this file owns history state, so we just push the URL and let
+// the existing navigate-on-popstate listener handle the rest.
+const presenterKeyboard = createKeyboardPresenterSource({
+  onHome: () => {
+    globalThis.history.pushState(null, '', '?composition=default');
+    globalThis.dispatchEvent(new PopStateEvent('popstate'));
+  },
+});
+
+// Cross-window bridge: same-origin pulsar windows (present + popped-
+// out prompter) share `BroadcastChannel('pulsar-presenter')` so a
+// keystroke in either window drives the same controller. Every local
+// keyboard command is broadcast outbound; inbound commands fan into
+// the loader alongside the local keyboard source via
+// `combinePresenterSources`.
+const presenterBridge: PresenterBridgeHandle = createPresenterBridge();
+presenterKeyboard.source.subscribe((cmd) => presenterBridge.send(cmd));
+const combinedPresenterSource = combinePresenterSources(
+  presenterKeyboard.source,
+  presenterBridge.source,
+);
+
+// Practice / speaker-notes renderer. Mounts into the chrome
+// lower-third slot and toggles on `toggle-practice` (KeyN). On each
+// scene change it re-queries the registry for the active scene's
+// captions and rerenders.
+let practiceRenderer: PracticeRendererHandle | null = null;
+let stageObserver: MutationObserver | null = null;
+if (chromeSlots !== undefined) {
+  practiceRenderer = createPracticeRenderer({ target: chromeSlots.lowerThird });
+  const refresh = (): void => {
+    const stageEl = document.getElementById('stage');
+    const sceneId = stageEl?.dataset.pulsarSceneTarget ?? null;
+    if (sceneId === null) {
+      practiceRenderer?.render([]);
+      return;
+    }
+    const scene = sceneRegistry.get(sceneId);
+    practiceRenderer?.render(scene?.captions ?? []);
+  };
+  const stageEl = document.getElementById('stage');
+  if (stageEl !== null) {
+    stageObserver = new MutationObserver(refresh);
+    stageObserver.observe(stageEl, {
+      attributes: true,
+      attributeFilter: ['data-pulsar-scene-target'],
+    });
+  }
+  refresh();
+  combinedPresenterSource.subscribe((cmd) => {
+    if (cmd.kind !== 'toggle-practice') return;
+    practiceRenderer?.toggle();
+  });
+}
+
 const loader = createSceneLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
@@ -249,6 +392,7 @@ const loader = createSceneLoader({
   renderPrompter,
   audioUnlockAdapter,
   chrome,
+  presenterCommands: combinedPresenterSource,
 });
 
 const onNavigate = (event: Event): void => {
@@ -277,4 +421,17 @@ import.meta.hot?.dispose(() => {
   // PUL-F031 / ADR-031: remove the chrome surface so HMR re-evaluation
   // does not accumulate workbench chrome roots on `document.body`.
   chrome.dispose();
+  // L2: drop the transition overlay so a re-evaluated entry does not
+  // accumulate fixed-position children on `document.body`.
+  transitionOverlay.remove();
+  // L2: drop the keyboard listener so HMR does not stack duplicate
+  // command sources.
+  presenterKeyboard.dispose();
+  // L2: close the cross-window bridge so the previous BroadcastChannel
+  // stops echoing keystrokes after the entry re-evaluates.
+  presenterBridge.dispose();
+  // L2: stop the stage-attribute observer + drop the practice renderer
+  // so HMR re-evaluation does not stack duplicates.
+  stageObserver?.disconnect();
+  practiceRenderer?.dispose();
 });
