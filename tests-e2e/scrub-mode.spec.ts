@@ -112,17 +112,32 @@ test.describe('PUL-F017 — mode=scrub displays timeline controls that drive the
     await expect(beat, 'a named-beat jump button must be rendered').toHaveCount(1);
     await expect(beat).toHaveText('midpoint');
 
-    // Jumping to the midpoint beat seeks the master there — the fixture
-    // progress lands near 50 (a direct seek, so no audio cue fires).
+    // Jumping to the midpoint beat seeks the master there. A seek is a
+    // direct move (GSAP suppresses events, so no audio cue fires and no
+    // tween `onUpdate` runs) — the observable is the master playhead
+    // itself, which the scrub readout reflects: the seek slider lands
+    // on the midpoint beat's time (0.3s of the fixture's 0.6s timeline).
+    const seek = controls.locator('.pulsar-scrub__seek');
+    expect(Number(await seek.inputValue()), 'the playhead must start at frame 0').toBeLessThan(0.05);
     await beat.click();
     await expect
-      .poll(() => readProgress(page), {
-        message: 'jumping to the midpoint beat must seek the master to ~50% progress',
+      .poll(async () => Number(await seek.inputValue()), {
+        message: 'jumping to the midpoint beat must seek the master to ~0.3s',
       })
-      .toBeGreaterThanOrEqual(40);
-    expect(await readProgress(page), 'the midpoint jump must not overshoot').toBeLessThanOrEqual(
-      60,
-    );
+      .toBeGreaterThanOrEqual(0.25);
+    expect(
+      Number(await seek.inputValue()),
+      'the midpoint jump must not overshoot',
+    ).toBeLessThanOrEqual(0.35);
+
+    // Playing from the midpoint then advances the fixture progress from
+    // ~50% — proving the jump genuinely repositioned the live master.
+    await controls.locator('.pulsar-scrub__play').click();
+    await expect
+      .poll(() => readProgress(page), {
+        message: 'playing forward from the midpoint beat must advance progress past 50%',
+      })
+      .toBeGreaterThan(50);
 
     expect(errors, 'no uncaught exceptions or console errors while jumping to a beat').toEqual([]);
   });
