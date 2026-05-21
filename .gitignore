@@ -40,6 +40,8 @@ node_modules/
 dist/
 .turbo/
 *.tsbuildinfo
+coverage/
+.vite/
 
 # Vite
 *.local
@@ -71,3 +73,26 @@ Thumbs.db
 # Local files
 archive/
 .codex
+
+# Claude Code harness runtime state (not implementation artifacts)
+.claude/scheduled_tasks.lock
+
+# Playwright (PUL-Q002 browser-support gate artifacts)
+playwright-report/
+test-results/
+.playwright/
+.playwright-mcp/
+
+# Local dev screenshot scratch (never check in)
+r-*.png
+snap-*.png
+snap2-*.png
+scene-*.png
+probe*.png
+g-pi-*.png
+cv-*.png
+
+# Local-only decks (per-developer scratch, never check in)
+src/decks/local-*/
+public/local-*/
+public/assets/

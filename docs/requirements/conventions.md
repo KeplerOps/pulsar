@@ -25,10 +25,29 @@ Numbers per series, never reused.
 
 ## Status Lifecycle
 
-`DRAFT` → `ACTIVE` → `DEPRECATED`.
+`DRAFT` → `ACTIVE` → `DEPRECATED` (PUL-P004).
 
 - `DRAFT` — written, not ratified.
-- `ACTIVE` — ratified; implementation may begin.
+- `ACTIVE` — ratified. A requirement MUST satisfy two conditions to be
+  ACTIVE: (a) every clause of its statement is implemented in code,
+  docs, configuration, or other artifacts of record (clause-by-clause
+  verification, per the `/implement` workflow's Step 4.5); and (b) the
+  agent making the transition is committed to reconciling Ground
+  Control traceability immediately afterward. Ground Control's API
+  enforces the second half operationally: `gc_create_traceability_link`
+  with `link_type: IMPLEMENTS` or `TESTS` against a `DRAFT` requirement
+  returns `422 requirement_not_active`, so links cannot be created
+  before the transition. The canonical order is therefore: implement →
+  verify clauses → `gc_transition_status` `DRAFT → ACTIVE` → reconcile
+  `IMPLEMENTS` / `TESTS` links → verify the new state landed. A
+  transition that ships without implementation or that skips link
+  reconciliation is a PUL-P004 violation; the recovery path is to
+  finish the reconciliation in a follow-up run (the GC API still
+  accepts `IMPLEMENTS` / `TESTS` link writes against an ACTIVE
+  requirement) or, when the requirement statement itself proved
+  unsatisfiable, transition `ACTIVE → DEPRECATED` and supersede with a
+  fresh DRAFT requirement. Ground Control does not support
+  `ACTIVE → DRAFT`.
 - `DEPRECATED` — superseded or removed.
 
 ## Priority (MoSCoW)
@@ -56,5 +75,15 @@ Numbers per series, never reused.
 
 ## ADR Linkage
 
-Every requirement traces to at least one ADR if any ADR motivates or
-constrains it. Use GC `RELATED` links from requirement to ADR.
+When any ADR motivates or constrains a requirement, the requirement
+MUST carry a GC traceability link to that ADR (PUL-P005). Use
+`gc_create_traceability_link` with `artifact_type: ADR` and link type:
+
+- `DOCUMENTS` — the ADR documents context, rationale, or
+  decision-drivers behind the requirement.
+- `CONSTRAINS` — the ADR is a binding constraint the requirement
+  must satisfy.
+
+Inter-requirement relations (`PARENT` / `REFINES` / `DEPENDS_ON` /
+`RELATED` — see the Relations table above) are a separate surface
+(`gc_relation`) and do NOT carry ADR linkage.

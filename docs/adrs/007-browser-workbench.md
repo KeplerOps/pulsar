@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
@@ -79,9 +79,51 @@ The runtime supports the following modes:
 | `scrub` | Timeline controls are visible. For inspecting timing, easing, and beat alignment. |
 | `screenshot` | Deterministic state, fixed seed for any randomness, no animation. For visual regression checks and exported stills. |
 | `prompter` | Script/caption view for the selected scene or composition, regardless of visual rendering. |
+| `rehearsal` | Author rehearsal — audio is silenced or logged as cues (PUL-F026 / ADR-004's `AudioOutputPolicy: 'log-cues'`). Timeline state, master timeline, and composition slice are unchanged from the equivalent non-rehearsal navigation. |
 
 Modes are explicit, addressable, and orthogonal to navigation: any
 scene + beat target works in any mode that makes sense for that target.
+
+### Screenshot determinism contract
+
+`mode=screenshot` is a runtime-level capture contract. For a fixed code
+revision and normalized workbench URL, reloads on the same browser engine
+and platform must produce byte-identical rendered output.
+
+The runtime owns that guarantee:
+
+- URL parsing, target resolution, mode validation, and error surfacing
+  stay in the workbench/runtime layer. Scenes must not parse query
+  strings or invent screenshot-mode flags.
+- Scene identity, composition entries, beats, assets, captions, and
+  cleanup keep using the scene/composition contracts from
+  [ADR-002](002-scene-registry-and-compositions.md).
+- Timeline state is driven through the runtime's GSAP integration from
+  [ADR-003](003-gsap-timeline-engine.md). Screenshot mode freezes at the
+  addressed frame; it does not wait for wall-clock animation.
+- Audio is silent through the runtime audio service from
+  [ADR-004](004-howler-audio-engine.md). Scenes do not special-case raw
+  `<audio>` playback for screenshots.
+- Assets, including fonts, must be declared and loaded through the
+  runtime preflight before the capture-ready signal. Remote mutable
+  assets, cache-race-dependent ordering, and undeclared font loading are
+  not compatible with byte-identical output.
+- Entropy sources are runtime-mediated. Scene code must not read
+  `Date`, `Math.random`, `crypto.getRandomValues`, `performance.now`,
+  `requestAnimationFrame` time, storage state, cookies, environment
+  variables, or process arguments to influence screenshot output.
+- Any deterministic seed is derived only from the normalized target and
+  explicit screenshot options. It is not stored in local storage,
+  cookies, or ambient process state.
+- Runtime diagnostics use the existing navigation/error surface. Error
+  messages must identify invalid public inputs without echoing secrets,
+  environment values, cookies, headers, full URLs containing credentials,
+  or raw scene payloads.
+
+If screenshot variants are needed later (viewport profile, density,
+theme, locale, capture frame), add them as validated screenshot options
+beside the existing workbench URL grammar. Do not add per-scene capture
+switches or a second screenshot schema.
 
 ### Agent contract
 
@@ -95,6 +137,10 @@ presenter UI.
 ### Implementation expectations
 
 - The runtime parses URL parameters at startup and on `popstate`.
+- The URL is the only source of workbench mode selection. When
+  `mode` is absent, the runtime selects the effective mode `present`;
+  it must not recover mode from localStorage, sessionStorage, cookies,
+  `history.state`, or prior in-memory navigation state.
 - Mode is dispatched in the runtime core, not per scene. Scenes do not
   know which mode they are running in unless they need to (e.g.
   audio-suppressing when `mode=screenshot`).
@@ -132,6 +178,7 @@ presenter UI.
 | Modes accumulate scene-specific overrides until they aren't really modes | Hold the line: mode behavior is defined in the runtime core, not in individual scenes. Scene-specific behavior is rare and explicitly justified. |
 | `screenshot` mode is non-deterministic in subtle ways (fonts, async asset load, RNG) | Provide deterministic seeding and a preflight that resolves all promised assets before "ready"; the runtime's screenshot mode treats nondeterminism as a runtime bug, not an acceptance of reality. |
 | Agent reports URLs that depend on local state | URL parameters fully determine the targeted state; do not store inspection targets in localStorage or cookies. |
+| A previous non-`present` mode leaks into a URL without `mode` | Treat omitted `mode` as a fresh `present` selection on every startup and `popstate`; do not cache the last effective mode. |
 | Modes drift apart visually because each is touched independently | Audit each mode against `present` for the same target periodically; modes that diverge intentionally must say so in this ADR or its successor. |
 
 ## Related ADRs

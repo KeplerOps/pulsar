@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
@@ -59,6 +59,8 @@ export const scene = {
   tags: [],              // free-form labels (act, theme, surface kind, etc.)
   assets: [],            // images, audio, fonts, data, etc.
   captions: [],          // [{ at: ms, text }] for prompter and exporters
+                         // (refined by ADR-027: `at` may also be a
+                         // kebab-case beat label string)
   defaultNext: "string", // optional: scene id to advance to by default
   standalone: false,     // safe to launch in isolation?
   trailerSafe: false,    // safe to use in a trailer cut without context?
@@ -126,7 +128,7 @@ parameters follow that model:
   composition (compatibility shim).
 - `?scene=<scene-id>&beat=<label>` — jump to a labeled point inside a
   scene timeline (see [ADR-003](003-gsap-timeline-engine.md)).
-- `?...&mode=<present|standalone|loop|paused|scrub|screenshot|prompter>`
+- `?...&mode=<present|standalone|loop|paused|scrub|screenshot|prompter|rehearsal>`
   — select a workbench mode (see [ADR-007](007-browser-workbench.md)).
 
 Numeric / positional navigation, if exposed, is a compatibility shim

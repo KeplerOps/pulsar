@@ -1,9 +1,14 @@
 schema_version: 1
 project: pulsar
 github_repo: KeplerOps/pulsar
-# Tech stack is not yet committed. The workflow block is intentionally
-# omitted until the repo-layout / build-tooling ADR lands and chooses
-# concrete test/lint/format/completion commands.
+workflow:
+  test_command: pnpm test
+  completion_command: pnpm lint && pnpm typecheck && pnpm test
+  lint_command: pnpm lint
+  format_command: pnpm format
+sonarcloud:
+  project_key: KeplerOps_pulsar
+  organization: keplerops
 rules:
   plan_rules: .gc/plan-rules.md
 knowledge:
