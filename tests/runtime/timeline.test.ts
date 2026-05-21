@@ -622,6 +622,43 @@ describe('createGsapCompositionTimeline', () => {
     await settled;
   });
 
+  it('does not advance a scene tween under headHold — the animated value stays at frame 0', async () => {
+    // PUL-F016 acceptance criterion 2: `mode=paused` must hold the
+    // composition at its first frame *without advancing the timeline*.
+    // The `isPaused()` / `time()` assertions in the test above prove
+    // the master is parked at 0, but a runner that paused the master
+    // yet still let a nested tween render forward — or one that briefly
+    // played before pausing — would pass them. This test pins the
+    // behavioral contract: a tween that animates an external attribute
+    // from 0 -> 1 must leave that attribute at its initial value, and
+    // must keep it there as real wall-clock time elapses past the
+    // tween's duration. It is the runner-seam unit counterpart of the
+    // headRepeat "actually restarts" test below.
+    const controller = new AbortController();
+    const target = { v: 0 };
+    const child = gsap.timeline({ paused: true });
+    child.to(target, { v: 1, duration: 0.05, ease: 'none' });
+
+    const { master, settled } = runWith([segment('a', child)], {
+      signal: controller.signal,
+      headHold: 'first-frame',
+    });
+    await flush();
+    expect(master().isPaused()).toBe(true);
+    expect(target.v).toBeCloseTo(0);
+
+    // Let real time pass well beyond the tween's 50ms duration. A
+    // master that was not genuinely held would have the GSAP ticker
+    // advance `target.v` toward 1; a held master leaves it untouched.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(master().isPaused()).toBe(true);
+    expect(master().time()).toBeCloseTo(0);
+    expect(target.v).toBeCloseTo(0);
+
+    controller.abort();
+    await settled;
+  });
+
   it('freezes the master at the addressed beat under headScreenshot (frame 0 with no beat)', async () => {
     const c1 = new AbortController();
     const r1 = runWith([segment('intro', sceneTl(6, { mid: 3 }))], {
