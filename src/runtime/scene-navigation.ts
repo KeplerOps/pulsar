@@ -36,6 +36,7 @@ import {
   type AssetPreloader,
   type CompositionTimelineAdapter,
   type ResolveCompositionOptions,
+  type SceneActivation,
   resolveComposition,
 } from './composition-resolver';
 import type { NavigationTarget } from './navigation';
@@ -120,8 +121,15 @@ export interface ResolveSceneNavigationOptions {
  * dispatcher verified.
  */
 export interface LoadSceneNavigationTargetOptions {
-  /** Opaque scene context forwarded to every lifecycle hook. */
-  readonly ctx: unknown;
+  /**
+   * Per-occurrence scene-context factory, forwarded to
+   * {@link resolveComposition} as `ctx` (issue #99). The resolver calls
+   * it once per composition entry with that entry's
+   * {@link SceneActivation}; a slice that repeats a scene id therefore
+   * gives each occurrence a distinct `ctx`. The resolver does not
+   * inspect the returned value (ADR-011).
+   */
+  readonly ctx: (activation: SceneActivation) => unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
   readonly preloadAssets: AssetPreloader;
   /** Timeline composition/playback adapter — see {@link CompositionTimelineAdapter}. */
@@ -252,9 +260,12 @@ export interface LoadSceneNavigationTargetOptions {
    * Per-scene post-cleanup hook (PUL-F024 / ADR-004). Forwarded to
    * {@link resolveComposition} as `onSceneCleaned`; the loader wires it
    * to stop the audio group a scene scoped to itself when that scene's
-   * `cleanup(ctx)` runs. Absent for callers that do not need it.
+   * `cleanup(ctx)` runs. Receives the cleaned occurrence's
+   * {@link SceneActivation} identity so a slice that repeats a scene id
+   * can be torn down occurrence-safely (issue #99). Absent for callers
+   * that do not need it.
    */
-  readonly onSceneCleaned?: (sceneId: string) => void;
+  readonly onSceneCleaned?: (activation: SceneActivation) => void;
   /**
    * Per-scene failure sink (PUL-F029 / ADR-028). Forwarded to
    * {@link resolveComposition} as `onSceneFailed`; the loader wires it

@@ -166,6 +166,15 @@ export interface SceneErrorContext {
    * authored label for a {@link import('./timeline').SceneTimelineLabelError}.
    */
   readonly beat?: string;
+  /**
+   * The 0-based per-scene-id occurrence ordinal, when the diagnostic
+   * concerns one occurrence of a composition that repeats a scene id
+   * (issue #99 — see `SceneActivation` in `composition-resolver.ts`).
+   * Occurrence `0` (the first / only use) renders bare, so a
+   * single-occurrence diagnostic is byte-identical to one with no
+   * `occurrence` supplied; only a later occurrence shows the ordinal.
+   */
+  readonly occurrence?: number;
 }
 
 /**
@@ -187,9 +196,17 @@ export interface SceneErrorContext {
  *  - `{ sceneId: 'X', phase: 'create' }`                      → `scene "X" failed during create`
  *  - `{ sceneId: 'X', beat: 'b' }`                            → `scene "X" at beat "b"`
  *  - `{ sceneId: 'X', phase: 'timeline', beat: 'b' }`         → `scene "X" failed during timeline at beat "b"`
+ *  - `{ sceneId: 'X', occurrence: 0 }`                        → `scene "X"`
+ *  - `{ sceneId: 'X', phase: 'create', occurrence: 2 }`       → `scene "X" (occurrence 2) failed during create`
  */
 export function formatSceneContext(context: SceneErrorContext): string {
   let out = `scene "${context.sceneId}"`;
+  // Occurrence 0 (first / only use) renders bare so a single-occurrence
+  // diagnostic is unchanged; a later occurrence of a repeated scene id
+  // carries the ordinal (issue #99).
+  if (context.occurrence !== undefined && context.occurrence > 0) {
+    out += ` (occurrence ${context.occurrence})`;
+  }
   if (context.phase !== undefined) out += ` failed during ${context.phase}`;
   if (context.beat !== undefined) out += ` at beat "${context.beat}"`;
   return out;

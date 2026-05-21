@@ -208,29 +208,57 @@ export interface CompositionTimelineAdapter {
 export type SceneFailurePhase = 'create' | 'timeline' | 'cleanup';
 
 /**
+ * The stable per-occurrence activation identity of one composition
+ * entry (issue #99). ADR-002 lets a composition reference the same
+ * scene module more than once; every occurrence is a distinct
+ * activation — its own DOM, listeners, timeline segment, and cleanup
+ * ownership — even though `sceneId` is shared. The identity is derived
+ * purely from the active manifest slice order (never randomness,
+ * counters, storage, or scene-authored data):
+ *
+ *  - `sceneId` — which scene module this is.
+ *  - `entryIndex` — the position of the entry in the manifest the
+ *    resolver was handed. When the resolver is driven from a
+ *    composition slice that started mid-manifest the index is relative
+ *    to that slice, not the absolute composition index — the loader
+ *    (which knows the slice's `startIndex`) translates it to the
+ *    absolute entry for public diagnostics.
+ *  - `occurrence` — the 0-based ordinal of this entry among the entries
+ *    in the slice that share `sceneId` (first / only occurrence is 0).
+ *    Mirrors the occurrence counter the timeline composer uses for
+ *    label namespacing (`sceneSegmentLabel` / `sceneTimelineLabel`), so
+ *    diagnostics, audio-group teardown, and timeline labels all agree
+ *    on the same identity.
+ *
+ * Threaded through {@link ResolveCompositionOptions.onSceneCleaned} and
+ * carried by {@link SceneFailureEvent} so per-occurrence lifecycle
+ * owners (audio-group teardown, failure diagnostics, and any future
+ * per-occurrence resource owner) can disambiguate repeated scene ids.
+ */
+export interface SceneActivation {
+  readonly sceneId: string;
+  readonly entryIndex: number;
+  readonly occurrence: number;
+}
+
+/**
  * The structured per-scene failure event the resolver hands to
  * {@link ResolveCompositionOptions.onSceneFailed} (PUL-F029 / ADR-028).
+ * Extends {@link SceneActivation} so the failing occurrence carries the
+ * same `{ sceneId, entryIndex, occurrence }` identity every other
+ * lifecycle surface uses.
+ *
  * The `cause` field is the original thrown value — programmatic only;
  * the loader MUST NOT serialize it to a public diagnostic surface (per
  * ADR-028: no raw causes, stacks, scene objects, DOM, captions,
  * headers, cookies, environment, or auth values). The `message` field
  * is the {@link describeError} rendering of the cause and IS safe to
- * surface to operators.
- *
- * `entryIndex` carries the position of the failing scene in the
- * manifest the resolver was handed (ADR-028: composition entry index
- * is part of the failure diagnostic contract). When the resolver is
- * driven from a composition slice that started mid-manifest the index
- * is relative to the slice the resolver saw, not the absolute
- * composition index — the loader (which knows the composition's
- * entry-index translation) augments the public diagnostic with the
- * composition id and effective mode (the other two fields ADR-028
+ * surface to operators. The loader augments the public diagnostic with
+ * the composition id and effective mode (the other two fields ADR-028
  * requires) on top of this resolver-level event.
  */
-export interface SceneFailureEvent {
+export interface SceneFailureEvent extends SceneActivation {
   readonly phase: SceneFailurePhase;
-  readonly sceneId: string;
-  readonly entryIndex: number;
   readonly message: string;
   readonly cause: unknown;
 }
@@ -246,11 +274,24 @@ export interface ResolveCompositionOptions {
   /** The ordered manifest to play (PUL-F003). */
   readonly manifest: CompositionManifest;
   /**
-   * Opaque scene context passed straight through to every lifecycle
-   * hook. Carries `ctx.gsap` (ADR-003) and similar engine handles; the
-   * resolver itself does not inspect or extend it.
+   * Per-occurrence scene-context factory. The resolver calls it once
+   * per composition entry — passing that entry's {@link SceneActivation}
+   * — and forwards the returned value opaquely to that occurrence's
+   * `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)` hooks. A
+   * composition slice that repeats a scene id therefore gives each
+   * occurrence a DISTINCT `ctx` (issue #99), so a scene can own its
+   * occurrence's DOM / listeners / state without colliding with a
+   * sibling occurrence of the same module.
+   *
+   * The resolver does not inspect or extend the returned value
+   * (ADR-011): building the per-occurrence `ctx` from a navigation-
+   * scoped base plus the activation is the caller's job (the scene
+   * loader threads `ctx.gsap` / `ctx.audio` / `ctx.stage` and adds the
+   * activation). The factory is called once per entry at plan time,
+   * before any side effect; a throw aborts the composition with the
+   * `composition resolution failed:` envelope.
    */
-  readonly ctx: unknown;
+  readonly ctx: (activation: SceneActivation) => unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
   readonly preloadAssets: AssetPreloader;
   /** Timeline-composition/playback adapter — see {@link CompositionTimelineAdapter}. */
@@ -276,14 +317,18 @@ export interface ResolveCompositionOptions {
   /**
    * Per-scene post-cleanup hook (PUL-F024 / ADR-004). Invoked after each
    * scene's `cleanup(ctx)` completes during the cleanup phase, in the
-   * same reverse-mount order. The scene loader wires this so the runtime
-   * stops the audio group a scene scoped to itself (`group: <sceneId>`)
-   * when that scene's `cleanup` runs — runtime-guaranteed per-scene
-   * audio teardown rather than author discipline. The resolver itself
-   * does not interpret the id; it just forwards it. A throw from the
-   * hook is treated like a cleanup failure (collected, not swallowed).
+   * same reverse-mount order, with the cleaned occurrence's
+   * {@link SceneActivation} identity. The scene loader wires this so the
+   * runtime stops the audio group a scene scoped to itself
+   * (`group: <sceneId>`) when that scene's `cleanup` runs —
+   * runtime-guaranteed per-scene audio teardown rather than author
+   * discipline. The resolver itself does not interpret the activation;
+   * it just forwards it. Invoked exactly once per occurrence (issue
+   * #99): for a slice that repeats a scene id every occurrence gets its
+   * own call with a distinct `occurrence` ordinal. A throw from the hook
+   * is treated like a cleanup failure (collected, not swallowed).
    */
-  readonly onSceneCleaned?: (sceneId: string) => void;
+  readonly onSceneCleaned?: (activation: SceneActivation) => void;
   /**
    * Per-scene failure sink (PUL-F029 / ADR-028). Invoked once per
    * isolated lifecycle failure with structured `{ phase, sceneId,
@@ -327,10 +372,35 @@ interface PlanStep {
   /**
    * Position of the entry in the manifest the resolver was handed
    * (PUL-F029 / ADR-028 diagnostic contract — see
-   * {@link SceneFailureEvent.entryIndex}).
+   * {@link SceneActivation.entryIndex}).
    */
   readonly entryIndex: number;
+  /**
+   * 0-based ordinal of this entry among the plan entries that share
+   * `scene.id` (issue #99 — see {@link SceneActivation.occurrence}).
+   */
+  readonly occurrence: number;
+  /**
+   * The per-occurrence scene context (issue #99). Built once at plan
+   * time from {@link ResolveCompositionOptions.ctx} and this entry's
+   * activation, then handed unchanged to this occurrence's
+   * `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)` — so two
+   * occurrences of the same scene module each get their own `ctx`.
+   * Opaque to the resolver.
+   */
+  readonly ctx: unknown;
 }
+
+/**
+ * Project a {@link PlanStep} onto its {@link SceneActivation} identity —
+ * the `{ sceneId, entryIndex, occurrence }` tuple every per-occurrence
+ * lifecycle surface (`onSceneCleaned`, `SceneFailureEvent`) carries.
+ */
+const activationOf = (step: PlanStep): SceneActivation => ({
+  sceneId: step.scene.id,
+  entryIndex: step.entryIndex,
+  occurrence: step.occurrence,
+});
 
 /**
  * Build the resolver's wrapping `Error`. Every public failure carries
@@ -365,48 +435,50 @@ function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
 /**
  * Clause (a) plus snapshot capture: walk every entry exactly once,
  * resolve every scene id against the registry, snapshot per-entry
- * `range` / `behavior` overrides, and aggregate ALL missing ids into
- * one error before any side effect (friendlier than fail-on-first — a
- * manifest author fixes every typo in one pass).
+ * `range` / `behavior` overrides, assign each entry its per-occurrence
+ * activation identity + `ctx` (issue #99), and aggregate ALL missing
+ * ids into one error before any side effect (friendlier than
+ * fail-on-first — a manifest author fixes every typo in one pass).
  */
-function buildPlan(manifest: CompositionManifest, registry: SceneRegistry): readonly PlanStep[] {
+function buildPlan(
+  manifest: CompositionManifest,
+  registry: SceneRegistry,
+  ctxFor: (activation: SceneActivation) => unknown,
+): readonly PlanStep[] {
   const missing = findUnregisteredEntries(manifest, (id) => registry.has(id));
   if (missing.length > 0) {
     const list = missing.map(({ id, index }) => `${quoteId(id)} (entry [${index}])`).join(', ');
     throw fail(`unknown scene id(s): ${list} — not registered`, undefined);
   }
-  // ADR-025: the mount-all lifecycle activates every entry concurrently
-  // (every scene's DOM coexists while the master plays), so two entries
-  // with the same scene id would share one activation context — the
-  // second `create(ctx)` would clobber the first's DOM / listeners and
-  // `cleanup(ctx)` could not tell which occurrence it owns. Per-entry
-  // activation contexts (a container / occurrence handle threaded
-  // through create / timeline / cleanup) are a follow-up; until then a
-  // composition slice may not repeat a scene id. Single-scene workbench
-  // modes truncate the slice to the head before the resolver sees it,
-  // so a `[x, x]` composition is still navigable under those modes.
-  const occurrences = new Map<string, number[]>();
-  for (const [index, entry] of manifest.entries()) {
-    const id = entryId(entry);
-    const at = occurrences.get(id);
-    if (at === undefined) occurrences.set(id, [index]);
-    else at.push(index);
-  }
-  for (const [id, indices] of occurrences) {
-    if (indices.length > 1) {
-      const entryList = indices.map((i) => `[${i}]`).join(', ');
-      throw fail(
-        `composition references scene id ${quoteId(id)} more than once (entries ${entryList}) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)`,
-        undefined,
-      );
-    }
-  }
+  // ADR-002 / issue #99: a composition slice MAY reference the same
+  // scene id more than once. Each occurrence is a distinct activation
+  // — the resolver tracks one `PlanStep` per entry, so `create` /
+  // `timeline` / `cleanup` run once per occurrence and the eager- and
+  // final-cleanup paths key off the step object, never the scene id.
+  // The 0-based per-scene-id `occurrence` ordinal computed here is the
+  // stable occurrence identity threaded to `onSceneCleaned` and
+  // `onSceneFailed`; it mirrors the counter the timeline composer uses
+  // for label namespacing so every surface agrees.
+  const occurrenceCounter = new Map<string, number>();
   const plan: PlanStep[] = [];
   for (const [entryIndex, entry] of manifest.entries()) {
-    const scene = registry.get(entryId(entry));
+    const id = entryId(entry);
+    const scene = registry.get(id);
+    const occurrence = occurrenceCounter.get(id) ?? 0;
+    occurrenceCounter.set(id, occurrence + 1);
     const range = typeof entry === 'string' ? undefined : entry.range;
     const behavior = typeof entry === 'string' ? undefined : entry.behavior;
-    plan.push({ scene, range, behavior, entryIndex });
+    const activation: SceneActivation = { sceneId: id, entryIndex, occurrence };
+    let ctx: unknown;
+    try {
+      ctx = ctxFor(activation);
+    } catch (cause) {
+      throw fail(
+        `scene ${quoteId(id)} (entry [${entryIndex}]) ctx factory threw: ${describeError(cause)}`,
+        cause,
+      );
+    }
+    plan.push({ scene, range, behavior, entryIndex, occurrence, ctx });
   }
   return Object.freeze(plan);
 }
@@ -434,9 +506,8 @@ function buildSceneFailure(
   detail: string,
 ): { event: SceneFailureEvent; wrapper: Error } {
   const event: SceneFailureEvent = {
+    ...activationOf(step),
     phase,
-    sceneId: step.scene.id,
-    entryIndex: step.entryIndex,
     message: describeError(cause),
     cause,
   };
@@ -472,9 +543,8 @@ interface FailureBucket {
  * wiring identical across phases.
  */
 interface LifecycleContext {
-  readonly ctx: unknown;
   readonly signal: AbortSignal | undefined;
-  readonly onSceneCleaned: ((sceneId: string) => void) | undefined;
+  readonly onSceneCleaned: ((activation: SceneActivation) => void) | undefined;
   readonly onSceneFailed: ((event: SceneFailureEvent) => void) | undefined;
   readonly bucket: FailureBucket;
 }
@@ -524,7 +594,7 @@ function notifyFailure(
  */
 async function cleanOneScene(step: PlanStep, lc: LifecycleContext): Promise<void> {
   try {
-    await step.scene.cleanup(lc.ctx);
+    await step.scene.cleanup(step.ctx);
   } catch (error_) {
     const { event, wrapper } = buildSceneFailure(
       'cleanup',
@@ -537,7 +607,7 @@ async function cleanOneScene(step: PlanStep, lc: LifecycleContext): Promise<void
     notifyFailure(lc.onSceneFailed, event, lc.bucket);
   }
   try {
-    lc.onSceneCleaned?.(step.scene.id);
+    lc.onSceneCleaned?.(activationOf(step));
   } catch (err) {
     lc.bucket.hookErrors.push(
       fail(`scene ${quoteId(step.scene.id)} onSceneCleaned threw: ${describeError(err)}`, err),
@@ -572,7 +642,7 @@ async function mountPlan(
     // scene only after its cleanup ran (one cleanup per scene).
     mounted.push(step);
     try {
-      await step.scene.create(lc.ctx);
+      await step.scene.create(step.ctx);
     } catch (cause) {
       const { event, wrapper } = buildSceneFailure(
         'create',
@@ -632,7 +702,7 @@ async function composeSegments(
   for (const step of snapshot) {
     let timeline: unknown;
     try {
-      timeline = step.scene.timeline(lc.ctx);
+      timeline = step.scene.timeline(step.ctx);
     } catch (cause) {
       const { event, wrapper } = buildSceneFailure(
         'timeline',
@@ -798,7 +868,7 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   }
 
   assertCompositionManifest(manifest);
-  const plan = buildPlan(manifest, registry);
+  const plan = buildPlan(manifest, registry, options.ctx);
 
   // Pre-start abort: nothing was touched, so this needs no cleanup.
   throwIfAborted(signal, 'aborted before the composition started');
@@ -810,7 +880,6 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // option's contract a hook throw is "treated like a cleanup failure
   // (collected, not swallowed)."
   const lc: LifecycleContext = {
-    ctx: options.ctx,
     signal,
     onSceneCleaned: options.onSceneCleaned,
     onSceneFailed: options.onSceneFailed,

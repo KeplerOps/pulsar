@@ -515,7 +515,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     const tl = recordingTimeline();
 
     await loadSceneNavigationTarget(target, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: (scene) => {
         log.push(`preload:${scene.id}`);
       },
@@ -552,7 +552,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     const tl = recordingTimeline();
 
     await loadSceneNavigationTarget(target, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: tl.adapter,
     });
@@ -569,32 +569,38 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     expect(segmentIds(tl.calls[0]?.segments ?? [])).toEqual(['middle', 'outro']);
   });
 
-  it('rejects a composition slice that repeats a scene id (ADR-025: each occurrence would share one activation context)', async () => {
+  it('runs a composition slice that repeats a scene id, mounting each occurrence (issue #99)', async () => {
     const log: string[] = [];
     const intro = buildScene({
       id: 'intro',
       create: () => log.push('create'),
+      timeline: () => {
+        log.push('timeline');
+        return undefined;
+      },
       cleanup: () => log.push('cleanup'),
     });
-    // The dispatcher resolves `?composition=loop-once` fine; the
-    // lifecycle bridge rejects because mount-all cannot give two `intro`
-    // occurrences distinct DOM / cleanup ownership yet (single-scene
-    // modes truncate the slice to the head, so they stay navigable).
+    // The dispatcher resolves `?composition=loop-once`; the bridge
+    // de-duplicates the synthesized scene registry by id and the
+    // resolver mounts each `intro` occurrence as a distinct activation
+    // (issue #99 — repeated scene ids are supported).
     const target = resolveSceneNavigation(compositionTarget('loop-once'), {
       scenes: createSceneRegistry([intro]),
       compositions: createCompositionRegistry([{ id: 'loop-once', manifest: ['intro', 'intro'] }]),
     }) as SceneNavigationTarget;
+    const tl = recordingTimeline();
 
     await expect(
       loadSceneNavigationTarget(target, {
-        ctx: {},
+        ctx: () => ({}),
         preloadAssets: () => undefined,
-        timeline: recordingTimeline().adapter,
+        timeline: tl.adapter,
       }),
-    ).rejects.toThrow(
-      /composition resolution failed: composition references scene id "intro" more than once/,
-    );
-    expect(log).toEqual([]);
+    ).resolves.toBeUndefined();
+
+    // Each occurrence is mounted, composed, and torn down once.
+    expect(log).toEqual(['create', 'create', 'timeline', 'timeline', 'cleanup', 'cleanup']);
+    expect(segmentIds(tl.calls[0]?.segments ?? [])).toEqual(['intro', 'intro']);
   });
 
   it('still calls cleanup when create throws (mandatory-cleanup invariant)', async () => {
@@ -624,7 +630,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
 
     let caught: unknown;
     await loadSceneNavigationTarget(target, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: recordingTimeline().adapter,
     }).catch((err: unknown) => {
@@ -652,7 +658,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
 
     await expect(
       loadSceneNavigationTarget(target, {
-        ctx: {},
+        ctx: () => ({}),
         preloadAssets: () => {
           log.push('preload');
           throw new Error('preload failed');
@@ -674,7 +680,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     void createSceneRegistry([decoyIntro]);
 
     await loadSceneNavigationTarget(target, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: recordingTimeline().adapter,
     });
@@ -699,7 +705,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     const tl = recordingTimeline();
 
     await loadSceneNavigationTarget(target, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: tl.adapter,
     });
@@ -709,8 +715,8 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     ]);
   });
 
-  it('forwards ctx unchanged to every lifecycle hook (the adapter receives no ctx)', async () => {
-    const ctx = { tag: 'workbench-ctx' };
+  it('builds ctx per occurrence and forwards it unchanged to that occurrence lifecycle hooks', async () => {
+    const activations: Array<{ sceneId: string; entryIndex: number; occurrence: number }> = [];
     const seen: unknown[] = [];
     const intro = buildScene({
       id: 'intro',
@@ -727,11 +733,21 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     }) as SceneNavigationTarget;
 
     await loadSceneNavigationTarget(target, {
-      ctx,
+      ctx: (activation) => {
+        activations.push(activation);
+        return { tag: 'workbench-ctx', activation };
+      },
       preloadAssets: () => undefined,
       timeline: recordingTimeline().adapter,
     });
-    expect(seen).toEqual([ctx, ctx, ctx]);
+    // One occurrence → the factory is called once, with that
+    // occurrence's activation; its single ctx reaches all three hooks.
+    expect(activations).toEqual([{ sceneId: 'intro', entryIndex: 0, occurrence: 0 }]);
+    const expectedCtx = {
+      tag: 'workbench-ctx',
+      activation: { sceneId: 'intro', entryIndex: 0, occurrence: 0 },
+    };
+    expect(seen).toEqual([expectedCtx, expectedCtx, expectedCtx]);
   });
 
   // ----- head-hint forwarding -------------------------------------------
@@ -763,7 +779,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
     }) as SceneNavigationTarget;
     const tl = recordingTimeline();
     await loadSceneNavigationTarget(resolved, {
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: tl.adapter,
       ...options,
@@ -807,7 +823,7 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
       }) as SceneNavigationTarget;
       await expect(
         loadSceneNavigationTarget(resolved, {
-          ctx: {},
+          ctx: () => ({}),
           preloadAssets: () => undefined,
           timeline: recordingTimeline().adapter,
           beat: 'hook',

@@ -22,18 +22,18 @@
 //    service `stopAll()`s — every sound it created is stopped and
 //    unloaded, so fades, loops, sprites, and muted state never survive
 //    scene cleanup (PUL-P001 / ADR-004). One service is shared across a
-//    composition's slice (the resolver already forbids a slice repeating
-//    a scene id), so the sound-id namespace and the source allowlist are
-//    composition-slice-scoped: multi-scene compositions pick distinct
-//    sound ids — the same stable-identity discipline scene ids obey
-//    (ADR-008 #1) — and registering an id twice with the same definition
-//    is idempotent (a shared transition SFX). A scene scopes a sound to
-//    itself with `play(id, { group: <its-scene-id> })`; the resolver's
-//    per-scene post-`cleanup(ctx)` hook stops that group when the scene
-//    cleans up (runtime-driven, not author discipline). True per-scene
-//    activation contexts (one `ctx.audio` facade per scene entry) are a
-//    documented resolver follow-up (see `composition-resolver.ts`'s
-//    `buildPlan`).
+//    composition's slice, so the sound-id namespace and the source
+//    allowlist are composition-slice-scoped: multi-scene compositions
+//    pick distinct sound ids — the same stable-identity discipline
+//    scene ids obey (ADR-008 #1) — and registering an id twice with the
+//    same definition is idempotent (a shared transition SFX). A scene
+//    scopes a sound to itself with `play(id, { group: <its-scene-id> })`;
+//    that group is scene-scoped — shared by every occurrence of a scene
+//    id a slice repeats (issue #99). The loader wires the resolver's
+//    per-scene post-`cleanup(ctx)` hook so the runtime stops that group
+//    when the LAST occurrence of the scene id is cleaned up
+//    (runtime-driven, not author discipline; occurrence-safe — an
+//    earlier occurrence's cleanup never cuts a sibling's audio).
 //
 // Source URLs reuse PUL-F005's `resolveAssetUrl` scheme resolver — no
 // copied scheme rules — and every registered source must be in the

@@ -1007,6 +1007,79 @@ describe('createSceneLoader — PUL-F029 scene-level error isolation', () => {
     expect(onError).toHaveBeenCalledTimes(2);
   });
 
+  it('disambiguates repeated occurrences of a failing scene on the scene-failures attribute (issue #99)', async () => {
+    const onError = vi.fn();
+    const broken = buildScene({
+      id: 'broken',
+      create: () => {
+        throw new Error('create kaboom');
+      },
+    });
+    const stage = buildStage();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([broken]),
+      compositions: createCompositionRegistry([{ id: 'twice', manifest: ['broken', 'broken'] }]),
+      stage: stage.element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      onError,
+    });
+
+    await loader.handle(compositionTarget('twice'));
+
+    // Each occurrence is isolated separately; the failures attribute
+    // carries the occurrence ordinal so two failures of the same scene
+    // id in the same phase are distinguishable. Occurrence 0 stays bare
+    // (`broken:create`) so single-occurrence diagnostics are unchanged.
+    expect(stage.attrs.get('data-pulsar-scene-failures')).toBe('broken:create,broken#1:create');
+    expect(onError).toHaveBeenCalledTimes(2);
+    const messages = onError.mock.calls.map((c) => (c[0] as Error).message);
+    expect(messages.some((m) => m.includes('occurrence 1'))).toBe(true);
+  });
+
+  it('threads a distinct per-occurrence ctx.activation into a repeated scene id (issue #99)', async () => {
+    // Capture ctx fields into `seen` and assert after the navigation —
+    // an `expect()` thrown inside a lifecycle hook is absorbed by the
+    // resolver's PUL-F029 isolation and would never reach the test.
+    const seen: Array<{
+      sceneId: string;
+      entryIndex: number;
+      occurrence: number;
+      mode: NavigationMode;
+    }> = [];
+    const a = buildScene({
+      id: 'a',
+      create: (ctx) => {
+        const c = ctx as {
+          activation: { sceneId: string; entryIndex: number; occurrence: number };
+          mode: NavigationMode;
+        };
+        seen.push({ ...c.activation, mode: c.mode });
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([a]),
+      compositions: createCompositionRegistry([{ id: 'twice', manifest: ['a', 'a'] }]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+    });
+
+    await loader.handle(compositionTarget('twice'));
+    await loader.idle();
+
+    // Each occurrence's `create` saw a ctx scoped to its own
+    // activation; the navigation-scoped base fields (here `mode`) are
+    // still present on every occurrence's ctx — only `activation`
+    // differs between occurrences.
+    expect(seen).toEqual([
+      { sceneId: 'a', entryIndex: 0, occurrence: 0, mode: 'present' },
+      { sceneId: 'a', entryIndex: 1, occurrence: 1, mode: 'present' },
+    ]);
+  });
+
   it('enriches the onError message with composition id, entry index, and mode (ADR-028 diagnostic contract)', async () => {
     const onError = vi.fn();
     const intro = buildScene({ id: 'intro' });

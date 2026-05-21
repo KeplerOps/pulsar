@@ -738,7 +738,10 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
       readonly probe: LifecycleProbe;
       readonly preloader: () => Promise<void>;
       readonly runner: (input: LegacyRunInput) => void;
-      readonly buildCtxFn: (mode: NavigationMode, audio: AudioService) => WorkbenchSceneCtx;
+      readonly buildCtxFn: (
+        mode: NavigationMode,
+        audio: AudioService,
+      ) => Omit<WorkbenchSceneCtx, 'activation'>;
       readonly scenes: readonly SceneModule[];
     };
 
@@ -772,7 +775,10 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
         probe.preloaderInvocations += 1;
         return Promise.resolve();
       };
-      const buildCtxFn = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => {
+      const buildCtxFn = (
+        mode: NavigationMode,
+        audio: AudioService,
+      ): Omit<WorkbenchSceneCtx, 'activation'> => {
         probe.buildCtxInvocations += 1;
         return { stage: null, mode, gsap, audio };
       };
