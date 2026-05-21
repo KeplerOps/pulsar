@@ -2,7 +2,8 @@
 # Stop hook: blocks Claude from finishing if implementation checklist is incomplete.
 # Only enforces when /implement was invoked in THIS session (scoped by $PPID).
 #
-# Universal check: CHANGELOG.md must be in the diff when source files changed.
+# Universal check: a towncrier changelog fragment under changelog.d/ must be
+# present when src/ changes (see changelog.d/README.md and .gc/plan-rules.md).
 # /implement owns its own review gate via /review-tests; no codex review here.
 
 set -euo pipefail
@@ -48,10 +49,16 @@ fi
 
 REASONS=""
 
-# Check 1: CHANGELOG.md must be in the diff if source files changed
-HAS_CHANGELOG=$(echo "$CHANGED" | grep -c 'CHANGELOG.md' || true)
-if [ "$HAS_CHANGELOG" -eq 0 ]; then
-  REASONS="${REASONS}CHANGELOG.md was not updated despite source code changes. "
+# Check 1: a towncrier changelog fragment must accompany src/ changes.
+# The repo migrated to towncrier — the signal is a fragment under
+# changelog.d/, NOT a direct CHANGELOG.md edit (.gc/plan-rules.md and
+# changelog.d/README.md forbid hand-editing CHANGELOG.md outside release
+# collation). Only src/ changes can ship user-visible behavior; docs,
+# tests, CI, and meta paths never require a fragment.
+SOURCE_CHANGED=$(echo "$CHANGED" | grep -c '^src/' || true)
+HAS_FRAGMENT=$(echo "$CHANGED" | grep -Ec '^changelog\.d/.+\.(security|removed|deprecated|added|changed|fixed)\.md$' || true)
+if [ "$SOURCE_CHANGED" -gt 0 ] && [ "$HAS_FRAGMENT" -eq 0 ]; then
+  REASONS="${REASONS}src/ changed but no changelog.d/ fragment was added. If this PR changes user-visible behavior, add a fragment under changelog.d/<issue-or-pr>.<type>.md (type: security|removed|deprecated|added|changed|fixed; see changelog.d/README.md). If the change is behavior-preserving (comment-only, internal refactor), no fragment is required. "
 fi
 
 # Run project-specific checks if they exist
