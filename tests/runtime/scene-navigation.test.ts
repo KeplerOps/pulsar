@@ -379,7 +379,7 @@ describe('resolveSceneNavigation (PUL-F008)', () => {
       // Hand-rolled CompositionRegistry that returns the mutable
       // manifest as-is — no deep-freeze on its side.
       const mutableCompositions: CompositionRegistry = {
-        get: () => mutableManifest,
+        get: () => ({ manifest: mutableManifest }),
         has: () => true,
         ids: () => ['mixed'],
         get size() {
@@ -943,5 +943,61 @@ describe('loadSceneNavigationTarget (PUL-F008 lifecycle bridge — ADR-025)', ()
       const { calls } = await loadWith(sceneTarget('intro'), [buildScene({ id: 'intro' })], [], {});
       expect('presenter' in (calls[0]?.opts ?? {})).toBe(false);
     });
+  });
+});
+
+describe('resolveSceneNavigation — composition audio bed (PUL-F014)', () => {
+  // The resolver snapshots the registered composition's audio bed onto
+  // the navigation context but makes NO suppression decision — that is
+  // the loader's mode-dispatch job. These tests pin the snapshot for
+  // every composition locator kind.
+  const bed = { src: '/audio/bed.webm', volume: 0.7 };
+
+  it('threads a declared audio bed into the composition context (kind: composition)', () => {
+    const scenes = createSceneRegistry([buildScene({ id: 'intro' })]);
+    const compositions = createCompositionRegistry([
+      { id: 'talk', manifest: ['intro'], audioBed: bed },
+    ]);
+    const target = resolveSceneNavigation(compositionTarget('talk'), { scenes, compositions });
+    expect(target?.composition?.audioBed).toEqual(bed);
+  });
+
+  it('threads the bed for a composition-scene locator', () => {
+    const scenes = createSceneRegistry([buildScene({ id: 'intro' }), buildScene({ id: 'middle' })]);
+    const compositions = createCompositionRegistry([
+      { id: 'talk', manifest: ['intro', 'middle'], audioBed: bed },
+    ]);
+    const target = resolveSceneNavigation(compositionSceneTarget('talk', 'middle'), {
+      scenes,
+      compositions,
+    });
+    expect(target?.composition?.audioBed).toEqual(bed);
+  });
+
+  it('threads the bed for a composition-index locator', () => {
+    const scenes = createSceneRegistry([buildScene({ id: 'intro' }), buildScene({ id: 'middle' })]);
+    const compositions = createCompositionRegistry([
+      { id: 'talk', manifest: ['intro', 'middle'], audioBed: bed },
+    ]);
+    const target = resolveSceneNavigation(compositionIndexTarget('talk', 1), {
+      scenes,
+      compositions,
+    });
+    expect(target?.composition?.audioBed).toEqual(bed);
+  });
+
+  it('leaves audioBed undefined when the composition declared no bed', () => {
+    const scenes = createSceneRegistry([buildScene({ id: 'intro' })]);
+    const compositions = createCompositionRegistry([{ id: 'talk', manifest: ['intro'] }]);
+    const target = resolveSceneNavigation(compositionTarget('talk'), { scenes, compositions });
+    expect(target?.composition).not.toBeUndefined();
+    expect(target?.composition?.audioBed).toBeUndefined();
+  });
+
+  it('carries no composition context — and so no bed — for a bare scene target', () => {
+    const scenes = createSceneRegistry([buildScene({ id: 'intro' })]);
+    const compositions = createCompositionRegistry([]);
+    const target = resolveSceneNavigation(sceneTarget('intro'), { scenes, compositions });
+    expect(target?.composition).toBeUndefined();
   });
 });

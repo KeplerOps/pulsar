@@ -53,6 +53,7 @@
 // a CI summary, or a JSON report.
 
 import { DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
+import { assertAudioBedDeclaration } from './audio';
 import {
   CompositionManifestError,
   assertCompositionManifest,
@@ -136,7 +137,12 @@ export type FindingCode =
   // resolvable. Resolvability uses the same `resolveAssetUrl` rule
   // the preloader and audio service consume, so tightening the
   // allowlist tightens validation automatically.
-  | 'asset-unresolvable';
+  | 'asset-unresolvable'
+  // PUL-F014 — a composition declared a malformed `audioBed`. The
+  // shape check reuses `assertAudioBedDeclaration` (the same gate the
+  // composition registry and audio service use), so a bad bed fails
+  // the validation pass at boot rather than at navigation time.
+  | 'composition-audio-bed-invalid';
 
 /**
  * One composition registration as the validator sees it. Matches the
@@ -153,6 +159,13 @@ export type FindingCode =
 export interface ValidationCompositionInput {
   readonly id: string;
   readonly manifest: unknown;
+  /**
+   * Optional composition audio bed (PUL-F014). Typed `unknown` at the
+   * boundary — like `manifest` — so callers feed the validator the raw
+   * registration declarations before `assertAudioBedDeclaration` has
+   * run. `undefined` when the composition declared no bed.
+   */
+  readonly audioBed?: unknown;
 }
 
 /**
@@ -341,12 +354,38 @@ function runCompositionPhase(
 ): void {
   if (compositions === undefined) return;
   for (const composition of compositions) {
+    // The audio-bed shape check (PUL-F014) is independent of the
+    // manifest shape — a bad bed must not suppress the reference
+    // check, and a bad manifest must not suppress the bed check.
+    const bedFinding = checkCompositionAudioBed(composition);
+    if (bedFinding !== null) findings.push(bedFinding);
     const manifestFinding = checkCompositionShape(composition);
     if (manifestFinding !== null) {
       findings.push(manifestFinding);
       continue;
     }
     appendCompositionReferenceFindings(composition, validIds, findings);
+  }
+}
+
+/**
+ * PUL-F014 — when a composition declares an `audioBed`, validate its
+ * shape through `assertAudioBedDeclaration` (the same gate the
+ * composition registry and audio service use). Returns a
+ * `composition-audio-bed-invalid` finding on a malformed bed, or
+ * `null` when there is no bed or the bed is well-formed.
+ */
+function checkCompositionAudioBed(composition: ValidationCompositionInput): Finding | null {
+  if (composition.audioBed === undefined) return null;
+  try {
+    assertAudioBedDeclaration(composition.audioBed);
+    return null;
+  } catch (cause) {
+    return {
+      code: 'composition-audio-bed-invalid',
+      message: `composition "${composition.id}": ${describeError(cause)}`,
+      compositionId: composition.id,
+    };
   }
 }
 

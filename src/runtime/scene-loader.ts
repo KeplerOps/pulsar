@@ -543,19 +543,31 @@ function isPureAbort(err: unknown, signal: AbortSignal): boolean {
  * declared as audio — every scene's static {@link import('./scene').SceneModule.audio}
  * list in the slice (just the head scene's for a bare `kind: 'scene'`
  * target, the full composition slice's for composition targets). The
- * per-navigation audio service uses this so `ctx.audio.load()` can
- * only register URLs the scene EXPLICITLY declared as audio — not any
- * URL that happens to be in `scene.assets`. This makes the PUL-F030 /
- * ADR-029 unlock-gate predicate ({@link import('./scene').sceneDeclaresAudio})
- * AND the audio-service allowlist consistent: a scene that registers
- * audio MUST declare it in `scene.audio`, so the present-mode unlock
- * gate cannot be bypassed by a scene that hides its audio in `assets`
+ * per-navigation audio service uses this as the SCENE-FACING source
+ * allowlist so `ctx.audio.load()` can only register URLs the scene
+ * EXPLICITLY declared as audio — not any URL that happens to be in
+ * `scene.assets`. This makes the PUL-F030 / ADR-029 unlock-gate
+ * predicate ({@link import('./scene').sceneDeclaresAudio}) AND the
+ * audio-service allowlist consistent: a scene that registers audio
+ * MUST declare it in `scene.audio`, so the present-mode unlock gate
+ * cannot be bypassed by a scene that hides its audio in `assets`
  * (codex review, cycle 1 — class finding "audio gate can be bypassed
  * by undeclared ctx.audio loads"). `scene.audio` is validated at the
  * schema boundary to be a subset of `scene.assets`, so the preloader
- * still warms every declared audio URL. Pure function (no closure
- * captures), hoisted to module scope so the loader factory does not
- * recreate it per instance.
+ * still warms every declared audio URL.
+ *
+ * The PUL-F014 composition audio bed is deliberately NOT added here.
+ * The bed is composition-owned runtime infrastructure, not a
+ * `scene.audio` entry, and exposing its source through the scene
+ * allowlist would let a scene `ctx.audio.load()` the bed URL as its
+ * own sound — playing the bed even under `mode=standalone` where it
+ * is suppressed. The audio service gates the bed against the bed's
+ * OWN declared `src` inside `startBed`, so the scene allowlist stays
+ * limited to `scene.audio` (codex review, cycle 1 — "composition bed
+ * source leaks into scene audio allowlist").
+ *
+ * Pure function (no closure captures), hoisted to module scope so the
+ * loader factory does not recreate it per instance.
  */
 function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
   return target.composition === undefined
@@ -1180,6 +1192,16 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         allowedSources: collectAudioSources(resolved),
         onError,
         ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
+        // PUL-F014 / ADR-004: the composition audio bed, played
+        // underneath the slice — suppressed under `mode=standalone`,
+        // where the scene runs as if no surrounding composition
+        // existed. The resolver snapshots the declaration onto the
+        // composition context; the loader is the mode-dispatch point
+        // that decides bed vs no-bed, keeping the resolver mode-opaque.
+        ...(resolved.composition?.audioBed === undefined
+          ? {}
+          : { bed: resolved.composition.audioBed }),
+        bedSuppressed: mode === 'standalone',
       });
       const pipe = buildPresenterPipe(mode, controller, audio);
       presenter = pipe.presenter;

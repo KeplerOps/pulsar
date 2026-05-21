@@ -19,6 +19,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  type AudioBedDeclaration,
   type AudioCueLogEntry,
   type AudioCueLogStopGroup,
   type AudioEngine,
@@ -30,6 +31,7 @@ import {
   type AudioSoundHandle,
   AudioSourceError,
   type SoundDefinition,
+  assertAudioBedDeclaration,
   createAudioService,
   noopAudioEngine,
 } from '../../src/runtime/audio';
@@ -1226,5 +1228,221 @@ describe('createAudioService — onCue runtime validation (codex review, cycle 2
         outputPolicy: 'log-cues',
       }),
     ).not.toThrow();
+  });
+});
+
+/* -------------------------------------------------------------------- *
+ *  Composition audio bed — PUL-F014 / ADR-004
+ * -------------------------------------------------------------------- */
+
+describe('createAudioService — composition audio bed (PUL-F014)', () => {
+  // PUL-F014: in `mode=standalone` the audio bed is suppressed; under
+  // every other mode a composition bed plays underneath the slice.
+  const BED_SRC = '/audio/bed.webm';
+  const bed = (overrides: Partial<AudioBedDeclaration> = {}): AudioBedDeclaration => ({
+    src: BED_SRC,
+    ...overrides,
+  });
+
+  it('starts the bed looping at construction for a composition navigation', () => {
+    // The bed is gated against its OWN declared `src`, not the
+    // scene-facing `allowedSources` — so it starts even when the
+    // scene allowlist does not list the bed URL.
+    const { fake } = buildService({ bed: bed(), allowedSources: ['/audio/sting.webm'] });
+    // The bed is the only sound the service created.
+    expect(fake.created).toHaveLength(1);
+    expect(fake.created[0]?.src).toEqual([BED_SRC]);
+    // It was played, then marked looping.
+    const methods = fake.calls.map((c) => c.method);
+    expect(methods).toContain('play');
+    const loopCall = fake.calls.find((c) => c.method === 'loop');
+    expect(loopCall?.args[0]).toBe(true);
+  });
+
+  it('does NOT play the bed when bedSuppressed is set (mode=standalone)', () => {
+    const { fake } = buildService({
+      bed: bed(),
+      bedSuppressed: true,
+    });
+    // Suppressed: no bed sound is created at all.
+    expect(fake.created).toHaveLength(0);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it('leaves scene-owned ctx.audio playable while the bed is suppressed', () => {
+    // bedSuppressed is a bed-specific scope, NOT outputPolicy:'silent':
+    // scenes can still register and play their own audio.
+    const { fake, service } = buildService({
+      bed: bed(),
+      bedSuppressed: true,
+      allowedSources: ['/audio/sting.webm'],
+    });
+    service.load('sting', { src: '/audio/sting.webm' });
+    service.play('sting');
+    expect(fake.created).toHaveLength(1);
+    expect(fake.created[0]?.muted).toBe(false);
+    expect(fake.calls.some((c) => c.method === 'play')).toBe(true);
+  });
+
+  it('does NOT expose the bed source through the scene-facing load allowlist', () => {
+    // PUL-F014 / codex review cycle 1: the bed source is gated against
+    // the bed's own declaration, NOT the scene `allowedSources`. A
+    // scene that does not declare the bed URL in `scene.audio` cannot
+    // register it as its own sound — so the bed cannot be replayed
+    // through `ctx.audio.load()` even under `mode=standalone` where
+    // the bed itself is suppressed.
+    const { service } = buildService({
+      bed: bed(),
+      allowedSources: ['/audio/sting.webm'],
+    });
+    expect(() => service.load('leak', { src: BED_SRC })).toThrow(AudioSourceError);
+  });
+
+  it('keeps the bed suppressed AND unreachable via load under mode=standalone', () => {
+    // The two halves of PUL-F014 standalone suppression together: the
+    // bed never plays, and a scene cannot smuggle the bed URL back in
+    // through `ctx.audio.load()` because it is not in the scene
+    // allowlist.
+    const { fake, service } = buildService({
+      bed: bed(),
+      bedSuppressed: true,
+      allowedSources: ['/audio/sting.webm'],
+    });
+    expect(fake.created).toHaveLength(0);
+    expect(() => service.load('smuggled-bed', { src: BED_SRC })).toThrow(AudioSourceError);
+  });
+
+  it('constructs the bed muted under the silent output policy', () => {
+    const { fake } = buildService({
+      bed: bed(),
+      outputPolicy: 'silent',
+    });
+    expect(fake.created[0]?.muted).toBe(true);
+  });
+
+  it('constructs the bed muted under the log-cues output policy without emitting a cue', () => {
+    const cues: AudioCueLogEntry[] = [];
+    const { fake } = buildService({
+      bed: bed(),
+      outputPolicy: 'log-cues',
+      onCue: (entry) => cues.push(entry),
+    });
+    expect(fake.created[0]?.muted).toBe(true);
+    // The bed is runtime infrastructure, not a scene-requested
+    // operation — it never appears in the rehearsal cue log.
+    expect(cues).toHaveLength(0);
+  });
+
+  it('applies the bed volume to the looping play', () => {
+    const { fake } = buildService({ bed: bed({ volume: 0.4 }) });
+    const volumeCall = fake.calls.find((c) => c.method === 'volume');
+    expect(volumeCall?.args[0]).toBe(0.4);
+  });
+
+  it('starts the bed regardless of the scene-facing allowedSources set', () => {
+    // The bed declaration is authoritative for the bed; the scene
+    // `allowedSources` set (the slice's `scene.audio`) does not gate
+    // it. A composition whose scenes declare no audio still gets its
+    // bed.
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        bed: bed(),
+        allowedSources: [],
+      }),
+    ).not.toThrow();
+    expect(fake.created).toHaveLength(1);
+    expect(fake.created[0]?.src).toEqual([BED_SRC]);
+  });
+
+  it('rejects a bed source with a disallowed scheme', () => {
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        bed: { src: 'file:///etc/passwd' },
+      }),
+    ).toThrow(AudioSourceError);
+  });
+
+  it('rejects an out-of-range bed volume', () => {
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        bed: bed({ volume: 1.5 }),
+      }),
+    ).toThrow(AudioRangeError);
+  });
+
+  it('tears the bed down when the navigation signal aborts', () => {
+    const { fake, controller } = buildService({ bed: bed() });
+    expect(fake.calls.some((c) => c.method === 'unload')).toBe(false);
+    controller.abort();
+    expect(fake.calls.some((c) => c.method === 'unload')).toBe(true);
+  });
+
+  it('does not start the bed when the navigation signal is already aborted', () => {
+    const fake = fakeEngine();
+    const controller = new AbortController();
+    controller.abort();
+    createAudioService(fake.engine, {
+      signal: controller.signal,
+      bed: bed(),
+    });
+    expect(fake.created).toHaveLength(0);
+  });
+
+  it('keeps the bed unreachable through the scene-facing audio API', () => {
+    // The bed key is not a kebab identifier, so a scene cannot name,
+    // collide with, stop, or re-register it through load/play/stop.
+    const { service } = buildService({ bed: bed() });
+    expect(() => service.load('composition audio bed', { src: BED_SRC })).toThrow(AudioSoundError);
+    expect(() => service.play('composition audio bed')).toThrow(AudioSoundError);
+    expect(() => service.stop('composition audio bed')).toThrow(AudioSoundError);
+  });
+
+  it('rejects a non-boolean bedSuppressed at construction', () => {
+    const fake = fakeEngine();
+    const build = (value: unknown): (() => void) => {
+      return () =>
+        createAudioService(fake.engine, {
+          signal: liveSignal(),
+          bed: bed(),
+          bedSuppressed: value as boolean,
+        });
+    };
+    expect(build('yes')).toThrow(AudioError);
+    expect(build(1)).toThrow(AudioError);
+    expect(build(null)).toThrow(AudioError);
+  });
+});
+
+describe('assertAudioBedDeclaration (PUL-F014)', () => {
+  it('accepts a string source', () => {
+    expect(() => assertAudioBedDeclaration({ src: '/audio/bed.webm' })).not.toThrow();
+  });
+
+  it('accepts an array source and an optional volume', () => {
+    expect(() =>
+      assertAudioBedDeclaration({ src: ['/audio/bed.webm', '/audio/bed.mp3'], volume: 0.5 }),
+    ).not.toThrow();
+  });
+
+  it('rejects a non-object declaration', () => {
+    expect(() => assertAudioBedDeclaration('oops')).toThrow(AudioError);
+    expect(() => assertAudioBedDeclaration(null)).toThrow(AudioError);
+  });
+
+  it('rejects a declaration with a missing or mistyped src', () => {
+    expect(() => assertAudioBedDeclaration({})).toThrow(AudioSourceError);
+    expect(() => assertAudioBedDeclaration({ src: 42 })).toThrow(AudioSourceError);
+  });
+
+  it('rejects a non-numeric volume', () => {
+    expect(() => assertAudioBedDeclaration({ src: '/audio/bed.webm', volume: 'loud' })).toThrow(
+      AudioRangeError,
+    );
   });
 });
