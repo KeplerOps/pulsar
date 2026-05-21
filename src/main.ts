@@ -224,25 +224,24 @@ const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
   () => chromeSlots?.lowerThird ?? document.body,
 );
 
-// Presenter command source (PUL-F020 / PUL-F021 / ADR-023 /
-// ADR-024): intentionally OMITTED here. The runtime-side contract
-// layer ships the `PresenterCommandSource` / per-navigation
-// `PresenterController` seam and the `advance` / `hold` /
-// `skip-forward` / `skip-backward` (PUL-F020) plus `pause` /
-// `resume` (PUL-F021, ADR-024) command kinds — the loader builds a
-// per-navigation `PresenterController` when `mode=present` AND
-// `presenterCommands` is supplied. By omitting the field, the
-// loader gracefully degrades (runners see `input.presenter ===
-// undefined`) and the seam stays structurally inert until a real
-// presenter UI surface lands. The future workbench surface owns
-// the keyboard listener / on-screen controls and emits
-// `PresenterCommand`s through a `PresenterCommandSource`; ADR-023
-// (advance/hold/skip) and ADR-024 (pause/resume — including the
-// cross-command precedence the runner must honor: `pause` / `resume`
-// are a transport-freeze gate orthogonal to the beat-pacing kinds)
-// record the DRAFT → ACTIVE bar (presenter UI module + GSAP runner
-// that translates commands to transport calls — including playhead-
-// preserving pause/resume — + end-to-end tests).
+// Presenter command source (PUL-F013 / PUL-F020 / PUL-F021 /
+// ADR-023 / ADR-024): present-mode presenter input is wired in this
+// composition root. `createKeyboardPresenterSource()` (arrows /
+// Space / P / M / Escape) and `createPresenterBridge()` (same-origin
+// cross-window `BroadcastChannel`) are constructed below and merged
+// by `combinePresenterSources()` into the single
+// `PresenterCommandSource` handed to `createSceneLoader` as
+// `presenterCommands`. The loader builds a per-navigation
+// `PresenterController` when `mode=present`, threads it into
+// `ctx.presenter` and the timeline adapter, and aborts the
+// subscription on navigation abort / completion. The command kinds
+// are `advance` / `hold` / `skip-forward` / `skip-backward`
+// (PUL-F020) plus the `pause` / `resume` transport-freeze gate
+// (PUL-F021, ADR-024) — the runner honors the latter with
+// playhead-preserving precedence over the beat-pacing kinds. A
+// future remote presenter source must authenticate before emitting
+// into `PresenterCommandSource`; the controller stays the local
+// command-shape gate.
 // PUL-F030 / ADR-029: present-mode audio unlock adapter. The loader
 // invokes this BEFORE preload + scene `create(ctx)` + scene
 // `timeline(ctx)` + master timeline playback when a present-mode
