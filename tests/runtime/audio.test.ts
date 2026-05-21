@@ -33,6 +33,7 @@ import {
   type SoundDefinition,
   assertAudioBedDeclaration,
   createAudioService,
+  createCueGate,
   noopAudioEngine,
 } from '../../src/runtime/audio';
 
@@ -1416,6 +1417,78 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
     expect(build('yes')).toThrow(AudioError);
     expect(build(1)).toThrow(AudioError);
     expect(build(null)).toThrow(AudioError);
+  });
+});
+
+describe('createCueGate (PUL-F017 / ADR-020 — dynamic cue eligibility)', () => {
+  it('is eligible by default and toggles with setEligible', () => {
+    const gate = createCueGate();
+    expect(gate.isEligible()).toBe(true);
+    gate.setEligible(false);
+    expect(gate.isEligible()).toBe(false);
+    gate.setEligible(true);
+    expect(gate.isEligible()).toBe(true);
+  });
+
+  it('honors an initial-ineligible state', () => {
+    expect(createCueGate(false).isEligible()).toBe(false);
+    expect(createCueGate(true).isEligible()).toBe(true);
+  });
+});
+
+describe('createAudioService — cue gate (PUL-F017 / ADR-020)', () => {
+  const playCalls = (fake: FakeEngine): number =>
+    fake.calls.filter((c) => c.method === 'play').length;
+
+  it('suppresses play output while the gate is closed (reverse / non-forward playback)', () => {
+    const { fake, service } = buildService({ cueGate: createCueGate(false) });
+    service.load('cue', { src: '/cue.webm' });
+    service.play('cue');
+    expect(playCalls(fake)).toBe(0);
+  });
+
+  it('produces play output while the gate is open (monotonic forward playback)', () => {
+    const { fake, service } = buildService({ cueGate: createCueGate(true) });
+    service.load('cue', { src: '/cue.webm' });
+    service.play('cue');
+    expect(playCalls(fake)).toBe(1);
+  });
+
+  it('tracks the gate dynamically — a cue fires, is suppressed, then fires again as the gate flips', () => {
+    const gate = createCueGate(true);
+    const { fake, service } = buildService({ cueGate: gate });
+    service.load('cue', { src: '/cue.webm' });
+    service.play('cue');
+    gate.setEligible(false);
+    service.play('cue');
+    gate.setEligible(true);
+    service.play('cue');
+    expect(playCalls(fake)).toBe(2);
+  });
+
+  it('still validates a closed-gate cue — malformed cue calls fail loud (suppression is post-validation)', () => {
+    const { service } = buildService({ cueGate: createCueGate(false) });
+    service.load('cue', { src: '/cue.webm', sprite: { hit: [0, 100] } });
+    expect(() => service.play('missing')).toThrow(AudioSoundError);
+    expect(() => service.play('cue', { sprite: 'ghost' })).toThrow(AudioSoundError);
+    expect(() => service.play('cue', { group: 'Bad Group' })).toThrow(AudioGroupError);
+    expect(() => service.play('cue', { volume: 9 })).toThrow(AudioRangeError);
+  });
+
+  it('does not gate fade / stop — only cue firing (play) is direction-gated', () => {
+    const { fake, service } = buildService({ cueGate: createCueGate(false) });
+    service.load('cue', { src: '/cue.webm' });
+    service.fade('cue', 0, 1, 100);
+    service.stop('cue');
+    expect(fake.calls.some((c) => c.method === 'fade')).toBe(true);
+    expect(fake.calls.some((c) => c.method === 'stop')).toBe(true);
+  });
+
+  it('leaves a service with no cue gate wired always eligible (non-scrub navigations unchanged)', () => {
+    const { fake, service } = buildService();
+    service.load('cue', { src: '/cue.webm' });
+    service.play('cue');
+    expect(playCalls(fake)).toBe(1);
   });
 });
 

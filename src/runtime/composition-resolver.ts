@@ -64,6 +64,7 @@
 //    adapter, which resolves (does not throw) on abort so the cleanup
 //    phase always runs.
 
+import type { CueGateControl } from './audio';
 import {
   type BehaviorOverride,
   type CompositionManifest,
@@ -157,13 +158,22 @@ export interface CompositionTimelineRunOptions {
    */
   readonly headHold?: 'first-frame';
   /**
-   * URL scrub hint (PUL-F017 / ADR-020): forwarded, but the timeline
-   * adapter does not yet gate audio cues against it — the PUL-F024 audio
-   * service exists, but timeline-callback cue gating is a follow-up;
-   * scenes fire their own `ctx.audio` cues from their timeline callbacks
-   * today.
+   * URL scrub hint (PUL-F017 / ADR-020): the adapter runs the head
+   * scene under the interactive scrub run mode — the master is left
+   * mounted and live (held, not auto-played to completion) so the
+   * workbench scrub controls can drive it, and audio-cue firing is
+   * gated to monotonic forward playback via {@link audioCueGate}.
    */
   readonly headCueGate?: 'monotonic-forward';
+  /**
+   * Dynamic audio cue-eligibility gate (PUL-F017 / ADR-020). Paired
+   * with {@link headCueGate}: the adapter toggles it `false` whenever
+   * the scrub master is paused or playing in reverse and `true` on
+   * monotonic forward playback, so the per-navigation audio service
+   * suppresses cues that are not produced by forward playback.
+   * Forwarded opaquely — the resolver does not interpret it (ADR-011).
+   */
+  readonly audioCueGate?: CueGateControl;
   /**
    * URL screenshot hint (PUL-F018 / ADR-021): the adapter freezes the
    * master at the addressed beat (or frame 0).
@@ -308,6 +318,8 @@ export interface ResolveCompositionOptions {
   readonly headHold?: 'first-frame';
   /** URL scrub hint (PUL-F017 / ADR-020). */
   readonly headCueGate?: 'monotonic-forward';
+  /** Dynamic audio cue-eligibility gate paired with {@link headCueGate} (PUL-F017 / ADR-020). */
+  readonly audioCueGate?: CueGateControl;
   /** URL screenshot hint (PUL-F018 / ADR-021). */
   readonly headScreenshot?: 'capture';
   /** Present-mode presenter command controller (PUL-F020 / ADR-023). */
@@ -807,6 +819,7 @@ function buildRunOptions(options: ResolveCompositionOptions): CompositionTimelin
   if (options.headRepeat !== undefined) opts.headRepeat = options.headRepeat;
   if (options.headHold !== undefined) opts.headHold = options.headHold;
   if (options.headCueGate !== undefined) opts.headCueGate = options.headCueGate;
+  if (options.audioCueGate !== undefined) opts.audioCueGate = options.audioCueGate;
   if (options.headScreenshot !== undefined) opts.headScreenshot = options.headScreenshot;
   if (options.presenter !== undefined) {
     opts.presenter = options.presenter;

@@ -9,7 +9,9 @@
 import {
   type AudioEngine,
   type AudioService,
+  type CueGateControl,
   createAudioService,
+  createCueGate,
   noopAudioEngine,
 } from '../../src/runtime/audio';
 import { createCompositionRegistry } from '../../src/runtime/composition-registry';
@@ -40,12 +42,14 @@ export {
   createPresenterController,
   createSceneLoader,
   createAudioService,
+  createCueGate,
   noopAudioEngine,
   NAVIGATION_MODES,
 };
 export type {
   AudioEngine,
   AudioService,
+  CueGateControl,
   Caption,
   CompositionTimelineAdapter,
   CompositionTimelineRunOptions,
@@ -166,6 +170,7 @@ export interface LegacyRunInput {
   readonly repeat?: 'until-aborted';
   readonly hold?: 'first-frame';
   readonly cueGate?: 'monotonic-forward';
+  readonly audioCueGate?: CueGateControl;
   readonly screenshot?: 'capture';
   readonly presenter?: ReturnType<typeof createPresenterController>;
 }
@@ -188,6 +193,7 @@ export const asTimeline = (
       ...(opts.headRepeat === undefined ? {} : { repeat: opts.headRepeat }),
       ...(opts.headHold === undefined ? {} : { hold: opts.headHold }),
       ...(opts.headCueGate === undefined ? {} : { cueGate: opts.headCueGate }),
+      ...(opts.audioCueGate === undefined ? {} : { audioCueGate: opts.audioCueGate }),
       ...(opts.headScreenshot === undefined ? {} : { screenshot: opts.headScreenshot }),
       ...(opts.presenter === undefined ? {} : { presenter: opts.presenter }),
     };

@@ -563,6 +563,57 @@ export interface AudioBedDeclaration {
   readonly volume?: number;
 }
 
+/* ------------------------------------------------------------------ *
+ *  Dynamic cue eligibility gate (PUL-F017 / ADR-020)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Read-only view of the dynamic audio cue-eligibility gate (PUL-F017 /
+ * ADR-020). The audio service consults {@link isEligible} after a cue
+ * has passed every boundary check and before it reaches the engine: a
+ * closed gate suppresses the cue's audible output without masking a
+ * malformed cue.
+ *
+ * The gate is deliberately distinct from the static
+ * {@link AudioOutputPolicy}: `silent` / `log-cues` are a per-navigation
+ * contract decided at construction, whereas the cue gate is toggled
+ * *during* a navigation by playhead movement direction — a `scrub`-mode
+ * master that plays backwards closes the gate so cues do not re-fire on
+ * reverse playback, and re-opens it on monotonic forward playback.
+ */
+export interface CueGate {
+  /** Whether audio cues are currently eligible to produce output. */
+  isEligible(): boolean;
+}
+
+/**
+ * Controllable {@link CueGate}. The GSAP timeline adapter holds this
+ * side and toggles eligibility from its transport methods so the
+ * decision of *when* to gate stays in one place (the runner that owns
+ * playhead direction) — never in chrome event handlers or scene
+ * modules. Scenes receive the {@link AudioService}, never this control.
+ */
+export interface CueGateControl extends CueGate {
+  /** Open (`true`) or close (`false`) the gate. */
+  setEligible(eligible: boolean): void;
+}
+
+/**
+ * Build a {@link CueGateControl}. Eligible by default; pass
+ * `initialEligible: false` for a `scrub`-mode master, which starts
+ * paused (not playing monotonically forward) so its cues are ineligible
+ * until the user presses play.
+ */
+export function createCueGate(initialEligible = true): CueGateControl {
+  let eligible = initialEligible;
+  return {
+    isEligible: () => eligible,
+    setEligible: (next) => {
+      eligible = next;
+    },
+  };
+}
+
 /** Construction options for {@link createAudioService}. */
 export interface AudioServiceOptions {
   /**
@@ -623,6 +674,17 @@ export interface AudioServiceOptions {
    * {@link AudioOutputPolicy} `'silent'`.
    */
   readonly bedSuppressed?: boolean;
+  /**
+   * Dynamic cue-eligibility gate (PUL-F017 / ADR-020). When supplied,
+   * {@link AudioService.play} suppresses a cue's audible output
+   * (post-validation) whenever {@link CueGate.isEligible} returns
+   * `false`. The scene loader wires this for `mode=scrub` and the GSAP
+   * timeline adapter toggles it by playhead direction, so "audio cues
+   * fire only on monotonic forward playback" holds. Omit it for every
+   * other navigation — an absent gate means cues are always eligible,
+   * so non-scrub playback is unchanged.
+   */
+  readonly cueGate?: CueGate;
 }
 
 /**
@@ -1058,6 +1120,10 @@ export function createAudioService(
   const onError = options.onError ?? ((): void => undefined);
   const onCue = options.onCue;
   const allowed = options.allowedSources === undefined ? null : new Set(options.allowedSources);
+  // PUL-F017 / ADR-020: the dynamic cue-eligibility gate. Absent for
+  // every navigation except `mode=scrub`; an absent gate means cues
+  // are always eligible, so non-scrub playback is unchanged.
+  const cueGate = options.cueGate;
 
   const sounds = new Map<string, RegisteredSound>();
   const groups = new Map<string, GroupedPlay[]>();
@@ -1309,6 +1375,13 @@ export function createAudioService(
       }
       if (opts.group !== undefined) assertGroupName(opts.group);
       if (opts.volume !== undefined) assertGain(opts.volume, 'volume');
+      // PUL-F017 / ADR-020: cue gate. Checked AFTER every boundary
+      // validation above (a malformed cue still fails loud) and BEFORE
+      // any engine output / group bookkeeping / cue-log emit. A closed
+      // gate means the master is not playing monotonically forward
+      // (reverse playback, paused) so this accepted cue produces no
+      // sound — "audio cues fire only on monotonic forward playback".
+      if (cueGate !== undefined && !cueGate.isEligible()) return;
       const playId = sound.handle.play(opts.sprite);
       if (opts.loop === true) sound.handle.loop(true, playId);
       if (opts.volume !== undefined) sound.handle.volume(opts.volume, playId);

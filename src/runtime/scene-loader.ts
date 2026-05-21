@@ -34,7 +34,9 @@ import {
   type AudioEngine,
   type AudioOutputPolicy,
   type AudioService,
+  type CueGateControl,
   createAudioService,
+  createCueGate,
   noopAudioEngine,
 } from './audio';
 import type { CompositionRegistry } from './composition-registry';
@@ -1170,6 +1172,16 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // rollback-then-surfaceError pattern so a throwing builder does
     // not leave stale stage attrs or skip the queue's error sink.
     const outputPolicy = audioOutputPolicyFor(mode);
+    // PUL-F017 / ADR-020: under `mode=scrub` build the dynamic audio
+    // cue gate ONCE and share the single instance between the audio
+    // service (which consults `isEligible()` to suppress a cue's
+    // output) and the timeline adapter (which toggles it by playhead
+    // direction). It starts closed — a scrub master is held at its
+    // cursor, not playing monotonically forward — and the GSAP adapter
+    // opens it on `play()`. Absent for every other mode, so non-scrub
+    // navigations build an ungated audio service exactly as before.
+    const audioCueGate: CueGateControl | undefined =
+      mode === 'scrub' ? createCueGate(false) : undefined;
     // issue #99: the loader threads a per-occurrence ctx factory rather
     // than a single ctx. `buildCtx` builds the navigation-scoped base
     // (stage / gsap / audio / mode / presenter / chrome) once; the
@@ -1202,6 +1214,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
           ? {}
           : { bed: resolved.composition.audioBed }),
         bedSuppressed: mode === 'standalone',
+        // PUL-F017 / ADR-020: the shared cue gate (scrub only). The
+        // audio service consults it; the timeline adapter toggles it.
+        ...(audioCueGate === undefined ? {} : { cueGate: audioCueGate }),
       });
       const pipe = buildPresenterPipe(mode, controller, audio);
       presenter = pipe.presenter;
@@ -1307,6 +1322,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(repeat === undefined ? {} : { repeat }),
         ...(hold === undefined ? {} : { hold }),
         ...(cueGate === undefined ? {} : { cueGate }),
+        // PUL-F017 / ADR-020: the same gate handed to the audio service
+        // above — the timeline adapter toggles it by playhead direction.
+        ...(audioCueGate === undefined ? {} : { audioCueGate }),
         ...(screenshot === undefined ? {} : { screenshot }),
         // Forward `presenter` AND the `onError` sink so the
         // resolver's per-scene wrapper around `presenter` can
