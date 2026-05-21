@@ -118,7 +118,9 @@ test.describe('PUL-F017 — mode=scrub displays timeline controls that drive the
     // itself, which the scrub readout reflects: the seek slider lands
     // on the midpoint beat's time (0.3s of the fixture's 0.6s timeline).
     const seek = controls.locator('.pulsar-scrub__seek');
-    expect(Number(await seek.inputValue()), 'the playhead must start at frame 0').toBeLessThan(0.05);
+    expect(Number(await seek.inputValue()), 'the playhead must start at frame 0').toBeLessThan(
+      0.05,
+    );
     await beat.click();
     await expect
       .poll(async () => Number(await seek.inputValue()), {
