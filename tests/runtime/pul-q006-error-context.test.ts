@@ -178,7 +178,7 @@ describe('PUL-Q006 — resolver wrap (no onSceneFailed)', () => {
         await resolveComposition({
           registry,
           manifest: ['broken'],
-          ctx: undefined,
+          ctx: () => undefined,
           preloadAssets: () => undefined,
           timeline,
         });
@@ -207,7 +207,7 @@ describe('PUL-Q006 — resolver wrap (preload throw)', () => {
       resolveComposition({
         registry,
         manifest: ['intro'],
-        ctx: undefined,
+        ctx: () => undefined,
         preloadAssets: () => {
           throw new Error('preload kaboom');
         },
@@ -282,6 +282,22 @@ describe('PUL-Q006 — formatSceneContext as the canonical seam', () => {
     const prefix = formatSceneContext({ sceneId: 'intro', beat: 'hook' });
     expect(prefix).toContain('scene "intro"');
     expect(prefix).toContain('"hook"');
+  });
+
+  it('renders the occurrence ordinal for a repeated scene id and stays bare for occurrence 0 (issue #99)', () => {
+    // Occurrence 0 (first / only use) renders identically to a
+    // single-occurrence scene — single-occurrence diagnostics are
+    // unchanged.
+    expect(formatSceneContext({ sceneId: 'intro', occurrence: 0 })).toBe('scene "intro"');
+    expect(formatSceneContext({ sceneId: 'intro', phase: 'create', occurrence: 0 })).toBe(
+      formatSceneContext({ sceneId: 'intro', phase: 'create' }),
+    );
+    // A later occurrence carries the ordinal so repeated scene ids are
+    // distinguishable on the public diagnostic surface.
+    const repeated = formatSceneContext({ sceneId: 'intro', phase: 'create', occurrence: 2 });
+    expect(repeated).toContain('scene "intro"');
+    expect(repeated).toContain('occurrence 2');
+    expect(repeated).toContain('create');
   });
 
   it('produces a prefix that contains scene id when used by the loader (cleanup failures during a composition)', async () => {

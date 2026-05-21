@@ -554,6 +554,46 @@ describe('scene loader — mode=rehearsal (PUL-F026 / ADR-004)', () => {
     expect(calls[0]?.segments.map((s) => s.id)).toEqual(['scene-a', 'scene-b', 'scene-c']);
   });
 
+  it('stops a repeated scene id audio group once, after every occurrence is cleaned up (issue #99)', async () => {
+    // A composition that uses the same scene id twice: both
+    // occurrences play into the shared scene-scoped group `a`. The
+    // runtime stops that group exactly ONCE — when the last occurrence
+    // is cleaned up — so the first occurrence's cleanup cannot tear
+    // down the still-active sibling's audio. The old per-`onSceneCleaned`
+    // `stopGroup` fired once per occurrence (two `stop-group` cues).
+    const cues: AudioCueLogEntry[] = [];
+    const audio = recordingAudioEngine();
+    const scene = buildScene({
+      id: 'a',
+      assets: ['/audio/bed.mp3'],
+      audio: ['/audio/bed.mp3'],
+      create: (ctx) => {
+        const x = (ctx as { audio: AudioService }).audio;
+        x.load('bed', { src: '/audio/bed.mp3' });
+        x.play('bed', { group: 'a' });
+      },
+    });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([{ id: 'twice', manifest: ['a', 'a'] }]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      onAudioCue: (entry) => cues.push(entry),
+    });
+    await loader.handle({
+      locator: { kind: 'composition', composition: 'twice' },
+      mode: 'rehearsal',
+    });
+    await loader.idle();
+    // play (a#0), play (a#1), then a SINGLE stop-group on the last
+    // occurrence's cleanup — never one stop-group per occurrence.
+    expect(cues.map((c) => c.operation)).toEqual(['play', 'play', 'stop-group']);
+    expect(cues[2]).toMatchObject({ operation: 'stop-group', group: 'a' });
+  });
+
   it('rehearses a composition+scene target from the addressed head onward (slice preserved)', async () => {
     const a = buildScene({ id: 'scene-a' });
     const b = buildScene({ id: 'scene-b' });
@@ -882,8 +922,9 @@ describe('scene loader — PUL-F030 audio unlock gate (ADR-029)', () => {
       if (gate === undefined) throw new Error('gate not called');
       expect(gate.compositionId).toBe('show');
       expect(gate.sceneIds).toEqual(['a', 'b', 'c']);
-      // The signal exists and is NOT aborted (lifecycle completed).
-      expect(typeof gate.signal.aborted).toBe('boolean');
+      // The signal is live — NOT pre-aborted — so the adapter can
+      // listen for supersession.
+      expect(gate.signal.aborted).toBe(false);
       // Adapter received an `unlock` callback that, when called,
       // forwards to engine.unlock() — but we don't call it here in
       // the success path; that's covered by the "adapter calls

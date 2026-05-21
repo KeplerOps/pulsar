@@ -710,7 +710,7 @@ describe('createGsapCompositionTimeline', () => {
         }),
       ]),
       manifest: ['intro'],
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: adapter,
       headBeat: 'the-end',
@@ -777,7 +777,7 @@ describe('createGsapCompositionTimeline', () => {
     await resolveComposition({
       registry: createSceneRegistry([trace('intro'), trace('demo'), trace('outro')]),
       manifest: ['intro', 'demo', 'outro'],
-      ctx: {},
+      ctx: () => ({}),
       preloadAssets: () => undefined,
       timeline: adapter,
     });
@@ -808,7 +808,7 @@ describe('createGsapCompositionTimeline', () => {
           trace('outro', () => sceneTl(0.005)),
         ]),
         manifest: ['intro', 'demo', 'outro'],
-        ctx: {},
+        ctx: () => ({}),
         preloadAssets: () => undefined,
         timeline: adapter,
       });

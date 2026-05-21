@@ -10,6 +10,7 @@ Design context for Pulsar. Source material for the ADRs in `../adrs/`.
 | [issue-091-towncrier-fragments-preflight.md](issue-091-towncrier-fragments-preflight.md) | Guardrails for adopting Towncrier-managed changelog fragments without duplicating release workflow logic. |
 | [issue-097-browser-runtime-smoke-preflight.md](issue-097-browser-runtime-smoke-preflight.md) | Guardrails for expanding browser runtime smoke coverage through the existing Playwright workbench gate. |
 | [issue-098-vertical-slice-demo-preflight.md](issue-098-vertical-slice-demo-preflight.md) | Guardrails for adding authored demo scenes that exercise composition, timeline, captions, assets, and workbench routing through existing runtime seams. |
+| [issue-099-repeated-scene-activation-context-preflight.md](issue-099-repeated-scene-activation-context-preflight.md) | Guardrails for supporting repeated scene entries through per-occurrence activation ownership without changing scene, composition, URL, registry, timeline, or audio boundaries. |
 | [positioning-and-landscape.md](positioning-and-landscape.md) | Category, adjacent OSS projects, differentiation, strategic risks. |
 | [pul-p002-validation-ci-preflight.md](pul-p002-validation-ci-preflight.md) | Guardrails for gating pull-request CI on the canonical runtime validation pass. |
 | [pul-p003-adr-format-preflight.md](pul-p003-adr-format-preflight.md) | Guardrails for keeping ADR markdown and Ground Control ADR records aligned without duplicate schemas or workflow logic. |

@@ -15,6 +15,7 @@ import type { CompositionManifest } from '../../src/runtime/composition';
 import {
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
+  type SceneActivation,
   type SceneFailureEvent,
   type SceneTimelineSegment,
   resolveComposition,
@@ -114,7 +115,7 @@ interface ResolveArgs {
   readonly manifest: CompositionManifest;
   readonly timeline?: CompositionTimelineAdapter;
   readonly preloadAssets?: (scene: SceneModule) => void | Promise<void>;
-  readonly ctx?: unknown;
+  readonly ctx?: (activation: SceneActivation) => unknown;
   readonly signal?: AbortSignal;
   readonly headBeat?: string;
   readonly onBeatMissing?: () => void;
@@ -122,7 +123,7 @@ interface ResolveArgs {
   readonly headHold?: 'first-frame';
   readonly headCueGate?: 'monotonic-forward';
   readonly headScreenshot?: 'capture';
-  readonly onSceneCleaned?: (sceneId: string) => void;
+  readonly onSceneCleaned?: (activation: SceneActivation) => void;
   readonly onSceneFailed?: (event: SceneFailureEvent) => void;
 }
 
@@ -130,7 +131,7 @@ const run = (args: ResolveArgs): Promise<void> =>
   resolveComposition({
     registry: createSceneRegistry([...args.scenes]),
     manifest: args.manifest,
-    ctx: args.ctx ?? {},
+    ctx: args.ctx ?? ((): unknown => ({})),
     preloadAssets: args.preloadAssets ?? ((): void => undefined),
     timeline: args.timeline ?? recordingTimeline().adapter,
     ...(args.signal === undefined ? {} : { signal: args.signal }),
@@ -190,25 +191,122 @@ describe('resolveComposition — boundary validation', () => {
     );
   });
 
-  it('rejects a composition slice that repeats a scene id, before any side effect (ADR-025)', async () => {
-    // The mount-all lifecycle activates every entry concurrently, so two
-    // `intro` occurrences would share one activation context. Per-entry
-    // contexts are a follow-up; until then a repeated scene id in a
-    // slice is a navigation error (single-scene modes truncate the slice
-    // to the head, so they stay navigable).
+  it('resolves a composition slice that repeats a scene id, mounting each occurrence once (issue #99)', async () => {
+    // ADR-002 allows a composition to reference the same scene module
+    // more than once. Each occurrence is a distinct activation: it is
+    // mounted, composed, and torn down once, in manifest / reverse
+    // order — never collapsed by scene id.
     const log: string[] = [];
-    const preloadAssets = vi.fn((): void => undefined);
+    const { adapter, calls } = recordingTimeline();
     await expect(
       run({
         scenes: [recordingScene('intro', log), recordingScene('demo', log)],
         manifest: ['intro', 'demo', 'intro'],
-        preloadAssets,
+        timeline: adapter,
       }),
-    ).rejects.toThrow(
-      'composition resolution failed: composition references scene id "intro" more than once (entries [0], [2]) — repeated scene ids in a composition slice are not yet supported: each occurrence would share one activation context (DOM, listeners, timeline targets, cleanup ownership)',
-    );
-    expect(preloadAssets).not.toHaveBeenCalled();
-    expect(log).toEqual([]);
+    ).resolves.toBeUndefined();
+    expect(log).toEqual([
+      'create:intro',
+      'create:demo',
+      'create:intro',
+      'timeline:intro',
+      'timeline:demo',
+      'timeline:intro',
+      'cleanup:intro',
+      'cleanup:demo',
+      'cleanup:intro',
+    ]);
+    // Both `intro` occurrences contribute a distinct timeline segment,
+    // in manifest order, so the composer can namespace them.
+    expect(calls[0]?.segments.map((s) => s.id)).toEqual(['intro', 'demo', 'intro']);
+  });
+
+  it('hands onSceneCleaned a per-occurrence activation for repeated scene ids (issue #99)', async () => {
+    const log: string[] = [];
+    const cleaned: SceneActivation[] = [];
+    await run({
+      scenes: [recordingScene('intro', log), recordingScene('demo', log)],
+      manifest: ['intro', 'demo', 'intro'],
+      onSceneCleaned: (activation) => cleaned.push(activation),
+    });
+    // Reverse mount order: intro#1 (entry 2), demo#0 (entry 1),
+    // intro#0 (entry 0). Each occurrence carries a stable identity.
+    expect(cleaned).toEqual([
+      { sceneId: 'intro', entryIndex: 2, occurrence: 1 },
+      { sceneId: 'demo', entryIndex: 1, occurrence: 0 },
+      { sceneId: 'intro', entryIndex: 0, occurrence: 0 },
+    ]);
+  });
+
+  it('builds a distinct per-occurrence ctx carrying each occurrence activation (issue #99)', async () => {
+    const seen: Array<{ phase: string; activation: SceneActivation }> = [];
+    const record =
+      (phase: string) =>
+      (ctx: unknown): void => {
+        seen.push({ phase, activation: (ctx as { activation: SceneActivation }).activation });
+      };
+    const intro = scene('intro', { create: record('create'), cleanup: record('cleanup') });
+    await run({
+      scenes: [intro, scene('demo')],
+      manifest: ['intro', 'demo', 'intro'],
+      ctx: (activation) => ({ activation }),
+    });
+    // Each `intro` occurrence's hooks receive a ctx scoped to ITS
+    // activation — distinct entry index and occurrence ordinal — so a
+    // scene can own its occurrence's DOM / listeners / state. Cleanup
+    // runs in reverse mount order (intro#1 then intro#0).
+    expect(seen).toEqual([
+      { phase: 'create', activation: { sceneId: 'intro', entryIndex: 0, occurrence: 0 } },
+      { phase: 'create', activation: { sceneId: 'intro', entryIndex: 2, occurrence: 1 } },
+      { phase: 'cleanup', activation: { sceneId: 'intro', entryIndex: 2, occurrence: 1 } },
+      { phase: 'cleanup', activation: { sceneId: 'intro', entryIndex: 0, occurrence: 0 } },
+    ]);
+  });
+
+  it('isolates one occurrence of a repeated scene id and keeps the sibling (issue #99)', async () => {
+    // The first `intro` occurrence's `create` throws; the resolver
+    // isolates that occurrence (eager cleanup) and the second
+    // occurrence still mounts and runs — repeated ids do not couple
+    // failure isolation.
+    const log: string[] = [];
+    const failed: SceneFailureEvent[] = [];
+    let createCalls = 0;
+    const intro = scene('intro', {
+      create: (): void => {
+        const occurrence = createCalls;
+        createCalls += 1;
+        log.push(`create:intro#${occurrence}`);
+        if (occurrence === 0) throw new Error('first intro boom');
+      },
+      timeline: (): null => {
+        log.push('timeline:intro');
+        return null;
+      },
+      cleanup: (): void => {
+        log.push('cleanup:intro');
+      },
+    });
+    await run({
+      scenes: [intro],
+      manifest: ['intro', 'intro'],
+      onSceneFailed: (event) => failed.push(event),
+    });
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      sceneId: 'intro',
+      entryIndex: 0,
+      occurrence: 0,
+      phase: 'create',
+    });
+    // intro#0: create throws → eager cleanup. intro#1: create →
+    // timeline → final cleanup. The surviving occurrence is unaffected.
+    expect(log).toEqual([
+      'create:intro#0',
+      'cleanup:intro',
+      'create:intro#1',
+      'timeline:intro',
+      'cleanup:intro',
+    ]);
   });
 });
 
@@ -694,8 +792,8 @@ describe('resolveComposition — cleanup phase', () => {
 
   it('invokes onSceneCleaned after each scene cleanup, in reverse mount order (PUL-F024)', async () => {
     const log: string[] = [];
-    const recordCleaned = (id: string): void => {
-      log.push(`cleaned:${id}`);
+    const recordCleaned = (activation: SceneActivation): void => {
+      log.push(`cleaned:${activation.sceneId}`);
     };
     await run({
       scenes: [recordingScene('a', log), recordingScene('b', log), recordingScene('c', log)],
@@ -726,9 +824,9 @@ describe('resolveComposition — cleanup phase', () => {
         }),
       ],
       manifest: ['a', 'b'],
-      onSceneCleaned: (id) => {
-        log.push(`cleaned:${id}`);
-        if (id === 'a') throw new Error('hook-a kaboom');
+      onSceneCleaned: (activation) => {
+        log.push(`cleaned:${activation.sceneId}`);
+        if (activation.sceneId === 'a') throw new Error('hook-a kaboom');
       },
     }).catch((err: unknown) => {
       caught = err;
@@ -886,7 +984,7 @@ describe('resolveComposition — PUL-F029 scene-level error isolation', () => {
         recordingScene('c', log),
       ],
       manifest: ['a', 'b', 'c'],
-      onSceneCleaned: (id) => cleaned.push(id),
+      onSceneCleaned: (activation) => cleaned.push(activation.sceneId),
       onSceneFailed: () => undefined,
     });
     // b was eagerly cleaned (its `cleanup` ran AND `onSceneCleaned`
@@ -910,7 +1008,7 @@ describe('resolveComposition — PUL-F029 scene-level error isolation', () => {
         recordingScene('c', log),
       ],
       manifest: ['a', 'b', 'c'],
-      onSceneCleaned: (id) => cleaned.push(id),
+      onSceneCleaned: (activation) => cleaned.push(activation.sceneId),
       onSceneFailed: () => undefined,
     });
     // All three mounted; b's timeline throws at compose-time → b is

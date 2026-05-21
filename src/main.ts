@@ -188,12 +188,14 @@ const timeline = createGsapCompositionTimeline({
 // Filled in after the chrome surface is mounted (below).
 let chromeSlots: ChromeSlots | undefined;
 
+// Builds the navigation-scoped scene ctx; the loader adds each
+// occurrence's `activation` (issue #99), so the return type omits it.
 const buildCtx = (
   mode: NavigationMode,
   audio: AudioService,
   presenter?: import('./runtime/presenter').PresenterController,
-): WorkbenchSceneCtx => {
-  const base: WorkbenchSceneCtx = {
+): Omit<WorkbenchSceneCtx, 'activation'> => {
+  const base: Omit<WorkbenchSceneCtx, 'activation'> = {
     stage,
     mode,
     gsap: timelineEngine.gsap,

@@ -68,7 +68,13 @@ export type {
 // by forwarding it.
 import { createTimelineEngine } from '../../src/runtime/timeline';
 export const { gsap } = createTimelineEngine();
-export const stubCtx = (mode: NavigationMode, audio: AudioService): WorkbenchSceneCtx => ({
+// `buildCtx` builds the navigation-scoped ctx; the loader adds each
+// occurrence's `activation` (issue #99), so the stub's return type
+// omits it — same as the production `SceneLoaderOptions.buildCtx`.
+export const stubCtx = (
+  mode: NavigationMode,
+  audio: AudioService,
+): Omit<WorkbenchSceneCtx, 'activation'> => ({
   stage: null,
   mode,
   gsap,

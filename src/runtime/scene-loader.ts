@@ -41,6 +41,7 @@ import type { CompositionRegistry } from './composition-registry';
 import type {
   AssetPreloader,
   CompositionTimelineAdapter,
+  SceneActivation,
   SceneFailureEvent,
 } from './composition-resolver';
 import { describeErrorDetailed, formatSceneContext } from './error';
@@ -69,7 +70,7 @@ import {
   loadSceneNavigationTarget,
   resolveSceneNavigation,
 } from './scene-navigation';
-import type { TimelineEngine } from './timeline';
+import { type TimelineEngine, sceneSegmentLabel } from './timeline';
 
 /** The minimal subset of an HTMLElement the loader writes to. */
 export interface StageElement {
@@ -161,20 +162,36 @@ export interface WorkbenchSceneCtx {
    *
    * One service per navigation: under single-scene modes that is the
    * one scene; under `mode=present` it is shared across the whole
-   * composition slice (the resolver mounts the slice with one ctx and
-   * forbids it repeating a scene id). The sound-id namespace and the
-   * source allowlist (the slice's declared `scene.assets`) are therefore
-   * slice-scoped — multi-scene compositions pick distinct sound ids, the
-   * same stable-identity discipline scene ids obey (ADR-008 #1), and
+   * composition slice. The sound-id namespace and the source allowlist
+   * (the slice's declared `scene.assets`) are therefore slice-scoped —
+   * multi-scene compositions pick distinct sound ids, the same
+   * stable-identity discipline scene ids obey (ADR-008 #1), and
    * registering an id twice with the same definition is idempotent. A
    * scene scopes a sound to itself with `play(id, { group: <its-scene-id> })`;
-   * the loader wires the resolver's per-scene post-`cleanup(ctx)` hook
-   * to `stopGroup(sceneId)`, so the runtime (not the author) stops a
-   * scene's group when that scene's `cleanup` runs. True per-scene
-   * activation contexts (one `ctx.audio` facade per scene entry) are a
-   * documented resolver follow-up.
+   * that group is scene-scoped — shared by every occurrence of a scene
+   * id a composition slice repeats (issue #99). The loader wires the
+   * resolver's per-scene post-`cleanup(ctx)` hook so the runtime (not
+   * the author) stops a scene's group when the LAST occurrence of that
+   * scene id has been cleaned up — occurrence-safe teardown that never
+   * cuts a still-active sibling occurrence's audio.
    */
   readonly audio: AudioService;
+  /**
+   * This activation's stable per-occurrence identity (issue #99 — see
+   * {@link import('./composition-resolver').SceneActivation}):
+   * `{ sceneId, entryIndex, occurrence }`. A composition slice may
+   * reference the same scene module more than once; every occurrence
+   * runs against its OWN `ctx` carrying its own `activation`, so a
+   * scene can own its occurrence's DOM / listeners / state (e.g. derive
+   * an occurrence-scoped mount sub-root, or key any scene-local map by
+   * the activation) without colliding with a sibling occurrence of the
+   * same module. `occurrence` is `0` for the first / only use.
+   *
+   * Loader-contributed: {@link SceneLoaderOptions.buildCtx} builds the
+   * navigation-scoped fields above; the loader then adds `activation`
+   * per occurrence, which is why `buildCtx`'s return type omits it.
+   */
+  readonly activation: SceneActivation;
 }
 
 /**
@@ -194,23 +211,28 @@ export interface SceneLoaderOptions {
    * effective workbench mode derived from the URL via
    * {@link effectiveMode} (PUL-F012 / ADR-007) and the per-navigation
    * audio service (PUL-F024 / ADR-004) the loader built from
-   * {@link audioEngine}. The returned value is forwarded opaquely to
-   * every lifecycle hook (`create` / `timeline` / `cleanup`); the
-   * resolver never inspects it.
+   * {@link audioEngine}. The returned navigation-scoped value is the
+   * base the loader threads, per occurrence, into every lifecycle hook
+   * (`create` / `timeline` / `cleanup`); the resolver never inspects it.
    *
-   * Returns {@link WorkbenchSceneCtx} so the production contract
-   * "scenes receive `ctx.mode` / `ctx.audio`" is enforced at this
-   * boundary rather than relying on a single workbench bootstrap
-   * annotation. Mode dispatch lives at this seam per ADR-007 ("Mode is
-   * dispatched in the runtime core, not per scene"): the workbench
-   * supplies the stage and any other long-lived ctx members through a
-   * closure, the loader contributes the per-navigation `mode` and
-   * `audio`, and the combined value is what scenes see as `ctx`.
-   * Constructing a fresh ctx per navigation also blocks any "previous
-   * mode leaks into a `mode`-less URL" regression — every navigation
-   * re-derives mode from its own target — and a fresh audio service
-   * per navigation makes "audio survives the scene that started it"
-   * structurally impossible.
+   * Returns the navigation-scoped fields of {@link WorkbenchSceneCtx} so
+   * the production contract "scenes receive `ctx.mode` / `ctx.audio`"
+   * is enforced at this boundary rather than relying on a single
+   * workbench bootstrap annotation. Mode dispatch lives at this seam
+   * per ADR-007 ("Mode is dispatched in the runtime core, not per
+   * scene"): the workbench supplies the stage and any other long-lived
+   * ctx members through a closure, the loader contributes the
+   * per-navigation `mode` and `audio`. Constructing a fresh ctx per
+   * navigation also blocks any "previous mode leaks into a `mode`-less
+   * URL" regression — every navigation re-derives mode from its own
+   * target — and a fresh audio service per navigation makes "audio
+   * survives the scene that started it" structurally impossible.
+   *
+   * The return type omits `activation` (issue #99): `buildCtx` is
+   * called once per navigation and cannot know a per-occurrence
+   * identity. The loader adds each occurrence's `SceneActivation` on
+   * top of this base, so a composition slice that repeats a scene id
+   * gives every occurrence a distinct `ctx`.
    *
    * Not invoked when the locator is `kind: 'none'` (no scene mounts)
    * or when the navigation event is a parse-error event, because
@@ -220,7 +242,7 @@ export interface SceneLoaderOptions {
     mode: NavigationMode,
     audio: AudioService,
     presenter?: PresenterController,
-  ) => WorkbenchSceneCtx;
+  ) => Omit<WorkbenchSceneCtx, 'activation'>;
   /**
    * The audio engine (PUL-F024 / ADR-004) — a process singleton, like
    * the timeline engine (ADR-003). The loader builds a fresh
@@ -476,7 +498,9 @@ const ATTR_ERROR = 'data-pulsar-navigation-error';
 // PUL-F029 / ADR-028: per-scene lifecycle failures land on a dedicated
 // attribute so the fatal `data-pulsar-navigation-error` surface keeps
 // its "composition aborted" semantics. The value is a comma-separated
-// list of `<sceneId>:<phase>` entries in encounter order.
+// list of `<sceneId>:<phase>` entries in encounter order; a failure of
+// a repeated scene id (issue #99) namespaces the entry by occurrence
+// (`<sceneId>#<n>:<phase>` for occurrence > 0, bare for occurrence 0).
 const ATTR_SCENE_FAILURES = 'data-pulsar-scene-failures';
 
 /**
@@ -537,6 +561,29 @@ function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
   return target.composition === undefined
     ? target.scene.audio
     : target.composition.sceneSlice.flatMap((scene) => scene.audio);
+}
+
+/**
+ * Count, per scene id, how many times it occurs in the resolved
+ * navigation slice (issue #99). The loader's occurrence-safe audio
+ * teardown consults this so the scene-scoped audio group
+ * (`group: <sceneId>`, shared by every occurrence of that scene because
+ * `ctx.audio` is one slice-scoped service) is stopped exactly once —
+ * when the LAST occurrence of that id has been cleaned up — rather than
+ * once per occurrence. Stopping it on the first occurrence's cleanup
+ * would tear down a still-active sibling occurrence's audio. For a
+ * single-occurrence scene the count is `1`, so teardown fires on its
+ * only cleanup, unchanged. Pure function (no closure captures), hoisted
+ * to module scope so the loader factory does not recreate it per
+ * instance.
+ */
+function countSceneOccurrences(target: SceneNavigationTarget): Map<string, number> {
+  const scenes = target.composition === undefined ? [target.scene] : target.composition.sceneSlice;
+  const counts = new Map<string, number>();
+  for (const scene of scenes) {
+    counts.set(scene.id, (counts.get(scene.id) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /**
@@ -665,10 +712,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * ADR-028: no raw causes, stacks, scene objects, DOM, captions,
    * headers, cookies, env, auth values).
    *
-   * The handler accumulates `<sceneId>:<phase>` entries into a Set so
+   * The handler accumulates occurrence-namespaced entries into a Set so
    * a scene whose `create` AND `cleanup` both throw shows up once per
-   * (id, phase) tuple in encounter order, not twice for the same
-   * tuple.
+   * (id, occurrence, phase) tuple in encounter order, not twice for the
+   * same tuple — and so two occurrences of one repeated scene id stay
+   * distinguishable (issue #99).
    *
    * Two-tier suppression:
    *  - **Stage attribute writes** are suppressed when the
@@ -690,13 +738,18 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const entries: string[] = [];
     const seen = new Set<string>();
     const renderMessage = (event: SceneFailureEvent): string => {
-      // PUL-Q006 / ADR-028: scene id + lifecycle phase come from the
-      // canonical `formatSceneContext` helper in `./error.ts` so any
-      // future PUL-Q006 context (composition entry, occurrence index,
-      // mode) gets added there once instead of re-templated at every
-      // public-surface seam (codex preflight: "do not satisfy the
-      // requirement by parsing Error.message").
-      const prefix = formatSceneContext({ sceneId: event.sceneId, phase: event.phase });
+      // PUL-Q006 / ADR-028: scene id, lifecycle phase, and the
+      // per-occurrence ordinal (issue #99) come from the canonical
+      // `formatSceneContext` helper in `./error.ts` so any future
+      // PUL-Q006 context gets added there once instead of re-templated
+      // at every public-surface seam (codex preflight: "do not satisfy
+      // the requirement by parsing Error.message"). Occurrence 0
+      // renders bare, so a single-occurrence diagnostic is unchanged.
+      const prefix = formatSceneContext({
+        sceneId: event.sceneId,
+        phase: event.phase,
+        occurrence: event.occurrence,
+      });
       // Codex review cycle 2: render the ABSOLUTE composition entry
       // index (slice start + resolver-level slice-relative index).
       // The resolver's `event.entryIndex` is relative to the manifest
@@ -713,7 +766,13 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     return (event: SceneFailureEvent): void => {
       if (disposed) return;
       if (!signal.aborted) {
-        const key = `${event.sceneId}:${event.phase}`;
+        // issue #99: namespace the entry by the failing occurrence so
+        // two failures of the same scene id in the same phase are
+        // distinguishable. `sceneSegmentLabel` is the canonical
+        // scene+occurrence namer the timeline composer also uses —
+        // occurrence 0 renders bare (`<sceneId>:<phase>`), so a
+        // single-occurrence failures attribute is unchanged.
+        const key = `${sceneSegmentLabel(event.sceneId, event.occurrence)}:${event.phase}`;
         if (!seen.has(key)) {
           seen.add(key);
           entries.push(key);
@@ -1099,7 +1158,12 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // rollback-then-surfaceError pattern so a throwing builder does
     // not leave stale stage attrs or skip the queue's error sink.
     const outputPolicy = audioOutputPolicyFor(mode);
-    let ctx: unknown;
+    // issue #99: the loader threads a per-occurrence ctx factory rather
+    // than a single ctx. `buildCtx` builds the navigation-scoped base
+    // (stage / gsap / audio / mode / presenter / chrome) once; the
+    // factory adds each occurrence's `SceneActivation` so a slice that
+    // repeats a scene id gives every occurrence a distinct `ctx`.
+    let buildSceneCtx: (activation: SceneActivation) => unknown;
     let audio: AudioService;
     // Per-navigation presenter pipe is built BEFORE buildCtx so the
     // controller can be threaded onto `ctx.presenter` for scenes that
@@ -1120,7 +1184,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       const pipe = buildPresenterPipe(mode, controller, audio);
       presenter = pipe.presenter;
       presenterAbort = pipe.presenterAbort;
-      ctx = options.buildCtx(mode, audio, presenter);
+      const baseCtx = options.buildCtx(mode, audio, presenter);
+      buildSceneCtx = (activation) => ({ ...baseCtx, activation });
     } catch (err) {
       // Abort the freshly-created controller before bailing so any
       // signal-tied resource (the preloader factory's fetch listener,
@@ -1193,10 +1258,25 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ? undefined
         : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
     );
+    // PUL-F024 / ADR-004 + issue #99: occurrence-safe per-scene audio
+    // teardown. A scene scopes a sound to itself with
+    // `play(id, { group: <its-scene-id> })`; that group is shared by
+    // every occurrence of the scene in the slice (`ctx.audio` is one
+    // slice-scoped service). The runtime stops the group only when the
+    // LAST occurrence of that id has been cleaned up — counting down
+    // per scene id — so an earlier occurrence's cleanup never stops a
+    // still-active sibling occurrence's audio. A single-occurrence
+    // scene counts `1` and tears down on its only cleanup, unchanged.
+    const remainingOccurrences = countSceneOccurrences(resolved);
+    const onSceneCleaned = (activation: SceneActivation): void => {
+      const left = (remainingOccurrences.get(activation.sceneId) ?? 1) - 1;
+      remainingOccurrences.set(activation.sceneId, left);
+      if (left <= 0) audio.stopGroup(activation.sceneId);
+    };
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 21). runLifecycle wires every per-target option (preload, timeline, abort, presenter, screenshot, error envelope) into the scene-loader lifecycle; refactor tracked in docs/design/complexity-backlog.md.
     const runLifecycle = (): Promise<void> =>
       loadSceneNavigationTarget(resolved, {
-        ctx,
+        ctx: buildSceneCtx,
         preloadAssets,
         timeline: options.timeline,
         signal: controller.signal,
@@ -1212,12 +1292,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         // through the same diagnostic channel as every other
         // navigation-level error (codex review, cycle 2).
         ...(presenter === undefined ? {} : { presenter, onPresenterError: onError }),
-        // PUL-F024 / ADR-004: the runtime stops the audio group a scene
-        // scoped to itself (`group: <its-scene-id>`) when that scene's
-        // `cleanup(ctx)` runs — runtime-guaranteed per-scene teardown,
-        // not author discipline. (`stopGroup` is a no-op when the group
-        // is empty or the service is already disposed.)
-        onSceneCleaned: (sceneId) => audio.stopGroup(sceneId),
+        // PUL-F024 / ADR-004 + issue #99: runtime-guaranteed per-scene
+        // audio teardown — see `onSceneCleaned` above. (`stopGroup` is
+        // a no-op when the group is empty or the service is disposed.)
+        onSceneCleaned,
         // PUL-F029 / ADR-028: scene-level error isolation. Each
         // isolated `create` / `timeline` / `cleanup` failure becomes
         // a stage attribute entry + `onError` call without halting
