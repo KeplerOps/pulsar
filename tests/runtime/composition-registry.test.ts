@@ -29,7 +29,7 @@ describe('createCompositionRegistry', () => {
       expect(registry.has('full-talk')).toBe(true);
       // The registry stores a deep-frozen copy (immutable-registry
       // contract), so identity differs but contents match.
-      expect(registry.get('full-talk')).toEqual(fullTalk);
+      expect(registry.get('full-talk').manifest).toEqual(fullTalk);
     });
 
     it('registers multiple compositions and exposes each by id', () => {
@@ -38,8 +38,8 @@ describe('createCompositionRegistry', () => {
         { id: 'trailer', manifest: trailer },
       ]);
       expect(registry.size).toBe(2);
-      expect(registry.get('full-talk')).toEqual(fullTalk);
-      expect(registry.get('trailer')).toEqual(trailer);
+      expect(registry.get('full-talk').manifest).toEqual(fullTalk);
+      expect(registry.get('trailer').manifest).toEqual(trailer);
       expect(registry.ids()).toEqual(['full-talk', 'trailer']);
     });
 
@@ -128,10 +128,10 @@ describe('createCompositionRegistry', () => {
       // contradicting the immutable-registry contract).
       const manifest = ['scene-a', 'scene-b'] as unknown as CompositionManifest;
       const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
-      const stored = registry.get('talk');
+      const stored = registry.get('talk').manifest;
       expect(Object.isFrozen(stored)).toBe(true);
-      expect(() => (stored as string[]).push('scene-c')).toThrow();
-      const writable = stored as string[];
+      expect(() => (stored as unknown as string[]).push('scene-c')).toThrow();
+      const writable = stored as unknown as string[];
       expect(() => {
         writable[0] = 'mutated';
       }).toThrow();
@@ -143,7 +143,7 @@ describe('createCompositionRegistry', () => {
         { id: 'scene-b', behavior: { fade: true } },
       ] as unknown as CompositionManifest;
       const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
-      const stored = registry.get('talk');
+      const stored = registry.get('talk').manifest;
       expect(Object.isFrozen(stored[0])).toBe(true);
       expect(Object.isFrozen(stored[1])).toBe(true);
       const entry = stored[1] as unknown as { id: string; behavior: { fade: boolean } };
@@ -161,7 +161,7 @@ describe('createCompositionRegistry', () => {
         { id: 'scene-a', range: ['intro', 'hook'] as const },
       ] as unknown as CompositionManifest;
       const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
-      const stored = registry.get('talk');
+      const stored = registry.get('talk').manifest;
       const entry = stored[0] as unknown as { range: string[] };
       expect(Object.isFrozen(entry.range)).toBe(true);
       expect(() => {
@@ -183,7 +183,7 @@ describe('createCompositionRegistry', () => {
         },
       ] as unknown as CompositionManifest;
       const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
-      const stored = registry.get('talk');
+      const stored = registry.get('talk').manifest;
       const entry = stored[0] as unknown as {
         behavior: { fade: { duration: number; ease: string[] }; flags: string[] };
       };
@@ -215,13 +215,13 @@ describe('createCompositionRegistry', () => {
         { id: 'scene-a', behavior: callerBehavior },
       ] as unknown as CompositionManifest;
       const registry = createCompositionRegistry([{ id: 'talk', manifest }]);
-      const before = registry.get('talk');
+      const before = registry.get('talk').manifest;
 
       // Caller mutates THEIR view (which still has live references).
       callerBehavior.fade.duration = 9999;
       callerBehavior.flags.push('c');
 
-      const after = registry.get('talk');
+      const after = registry.get('talk').manifest;
       const stored = after[0] as unknown as {
         behavior: { fade: { duration: number; ease: string[] }; flags: string[] };
       };
@@ -241,7 +241,53 @@ describe('createCompositionRegistry', () => {
       // Caller mutates their copy after registration.
       manifest.push('scene-c');
       manifest[0] = 'mutated';
-      expect(registry.get('talk')).toEqual(['scene-a', 'scene-b']);
+      expect(registry.get('talk').manifest).toEqual(['scene-a', 'scene-b']);
+    });
+  });
+
+  describe('composition audio bed (PUL-F014)', () => {
+    it('stores a declared audio bed alongside the manifest', () => {
+      const registry = createCompositionRegistry([
+        { id: 'talk', manifest: fullTalk, audioBed: { src: '/audio/bed.webm', volume: 0.6 } },
+      ]);
+      expect(registry.get('talk').audioBed).toEqual({ src: '/audio/bed.webm', volume: 0.6 });
+    });
+
+    it('leaves audioBed undefined for a composition that declared none', () => {
+      const registry = createCompositionRegistry([{ id: 'talk', manifest: fullTalk }]);
+      expect(registry.get('talk').audioBed).toBeUndefined();
+    });
+
+    it('deep-freezes the stored audio bed so caller-side mutation cannot leak in', () => {
+      const bed = { src: ['/audio/bed.webm'] };
+      const registry = createCompositionRegistry([
+        { id: 'talk', manifest: fullTalk, audioBed: bed },
+      ]);
+      const stored = registry.get('talk').audioBed;
+      expect(stored).not.toBeUndefined();
+      expect(Object.isFrozen(stored)).toBe(true);
+      // Caller mutates their own reference after registration.
+      bed.src.push('/audio/other.webm');
+      expect(registry.get('talk').audioBed?.src).toEqual(['/audio/bed.webm']);
+    });
+
+    it('freezes the RegisteredComposition wrapper itself', () => {
+      const registry = createCompositionRegistry([
+        { id: 'talk', manifest: fullTalk, audioBed: { src: '/audio/bed.webm' } },
+      ]);
+      expect(Object.isFrozen(registry.get('talk'))).toBe(true);
+    });
+
+    it('rejects a malformed audio bed declaration with the audio-bed grammar', () => {
+      expect(() =>
+        createCompositionRegistry([
+          {
+            id: 'talk',
+            manifest: fullTalk,
+            audioBed: { volume: 0.5 },
+          } as unknown as CompositionRegistryEntry,
+        ]),
+      ).toThrow(/audio bed/);
     });
   });
 });

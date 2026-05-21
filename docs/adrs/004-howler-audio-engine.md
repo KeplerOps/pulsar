@@ -200,6 +200,46 @@ PUL-F024 lands the runtime side in `src/runtime/audio.ts`:
   their own timeline callbacks. Wiring scrub's monotonic-forward cue
   gate to the audio service is a follow-up that extends `AudioService`.
 
+## Subsequent Updates
+
+### 2026-05-21: Composition audio bed (PUL-F014)
+
+The "background beds" the Context names are now a first-class concept
+on this seam. A composition may declare a single composition-level
+audio bed — a continuous looping source that belongs to the
+composition, not to any one scene — at the composition-registration
+boundary (`CompositionRegistryEntry.audioBed`, an `AudioBedDeclaration`
+of `{ src, volume? }`). The per-navigation `AudioService` gains two
+construction options:
+
+- `bed` — the resolved composition's `AudioBedDeclaration`. When
+  supplied, `createAudioService` starts it looping at construction and
+  tears it down with `stopAll()` / abort, exactly like every other
+  sound. The bed is registered under a non-kebab internal key, so it is
+  unreachable through the scene-facing `load` / `play` / `stop` API —
+  composition-level bed playback stays distinct from scene-owned
+  `ctx.audio` playback.
+- `bedSuppressed` — a bed-specific scope, deliberately separate from
+  `AudioOutputPolicy`. The loader sets it for `mode=standalone`
+  (PUL-F014 / ADR-017): a scene inspected on its own runs as if no
+  surrounding composition existed, so the bed never plays. Scene-owned
+  `ctx.audio` is unaffected — unlike `outputPolicy: 'silent'`, which
+  would also silence the scene's own audio.
+
+Bed sources pass the same `resolveAssetUrl()` scheme allowlist scene
+sounds pass, but their membership allowlist is the bed declaration's
+own `src` — **not** the scene-facing `allowedSources` (the slice's
+`scene.audio`). The bed declaration is authoritative for the bed
+exactly as `scene.audio` is for scenes. Routing the bed source through
+`allowedSources` would expose the bed URL to `ctx.audio.load()`,
+letting a scene register and replay the bed as its own sound even
+under `mode=standalone` where the bed is suppressed; gating the bed
+against its own declaration keeps the scene allowlist limited to
+`scene.audio`. The runtime validation pass (PUL-F028) rejects a
+malformed `audioBed` at boot. A future crossfade / ducking / multi-bed
+need extends `AudioBedDeclaration` at this one seam rather than
+scattering bed flags.
+
 ## Related ADRs
 
 - [ADR-002](002-scene-registry-and-compositions.md) — defines where
@@ -208,3 +248,6 @@ PUL-F024 lands the runtime side in `src/runtime/audio.ts`:
   most audio cues fire.
 - [ADR-008](008-agent-native-authoring.md) — #1 kebab ids, #5 the only
   asset inventory is `scene.assets`.
+- [ADR-017](017-workbench-mode-standalone.md) — `mode=standalone`
+  suppresses the composition audio bed through the `bedSuppressed`
+  scope added here.

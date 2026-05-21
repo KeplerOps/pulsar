@@ -807,4 +807,49 @@ describe('validateRuntime (PUL-Q005 — actionability)', () => {
       }
     });
   });
+
+  describe('PUL-F014 — composition audio bed shape', () => {
+    it('reports composition-audio-bed-invalid for a bed missing its src', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'deck', manifest: ['real'], audioBed: { volume: 0.5 } }],
+      });
+      expect(findingCodes(findings)).toEqual(['composition-audio-bed-invalid']);
+      expect(findings[0]?.compositionId).toBe('deck');
+      // Self-contained location: composition id is prepended to the
+      // message, parallel to the manifest-shape finding.
+      expect(findings[0]?.message).toMatch(/^composition "deck":/);
+      expect(findings[0]?.message).toMatch(/audio bed/);
+    });
+
+    it('reports composition-audio-bed-invalid for a non-object bed', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'deck', manifest: ['real'], audioBed: 'oops' }],
+      });
+      expect(findingCodes(findings)).toEqual(['composition-audio-bed-invalid']);
+    });
+
+    it('reports the bed finding independently of a malformed manifest', () => {
+      // A bad bed must not suppress the manifest diagnostic, and a bad
+      // manifest must not suppress the bed diagnostic.
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [{ id: 'deck', manifest: 'not an array', audioBed: { volume: 1 } }],
+      });
+      const codes = findingCodes(findings);
+      expect(codes).toContain('composition-audio-bed-invalid');
+      expect(codes).toContain('composition-manifest-invalid');
+    });
+
+    it('produces no finding for a well-formed audio bed', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [
+          { id: 'deck', manifest: ['real'], audioBed: { src: '/audio/bed.webm', volume: 0.5 } },
+        ],
+      });
+      expect(findings).toEqual([]);
+    });
+  });
 });

@@ -29,6 +29,7 @@ import {
   type NavigationTarget,
   buildScene,
   buildStage,
+  compositionSceneTarget,
   compositionTarget,
   createCompositionRegistry,
   createSceneLoader,
@@ -1191,5 +1192,134 @@ describe('scene loader — PUL-F030 audio unlock gate (ADR-029)', () => {
       await loader.idle();
       expect(calls).toHaveLength(1);
     });
+  });
+});
+
+/* -------------------------------------------------------------------- *
+ *  Composition audio bed — PUL-F014 / ADR-004
+ * -------------------------------------------------------------------- */
+
+describe('scene loader — composition audio bed (PUL-F014 / ADR-004)', () => {
+  // PUL-F014: in `mode=standalone` the runtime renders a single scene
+  // "as if no surrounding composition existed" — the composition audio
+  // bed is suppressed. Under every other mode it plays underneath the
+  // slice.
+  const BED_SRC = '/audio/bed.webm';
+  const bedComposition = () =>
+    createCompositionRegistry([
+      { id: 'deck', manifest: ['head'], audioBed: { src: BED_SRC, volume: 0.5 } },
+    ]);
+
+  it('plays the composition audio bed looping for a composition navigation', async () => {
+    const audio = recordingAudioEngine();
+    const { adapter } = buildRecordingUnlockAdapter('resolve');
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+      compositions: bedComposition(),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      audioUnlockAdapter: adapter,
+    });
+    await loader.handle(compositionTarget('deck'));
+    await loader.idle();
+    // The bed is the one sound the navigation created — the scene
+    // itself registers no audio.
+    expect(audio.created).toHaveLength(1);
+    expect(audio.created[0]?.src).toEqual([BED_SRC]);
+    // It was marked looping (composition-level continuous bed).
+    expect(audio.calls.some((c) => c.method === 'loop')).toBe(true);
+  });
+
+  it('suppresses the composition audio bed under mode=standalone', async () => {
+    const audio = recordingAudioEngine();
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+      compositions: bedComposition(),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+    });
+    await loader.handle({
+      locator: { kind: 'composition', composition: 'deck' },
+      mode: 'standalone',
+    });
+    await loader.idle();
+    // PUL-F014: standalone runs the scene as if no surrounding
+    // composition existed — the bed sound is never created.
+    expect(audio.created).toHaveLength(0);
+  });
+
+  it('plays the bed for a composition+scene standalone sibling mode but not standalone itself', async () => {
+    // Same composition, two navigations: present plays the bed,
+    // standalone suppresses it — the only difference is the mode.
+    const present = recordingAudioEngine();
+    const standalone = recordingAudioEngine();
+    const { adapter } = buildRecordingUnlockAdapter('resolve');
+    const make = (engine: AudioEngine) =>
+      createSceneLoader({
+        scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+        compositions: bedComposition(),
+        stage: null,
+        buildCtx: stubCtx,
+        createPreloader: () => () => Promise.resolve(),
+        timeline: noopTimeline,
+        audioEngine: engine,
+        audioUnlockAdapter: adapter,
+      });
+    const presentLoader = make(present.engine);
+    await presentLoader.handle(compositionSceneTarget('deck', 'head'));
+    await presentLoader.idle();
+    const standaloneLoader = make(standalone.engine);
+    await standaloneLoader.handle({
+      locator: { kind: 'composition-scene', composition: 'deck', scene: 'head' },
+      mode: 'standalone',
+    });
+    await standaloneLoader.idle();
+    expect(present.created).toHaveLength(1);
+    expect(standalone.created).toHaveLength(0);
+  });
+
+  it('plays no bed for a composition that declared none', async () => {
+    const audio = recordingAudioEngine();
+    const { adapter } = buildRecordingUnlockAdapter('resolve');
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+      compositions: createCompositionRegistry([{ id: 'deck', manifest: ['head'] }]),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      audioUnlockAdapter: adapter,
+    });
+    await loader.handle(compositionTarget('deck'));
+    await loader.idle();
+    expect(audio.created).toHaveLength(0);
+  });
+
+  it('tears the composition audio bed down when the navigation completes', async () => {
+    const audio = recordingAudioEngine();
+    const { adapter } = buildRecordingUnlockAdapter('resolve');
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+      compositions: bedComposition(),
+      stage: null,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      audioUnlockAdapter: adapter,
+    });
+    await loader.handle(compositionTarget('deck'));
+    await loader.idle();
+    loader.dispose();
+    // The per-navigation audio service stopAll()s on dispose — the bed
+    // is unloaded with it, so the loop never survives the navigation.
+    expect(audio.calls.some((c) => c.method === 'unload')).toBe(true);
   });
 });

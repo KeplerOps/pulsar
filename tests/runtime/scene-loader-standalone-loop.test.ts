@@ -42,8 +42,7 @@ describe('createSceneLoader — standalone & loop modes (PUL-F008)', () => {
     // and audio bed suppressed; the scene SHALL run as if no surrounding
     // composition existed.
     //
-    // Materially-implementable parts of the statement that this block
-    // pins:
+    // Parts of the statement that this block pins:
     //   - "Render a single scene" / "run as if no surrounding
     //     composition existed" — composition / composition+scene /
     //     composition+index targets resolve normally (composition
@@ -54,25 +53,25 @@ describe('createSceneLoader — standalone & loop modes (PUL-F008)', () => {
     //     to; no later `runTimeline` call is made for the dropped
     //     slice. The suppression is structural.
     //   - `ctx.mode === 'standalone'` is exposed to every lifecycle
-    //     hook of the head scene — the seam future chrome / audio
-    //     surfaces (ADR-004 / future workbench-shell requirement) will
-    //     read to decide their own suppression behavior. Today there is
-    //     no chrome or audio bed in the repo to suppress, so no
-    //     end-to-end suppression test is possible until those surfaces
-    //     land.
+    //     hook of the head scene.
     //   - No `data-pulsar-mode-*` suppression attribute is preemptively
     //     written under `standalone` (parity with ADR-016's invariant
     //     for `mode=present`; future modes are free to use that
     //     namespace if they actually need it).
     //
-    // PUL-F014 stays DRAFT after this PR (ADR-017 records the
-    // boundary; following the ADR-016 / PUL-F013 precedent). The
-    // single-scene execution mechanism and the `ctx.mode` seam ARE
-    // materially shipped; the three named suppression surfaces
-    // (chrome, audio bed, inter-scene transitions) gate the
-    // DRAFT → ACTIVE transition — each must land as a real surface
-    // that actively reads `ctx.mode === 'standalone'` and suppresses,
-    // with end-to-end tests alongside these seam tests.
+    // The other two named suppression surfaces are now real and pinned
+    // in their own subsystem suites:
+    //   - Chrome suppression — `chromeVisibilityFor('standalone')`
+    //     returns `'hidden'` (`workbench-chrome.test.ts`); the loader
+    //     dispatches it pre-lifecycle (`scene-loader-chrome.test.ts`).
+    //   - Audio-bed suppression — the loader builds the per-navigation
+    //     audio service with `bedSuppressed` set, so a composition's
+    //     audio bed never plays under standalone
+    //     (`scene-loader-audio.test.ts` PUL-F014 block, `audio.test.ts`
+    //     composition-audio-bed block).
+    //
+    // With all three suppression surfaces shipped, PUL-F014 is ACTIVE;
+    // ADR-017 records the architecture boundary.
 
     const standaloneCompositionTarget = (composition: string): NavigationTarget => ({
       locator: { kind: 'composition', composition },

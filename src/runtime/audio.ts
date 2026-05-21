@@ -529,6 +529,40 @@ export type AudioCueLogEntry =
   | AudioCueLogStop
   | AudioCueLogStopGroup;
 
+/**
+ * A composition-level audio bed (PUL-F014 / ADR-004): a single
+ * continuous looping source that belongs to the *composition*, not to
+ * any one scene. Unlike a `scene.audio` sound reached through
+ * `ctx.audio`, the bed is started by the runtime when a composition
+ * navigation begins and runs underneath every scene in the slice — an
+ * ambient pad, room tone, or musical bed. It loops for the lifetime of
+ * the navigation and is torn down with the audio service.
+ *
+ * `mode=standalone` suppresses the bed entirely (PUL-F014): a scene
+ * inspected on its own runs "as if no surrounding composition
+ * existed," so the surrounding bed must not play. Suppression is the
+ * {@link AudioServiceOptions.bedSuppressed} scope — deliberately
+ * distinct from {@link AudioOutputPolicy} `'silent'`, which would also
+ * silence the scene's own audio.
+ *
+ * The bed has no sprites and no groups: it is one looping source. A
+ * future crossfade / ducking / multi-bed need extends this
+ * declaration at this one seam rather than scattering bed flags.
+ */
+export interface AudioBedDeclaration {
+  /**
+   * Source URL, or an ordered codec-preference fallback list (same
+   * shape as {@link SoundDefinition.src}). Every URL passes the same
+   * scheme allowlist and {@link AudioServiceOptions.allowedSources}
+   * membership check scene sounds pass.
+   */
+  readonly src: string | readonly string[];
+  /**
+   * Optional playback volume in `[0, 1]`. Omit for the engine default.
+   */
+  readonly volume?: number;
+}
+
 /** Construction options for {@link createAudioService}. */
 export interface AudioServiceOptions {
   /**
@@ -568,6 +602,27 @@ export interface AudioServiceOptions {
   readonly allowedSources?: Iterable<string>;
   /** Sink for non-fatal async audio errors (load / play failure). Defaults to a no-op. */
   readonly onError?: (err: unknown) => void;
+  /**
+   * Composition-level audio bed (PUL-F014 / ADR-004). When supplied —
+   * and not suppressed — the service starts it looping at construction
+   * time and tears it down with `stopAll()`. The loader passes the
+   * resolved composition's {@link AudioBedDeclaration}; a non-
+   * composition navigation omits it. The bed is internal: it is NOT
+   * reachable through any {@link AudioService} method, so scenes (which
+   * receive the service as `ctx.audio`) cannot start, observe, or stop
+   * it — composition-level bed playback stays distinct from scene-owned
+   * `ctx.audio` playback.
+   */
+  readonly bed?: AudioBedDeclaration;
+  /**
+   * Suppress the composition audio {@link bed} entirely (PUL-F014).
+   * When `true`, the bed is never loaded or played — the loader sets
+   * this for `mode=standalone`, where a scene runs as if no surrounding
+   * composition existed. Defaults to `false`. This is a bed-specific
+   * scope: scene-owned `ctx.audio` playback is unaffected, unlike
+   * {@link AudioOutputPolicy} `'silent'`.
+   */
+  readonly bedSuppressed?: boolean;
 }
 
 /**
@@ -619,6 +674,17 @@ export interface AudioService {
 
 const GAIN_MIN = 0;
 const GAIN_MAX = 1;
+
+/**
+ * `sounds`-map key the composition audio bed (PUL-F014) is registered
+ * under. Deliberately NOT a valid kebab identifier: every scene-facing
+ * `load` / `play` / `stop` runs `assertSoundId`, so no scene can ever
+ * name, collide with, or reach the bed entry — bed playback stays
+ * distinct from scene-owned `ctx.audio` playback. Registering it in the
+ * shared `sounds` map still gives the bed `stopAll()` / abort teardown
+ * for free.
+ */
+const BED_SOUND_KEY = 'composition audio bed';
 
 interface RegisteredSound {
   readonly handle: AudioSoundHandle;
@@ -679,6 +745,32 @@ function assertSoundDefinition(
     throw new AudioSourceError(
       `audio sound "${soundId}" "src" must be a string or array of strings`,
     );
+  }
+}
+
+/**
+ * Validate an {@link AudioBedDeclaration} payload shape at the runtime
+ * boundary — composition registrations can be plain JS, so the static
+ * type does not hold. `src` must be a string or array; `volume` (if
+ * present) must be a number. Deep source validation (scheme allowlist,
+ * `allowedSources` membership) and the `[0, 1]` volume range check run
+ * later inside the audio service against the same gates scene sounds
+ * pass — this is only the shallow shape guard, mirroring
+ * {@link assertSoundDefinition}. Exported so the composition-
+ * registration boundary (PUL-F003) and the runtime validation pass
+ * (PUL-F028) reject a malformed bed up front.
+ */
+export function assertAudioBedDeclaration(value: unknown): asserts value is AudioBedDeclaration {
+  if (!isPlainRecord(value)) {
+    throw new AudioError('audio bed declaration must be an object with at least a "src" field');
+  }
+  const src = (value as { src?: unknown }).src;
+  if (typeof src !== 'string' && !Array.isArray(src)) {
+    throw new AudioSourceError('audio bed "src" must be a string or array of strings');
+  }
+  const volume = (value as { volume?: unknown }).volume;
+  if (volume !== undefined && typeof volume !== 'number') {
+    throw new AudioRangeError(`audio bed "volume" must be a number; got ${typeof volume}`);
   }
 }
 
@@ -797,6 +889,56 @@ const assertSpriteMap = (soundId: string, sprite: unknown): void => {
   }
 };
 
+/**
+ * Validate one audio source URL for a registration (a scene sound or
+ * the composition bed). Three checks, in order:
+ *
+ *  1. The URL is a non-empty string — scene modules can be plain JS,
+ *     so the static type does not hold.
+ *  2. The URL resolves under {@link DEFAULT_ALLOWED_SCHEMES}.
+ *     Defense-in-depth: even when an allowlist is supplied, the audio
+ *     service runs the same default scheme allowlist the preloader
+ *     uses by default — so a no-op or weak preloader cannot let
+ *     `file:` / `//host` URLs through. Threading the preloader's exact
+ *     `baseUrl` / `allowedSchemes` policy into the audio service is a
+ *     documented follow-up; for now the service is at least as
+ *     restrictive as `DEFAULT_ALLOWED_SCHEMES`.
+ *  3. When `allowedForSource` is non-null, the URL is a member of it.
+ *     PUL-F030 / ADR-029: `scene.audio` is the audio-source allowlist
+ *     for scene sounds; for the composition bed it is the bed's own
+ *     declared `src`. A URL outside the registration's allowlist is
+ *     rejected — even if it happens to be in `scene.assets`. This is
+ *     what makes the present-mode unlock gate predicate and the
+ *     runtime audio-source allowlist agree, and what keeps the bed
+ *     source out of the scene-facing `ctx.audio.load()` allowlist.
+ *
+ * Hoisted to module scope (pure — no closure captures) so
+ * `normalizeSources` stays within Sonar's / Biome's cognitive-
+ * complexity budget (the per-URL branching is the bulk of it).
+ */
+function assertValidAudioUrl(
+  soundId: string,
+  url: unknown,
+  allowedForSource: ReadonlySet<string> | null,
+): asserts url is string {
+  if (typeof url !== 'string' || url === '') {
+    throw new AudioSourceError(`audio sound "${soundId}" source must be a non-empty URL string`);
+  }
+  try {
+    resolveAssetUrl(url, undefined, DEFAULT_ALLOWED_SCHEMES);
+  } catch (cause) {
+    throw new AudioSourceError(
+      `audio sound "${soundId}" source "${url}" is invalid: ${describeError(cause)}`,
+      { cause },
+    );
+  }
+  if (allowedForSource !== null && !allowedForSource.has(url)) {
+    throw new AudioSourceError(
+      `audio sound "${soundId}" source "${url}" is not a declared audio source — list it in scene.audio (and ensure it is also in scene.assets so the preloader warms it) per PUL-F030 / ADR-029`,
+    );
+  }
+}
+
 /** Build the per-navigation {@link AudioService} over `engine`. */
 /**
  * Render an unknown value for the boundary-validation error message.
@@ -891,6 +1033,22 @@ export function createAudioService(
   if (options.onCue !== undefined && typeof options.onCue !== 'function') {
     throw new AudioError(
       `audio onCue must be a function or omitted; got ${describeRawOption(options.onCue)}`,
+    );
+  }
+  // Same boundary discipline for the PUL-F014 composition audio bed:
+  // the loader passes a registry-validated declaration, but a plain-JS
+  // / direct caller could pass a malformed `bed` or a non-boolean
+  // `bedSuppressed`. Validate the shape up front; deep source / volume
+  // validation runs inside `startBed` against the same gates scene
+  // sounds pass.
+  if (options.bed !== undefined) {
+    assertAudioBedDeclaration(options.bed);
+  }
+  if (options.bedSuppressed !== undefined && typeof options.bedSuppressed !== 'boolean') {
+    throw new AudioError(
+      `audio bedSuppressed must be a boolean or omitted; got ${describeRawOption(
+        options.bedSuppressed,
+      )}`,
     );
   }
   // Engine sounds are constructed muted under both 'silent' and
@@ -1002,8 +1160,23 @@ export function createAudioService(
     }
   };
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 17). Source list normalizer enforces non-empty + per-item scheme/type validation with detailed error envelopes; refactor tracked in docs/design/complexity-backlog.md.
-  const normalizeSources = (soundId: string, src: string | readonly string[]): string[] => {
+  // `normalizeSources` validates a registration's source list:
+  // non-empty, then each item through `assertValidAudioUrl`. The
+  // `allowedForSource` argument is the membership allowlist for THIS
+  // registration: scene sounds pass `allowed` (the slice's declared
+  // `scene.audio`); the composition bed (PUL-F014) passes its own
+  // declared `src` list via `startBed` — the bed declaration is
+  // authoritative for the bed exactly as `scene.audio` is for scenes.
+  // Keeping the gate per-registration is what stops the bed source
+  // from leaking into the scene-facing `ctx.audio.load()` allowlist
+  // (codex review, cycle 1 — "composition bed source leaks into scene
+  // audio allowlist"). `null` skips the membership check
+  // (non-composition / test callers); scheme validation still applies.
+  const normalizeSources = (
+    soundId: string,
+    src: string | readonly string[],
+    allowedForSource: ReadonlySet<string> | null,
+  ): string[] => {
     const list = typeof src === 'string' ? [src] : [...src];
     if (list.length === 0) {
       throw new AudioSourceError(
@@ -1011,39 +1184,7 @@ export function createAudioService(
       );
     }
     for (const url of list) {
-      if (typeof url !== 'string' || url === '') {
-        throw new AudioSourceError(
-          `audio sound "${soundId}" source must be a non-empty URL string`,
-        );
-      }
-      // Defense-in-depth: even when `allowedSources` is provided (the
-      // slice's declared `scene.audio`, every entry of which is also
-      // in `scene.assets` so the preloader warmed it), the audio
-      // service also runs the same default scheme allowlist the
-      // preloader uses by default — so a no-op or weak preloader
-      // cannot let `file:` / `//host` URLs through. Threading the
-      // preloader's exact `baseUrl` / `allowedSchemes` policy into
-      // the audio service is a documented follow-up; for now the
-      // service is at least as restrictive as `DEFAULT_ALLOWED_SCHEMES`.
-      try {
-        resolveAssetUrl(url, undefined, DEFAULT_ALLOWED_SCHEMES);
-      } catch (cause) {
-        throw new AudioSourceError(
-          `audio sound "${soundId}" source "${url}" is invalid: ${describeError(cause)}`,
-          { cause },
-        );
-      }
-      if (allowed !== null && !allowed.has(url)) {
-        // PUL-F030 / ADR-029: `scene.audio` is the audio-source
-        // allowlist. A URL outside the slice's declared `scene.audio`
-        // is rejected — even if it happens to be in `scene.assets`.
-        // This is what makes the present-mode unlock gate predicate
-        // and the runtime audio-source allowlist agree: a scene
-        // cannot quietly register audio it did not also declare.
-        throw new AudioSourceError(
-          `audio sound "${soundId}" source "${url}" is not a declared audio source — list it in scene.audio (and ensure it is also in scene.assets so the preloader warms it) per PUL-F030 / ADR-029`,
-        );
-      }
+      assertValidAudioUrl(soundId, url, allowedForSource);
     }
     return list;
   };
@@ -1057,12 +1198,63 @@ export function createAudioService(
     return `audio sound "${soundId}" has no sprite "${sprite}"${known}`;
   };
 
+  /**
+   * Start the composition audio bed (PUL-F014 / ADR-004). Runs once at
+   * construction when a bed is supplied and not suppressed. The bed
+   * source passes the SAME `normalizeSources` scheme gate scene sounds
+   * pass, but its membership allowlist is the bed's OWN declared `src`
+   * — NOT the scene-facing `allowedSources`. The bed declaration is
+   * authoritative for the bed exactly as `scene.audio` is for scenes;
+   * routing it through the scene allowlist would leak the bed URL into
+   * `ctx.audio.load()`, letting a scene register and play the bed
+   * source as its own sound even under `mode=standalone` where the bed
+   * is suppressed (codex review, cycle 1). The bed is registered into
+   * the shared `sounds` map under {@link BED_SOUND_KEY} so `stopAll()`
+   * / abort teardown unloads it. The bed loops for the lifetime of the
+   * navigation; it is constructed `muted` under the `silent` /
+   * `log-cues` policies like every other sound. No cue is emitted — the
+   * rehearsal cue log records scene-requested operations, and the bed
+   * is runtime infrastructure, not a scene operation.
+   */
+  const startBed = (bed: AudioBedDeclaration): void => {
+    // The bed's membership allowlist is its own declared source list:
+    // the bed is gated against what the composition declared for the
+    // bed, not against the scene `scene.audio` allowlist. Building the
+    // allowed set from the raw declaration keeps the bed source out of
+    // the scene-facing `allowedSources` entirely.
+    const bedAllowed: ReadonlySet<string> = new Set(
+      typeof bed.src === 'string' ? [bed.src] : bed.src,
+    );
+    const src = normalizeSources(BED_SOUND_KEY, bed.src, bedAllowed);
+    if (bed.volume !== undefined) assertGain(bed.volume, 'bed volume');
+    const handle = engine.createSound({
+      src,
+      muted,
+      onError: (err) => {
+        if (disposed) return;
+        try {
+          onError(new AudioError(`audio bed: ${describeError(err)}`, { cause: err }));
+        } catch {
+          // Intentionally empty: the diagnostic sink is non-fatal.
+        }
+      },
+    });
+    sounds.set(BED_SOUND_KEY, { handle, spriteNames: new Set(), src, sprite: undefined });
+    const playId = handle.play();
+    handle.loop(true, playId);
+    if (bed.volume !== undefined) handle.volume(bed.volume, playId);
+  };
+
   const service: AudioService = {
     load(soundId, definition) {
       if (disposed) return;
       assertSoundId(soundId);
       assertSoundDefinition(soundId, definition);
-      const src = normalizeSources(soundId, definition.src);
+      // Scene-facing `load`: the membership allowlist is the slice's
+      // declared `scene.audio` (`allowed`). The composition bed source
+      // is NOT in this set — it is gated separately inside `startBed`
+      // — so a scene cannot register the bed URL as its own sound.
+      const src = normalizeSources(soundId, definition.src, allowed);
       if (definition.sprite !== undefined) assertSpriteMap(soundId, definition.sprite);
       const existing = sounds.get(soundId);
       if (existing !== undefined) {
@@ -1230,6 +1422,17 @@ export function createAudioService(
       return disposed;
     },
   };
+
+  // Composition audio bed (PUL-F014): start it BEFORE the abort wiring
+  // so a pre-aborted signal's `stopAll()` below also tears the bed
+  // down. Skipped entirely when `bedSuppressed` is set (`mode=
+  // standalone`) — the scene runs as if no surrounding composition
+  // existed — or when no composition supplied a bed, or when the
+  // navigation was already aborted (no point starting a loop the next
+  // line stops).
+  if (options.bed !== undefined && options.bedSuppressed !== true && !options.signal.aborted) {
+    startBed(options.bed);
+  }
 
   if (options.signal.aborted) {
     service.stopAll();

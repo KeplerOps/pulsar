@@ -25,13 +25,14 @@
 //  - ADR-011 — composition resolver as pure orchestrator with
 //    injected adapters; reused via `loadSceneNavigationTarget`.
 
+import type { AudioBedDeclaration } from './audio';
 import {
   type CompositionEntry,
   type CompositionManifest,
   entryId,
   findUnregisteredEntries,
 } from './composition';
-import type { CompositionRegistry } from './composition-registry';
+import type { CompositionRegistry, RegisteredComposition } from './composition-registry';
 import {
   type AssetPreloader,
   type CompositionTimelineAdapter,
@@ -87,6 +88,15 @@ export interface SceneNavigationCompositionContext {
    * the head entry.
    */
   readonly startIndex: number;
+  /**
+   * The composition-level audio bed (PUL-F014 / ADR-004), copied
+   * verbatim from the {@link RegisteredComposition}, when the
+   * composition declared one. The resolver snapshots it but makes no
+   * suppression decision — the loader selects bed playback vs
+   * suppression from the effective mode (`mode=standalone` suppresses
+   * it). `undefined` when the composition declared no bed.
+   */
+  readonly audioBed?: AudioBedDeclaration;
 }
 
 /**
@@ -330,14 +340,37 @@ const sliceManifestFromIndex = (
   startIndex: number,
 ): CompositionManifest => deepFreeze(manifest.slice(startIndex)) as readonly CompositionEntry[];
 
-function resolveCompositionManifest(
+function resolveRegisteredComposition(
   compositionId: string,
   compositions: CompositionRegistry,
-): CompositionManifest {
+): RegisteredComposition {
   if (!compositions.has(compositionId)) {
     fail(`composition "${compositionId}" is not registered`);
   }
   return compositions.get(compositionId);
+}
+
+/**
+ * Build the {@link SceneNavigationCompositionContext}, attaching the
+ * resolved composition's `audioBed` (PUL-F014) only when one was
+ * declared. Centralized so all three locator kinds carry the bed
+ * declaration identically; the conditional spread keeps `audioBed`
+ * absent rather than `undefined` under `exactOptionalPropertyTypes`.
+ */
+function buildCompositionContext(
+  compositionId: string,
+  manifestSlice: CompositionManifest,
+  sceneSlice: readonly SceneModule[],
+  startIndex: number,
+  audioBed: AudioBedDeclaration | undefined,
+): SceneNavigationCompositionContext {
+  return {
+    id: compositionId,
+    manifestSlice,
+    sceneSlice,
+    startIndex,
+    ...(audioBed === undefined ? {} : { audioBed }),
+  };
 }
 
 function resolveCompositionFromStart(
@@ -345,13 +378,13 @@ function resolveCompositionFromStart(
   scenes: SceneRegistry,
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
-  const manifest = resolveCompositionManifest(compositionId, compositions);
+  const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
   if (manifest.length === 0) {
     fail(`composition "${compositionId}" is empty — no scene to navigate to`);
   }
   const manifestSlice = sliceManifestFromIndex(manifest, 0);
   const sceneSlice = snapshotSceneSlice(manifestSlice, 0, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice, startIndex: 0 };
+  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, 0, audioBed);
 }
 
 function resolveCompositionAndScene(
@@ -360,7 +393,7 @@ function resolveCompositionAndScene(
   scenes: SceneRegistry,
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
-  const manifest = resolveCompositionManifest(compositionId, compositions);
+  const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
   // Walk the whole manifest once: a single occurrence is the
   // unambiguous slice start; zero occurrences is a non-member error;
   // two or more occurrences make `composition+scene` ambiguous and
@@ -386,7 +419,7 @@ function resolveCompositionAndScene(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
   const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice, startIndex };
+  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, startIndex, audioBed);
 }
 
 function resolveCompositionAndIndex(
@@ -395,7 +428,7 @@ function resolveCompositionAndIndex(
   scenes: SceneRegistry,
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
-  const manifest = resolveCompositionManifest(compositionId, compositions);
+  const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
   // Re-validate the index invariants PUL-F007's parser already
   // enforces. `NavigationTarget` is an exported type and a non-parser
   // caller (event-detail unmarshaling, future test harness, etc.)
@@ -409,7 +442,7 @@ function resolveCompositionAndIndex(
   }
   const manifestSlice = sliceManifestFromIndex(manifest, index);
   const sceneSlice = snapshotSceneSlice(manifestSlice, index, scenes, compositionId);
-  return { id: compositionId, manifestSlice, sceneSlice, startIndex: index };
+  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, index, audioBed);
 }
 
 /**

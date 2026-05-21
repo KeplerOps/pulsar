@@ -213,26 +213,56 @@ to inspect — fully supported.
   `validateModeGrammar` already rejects unknown mode strings at the
   loader boundary. Slice transforms only run when the mode passes
   validation.
-- Inter-scene transition rendering does not exist yet. When ADR-003's
-  GSAP runner lands, the runner will see `ctx.mode === 'standalone'`
-  at the seam and know not to schedule a transition out of the head
-  scene — but until then, "no transition runs" is true because there
-  is no transition code anywhere. A regression that *added* transition
-  scheduling without consulting `ctx.mode` would re-introduce the
-  facet PUL-F014 forbids; the seam test
-  (`ctx.mode === 'standalone'` reaches every lifecycle hook of the
-  head scene) is the structural defense against that.
+- At acceptance time inter-scene transition rendering did not exist.
+  The subsequent update below records the current state: transitions
+  now exist, and standalone suppresses them by running a one-entry
+  slice.
+
+## Subsequent Updates
+
+### 2026-05-21: Suppression Surfaces Now Exist
+
+This ADR's original context predates several runtime surfaces. The
+loader slice decision still stands, but the implementation landscape is
+now different:
+
+- Workbench chrome exists in ADR-031. `chromeVisibilityFor()` maps
+  `standalone` to `hidden`, and the loader dispatches chrome
+  synchronously from the URL-derived effective mode before resolution
+  or scene lifecycle. That is the canonical suppression seam for
+  surrounding chrome.
+- GSAP master-timeline transitions exist in ADR-025. Transitions are
+  inserted only between composition segments present in the active
+  slice. Standalone's one-entry slice is therefore the canonical
+  suppression mechanism for inter-scene transitions; do not add a
+  parallel transition flag or fake no-op transition.
+- The Howler-backed audio service exists in ADR-004, with
+  per-navigation `AudioOutputPolicy`. It still does not model a
+  composition-level audio bed separately from scene-owned audio. A
+  future standalone completion change must add or select a bed-specific
+  scope on the existing audio-service seam, not map all standalone
+  audio to `silent`.
+
+These updates do not introduce a generic mode-policy object. Chrome,
+audio, and timeline remain separate subsystem seams; shared policy is
+only justified if a later requirement has multiple concrete consumers
+with the same stable representation.
+
+The original DRAFT / ACTIVE transition language in this ADR is
+historical context from the slice-truncation PR. Treat Ground Control
+as the source of truth for requirement status; this ADR continues to
+govern architecture boundaries, not workflow transitions.
 
 ## Related ADRs
 
-- [ADR-003](003-gsap-timeline-engine.md) — the timeline runner is the
-  seam through which inter-scene transition rendering will flow when
-  it lands; today the runner is a placeholder, so transition
-  suppression under standalone is structural.
-- [ADR-004](004-howler-audio-engine.md) — `ctx.audio` is the seam
-  through which audio rendering will flow; the surrounding-audio-bed
-  suppression clause maps onto a future audio surface reading
-  `ctx.mode === 'standalone'`.
+- [ADR-003](003-gsap-timeline-engine.md) / [ADR-025](025-timeline-adapter-boundary.md)
+  — the GSAP master and transition registry now insert inter-scene
+  transitions between active composition segments; standalone's
+  one-entry slice is the suppression mechanism.
+- [ADR-004](004-howler-audio-engine.md) — `ctx.audio` is the seam for
+  audio rendering. The current audio service has output policies but no
+  distinct composition-level audio-bed scope; PUL-F014 bed suppression
+  must extend that seam rather than silencing all scene audio.
 - [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
 - [ADR-008](008-agent-native-authoring.md) — manifests-over-flow-
@@ -248,10 +278,7 @@ to inspect — fully supported.
 - [ADR-015](015-url-beat-positioning.md) — beat semantics under
   standalone are unchanged: head-scope only, runner-side label
   resolution, non-fatal missing-label diagnostic.
-- [ADR-016](016-workbench-mode-present.md) — establishes the
-  precedent this ADR follows: land the contract layer plus seam
-  tests, keep the requirement DRAFT until each named facet has a
-  real rendering / input surface that actively conforms. PUL-F014's
-  ACTIVE transition is gated on chrome, audio-bed, and
-  inter-scene-transition surfaces all reading `ctx.mode ===
-  'standalone'` and suppressing.
+- [ADR-016](016-workbench-mode-present.md) — established the original
+  precedent this ADR followed: land the contract layer plus seam tests
+  before every named facet had a real surface. Current workflow status
+  belongs to Ground Control; this ADR records architecture boundaries.
