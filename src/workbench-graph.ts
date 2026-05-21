@@ -18,6 +18,7 @@ import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
 import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
 import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-fixture';
+import { loopFixtureScene } from './scenes/loop-fixture';
 import { placeholderScene } from './scenes/placeholder';
 
 // Optional local decks live under `src/decks/local-*/index.ts` and
@@ -47,6 +48,12 @@ const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
 // the same way so the PUL-Q008 Playwright spec can boot it via
 // `?scene=dom-css-accessibility-fixture`.
 //
+// PUL-F015 / ADR-018: the loop verification fixture is registered the
+// same way so the loop-mode Playwright spec can boot it via
+// `?scene=loop-fixture&mode=loop` and observe the master timeline
+// genuinely restarting on completion (a strictly increasing
+// `data-pulsar-loop-iteration` attribute).
+//
 // Pulsar L2: the pulsar-intro reference deck (`?composition=pulsar-intro`)
 // is the self-referential proof of the L2 system layer. Its 15 scenes
 // collectively exercise every shipped template, every transition, every
@@ -57,6 +64,7 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   placeholderScene,
   browserSupportFixtureScene,
   domCssAccessibilityFixtureScene,
+  loopFixtureScene,
   ...PULSAR_INTRO_SCENES,
   ...LOCAL_SCENES,
 ];
