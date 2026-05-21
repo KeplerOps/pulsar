@@ -211,13 +211,14 @@ const timeline = createGsapCompositionTimeline({
 let chromeSlots: ChromeSlots | undefined;
 
 // Builds the navigation-scoped scene ctx; the loader adds each
-// occurrence's `activation` (issue #99), so the return type omits it.
+// occurrence's `activation` (issue #99) and its seeded `rng` (PUL-F018
+// / ADR-021), so the return type omits both.
 const buildCtx = (
   mode: NavigationMode,
   audio: AudioService,
   presenter?: import('./runtime/presenter').PresenterController,
-): Omit<WorkbenchSceneCtx, 'activation'> => {
-  const base: Omit<WorkbenchSceneCtx, 'activation'> = {
+): Omit<WorkbenchSceneCtx, 'activation' | 'rng'> => {
+  const base: Omit<WorkbenchSceneCtx, 'activation' | 'rng'> = {
     stage,
     mode,
     gsap: timelineEngine.gsap,

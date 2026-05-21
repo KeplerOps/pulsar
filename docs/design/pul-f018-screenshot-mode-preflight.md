@@ -1,247 +1,200 @@
 # PUL-F018 Screenshot Mode Preflight
 
-PUL-F018 specifies `mode=screenshot`: render the addressed scene at
-the addressed beat (or first frame if no beat) with all asset
-preloads resolved, no animation in progress, all audio suppressed,
-and any randomness sourced from a deterministic seed. This is a
-deterministic visual-regression hook for agents and reviewers. It
-is not a screenshot export subsystem, persistence feature, or
-separate rendering pipeline.
+PUL-F018 specifies `mode=screenshot`: render the addressed scene at the
+addressed beat, or at frame 0 when no beat is supplied, after declared
+preloads have resolved, with the timeline held still, audio suppressed,
+and randomness sourced from a deterministic seed.
 
-ADR-007 already defines `screenshot` as a workbench mode. ADR-011
-already defines the resolver as a lifecycle orchestrator with an
-injected timeline runner. The runner-input shape introduced by
-ADR-018 (`repeat`), extended by ADR-019 (`hold`), and extended
-again by ADR-020 (`cueGate`) is the precedent for adding a new
-head-only optional field; ADR-021 records the analogous
-`screenshot` field for screenshot capture.
+This is a runtime capture contract for deterministic visual regression.
+It is not an export pipeline, image storage feature, screenshot diff
+service, new renderer, or scene-authored mode.
 
-## Sandbox note
+## Current Incumbents
 
-The codex preflight tool's sandbox failed to write design files
-during this preflight run (`bwrap` setup error: `bwrap: loopback:
-Failed RTM_NEWADDR: Operation not permitted`), so this document is
-a manual transcription of the preflight tool's returned guardrails
-text plus the architecture decisions that follow from it — same
-handling pattern as `pul-f015-loop-mode-preflight.md`,
-`pul-f016-paused-mode-preflight.md`, and
-`pul-f017-scrub-mode-preflight.md`. The structured decisions are
-recorded in ADR-021.
+As of 2026-05-21, the repository already has most of the required
+runtime seams:
+
+- URL mode grammar: `parseNavigationSearch()`, `NAVIGATION_MODES`, and
+  `effectiveMode()` in `src/runtime/navigation.ts`.
+- Loader mode dispatch: `createSceneLoader()` in
+  `src/runtime/scene-loader.ts`, including `ctx.mode`, single-scene
+  slice truncation, `headScreenshot: 'capture'` forwarding, stage
+  diagnostics, queued navigation, abort, and cleanup-before-handoff.
+- Navigation bridge: `resolveSceneNavigation()` and
+  `loadSceneNavigationTarget()` in `src/runtime/scene-navigation.ts`,
+  including bridge-level head truncation for screenshot direct callers.
+- Lifecycle ordering: `resolveComposition()` in
+  `src/runtime/composition-resolver.ts`, which awaits the injected
+  `preloadAssets(scene)` before `create(ctx)`, collects timelines, runs
+  the injected composition timeline adapter, and always cleans touched
+  scenes.
+- Timeline freeze: `createGsapCompositionTimeline()` in
+  `src/runtime/timeline.ts`; `positionMaster()` already treats
+  `headScreenshot === 'capture'` as seek-to-head-beat-or-0, pause, and
+  held run mode.
+- Audio suppression: `audioOutputPolicyFor()` maps screenshot to
+  `AudioOutputPolicy: 'silent'`, and `createAudioService()` constructs
+  muted sounds under that policy.
+- Asset byte readiness: `createAssetPreloader()` validates, fetches, and
+  stream-drains declared `scene.assets`; resolver await semantics are the
+  capture fence for declared assets.
+- Error envelopes: `describeError()`, `describeErrorDetailed()`, stage
+  attributes, `onError`, and scene-failure diagnostics are already the
+  public error surface.
+- Static determinism gate: `tests/runtime/screenshot-determinism-source.test.ts`
+  scans `src/**` for ambient entropy, timers, animation APIs, storage,
+  cookies, history state, and process/env access.
+
+The remaining architectural gap for PUL-F018 is the deterministic RNG
+surface on scene context. Do not reimplement the shipped freeze, preload,
+audio, URL, or navigation paths while adding it.
 
 ## Boundary
 
-`screenshot` selection must reuse the existing navigation path:
+Screenshot mode must stay on the existing workbench navigation path:
 
-- `src/runtime/navigation.ts` owns the `mode` URL grammar and the
-  `NAVIGATION_MODES` allowlist.
-- `effectiveMode()` owns effective mode derivation.
-- `src/runtime/scene-loader.ts` owns per-navigation mode dispatch,
-  `ctx.mode` construction, cancellation, stage diagnostics, and
-  error surfacing. It is also the dispatch point that maps
-  `effectiveMode === 'screenshot'` to `screenshot: 'capture'`.
-- `src/runtime/scene-navigation.ts` owns target resolution and
-  composition slicing. Its `scene` field is the addressed head
-  scene.
-- `src/runtime/composition-resolver.ts` owns preload → create →
-  timeline → cleanup ordering, abort propagation, and exactly-once
-  cleanup. It must remain mode-opaque; `headScreenshot` is plumbed
-  the same way `headBeat`, `headRepeat`, `headHold`, and
-  `headCueGate` are.
-- The timeline runner owns timeline playhead behavior. Under
-  `mode=screenshot` the runner reads
-  `input.screenshot === 'capture'` and seeks to the addressed
-  beat (or frame 0) before pausing the timeline.
-- ADR-004's audio engine (when it lands) reads
-  `input.screenshot === 'capture'` (or `ctx.mode === 'screenshot'`
-  on the scene context) and produces no audio output: no cues, no
-  ambient loops, no mixer output.
-- A future deterministic-randomness convention (when it lands)
-  exposes a stable seed that scenes consume for any random values
-  under screenshot.
+- `mode=screenshot` is parsed and validated by the URL grammar. Do not
+  infer it from `localStorage`, `sessionStorage`, cookies,
+  `history.state`, process state, or prior navigation state.
+- The loader is the mode-dispatch boundary. It derives
+  `effectiveMode(target)`, builds per-navigation `ctx.mode`, selects the
+  audio output policy, truncates composition slices for single-scene
+  execution, and forwards `screenshot: 'capture'`.
+- The bridge and resolver remain mode-light orchestrators. They forward
+  typed head options and preserve manifest entry `range` / `behavior`
+  overrides; they do not parse URL strings or inspect scene context.
+- The timeline adapter is the GSAP boundary. Screenshot freeze belongs
+  there, through `MasterTimeline.seek()` / `pause()`, not in scenes,
+  loader timers, or DOM polling.
+- The audio service is the Howler boundary. Screenshot silence belongs
+  to `AudioOutputPolicy: 'silent'`, not scene-level volume conventions
+  or raw `<audio>` exceptions.
+- The preloader remains the declared-asset byte-readiness boundary.
+  Browser decode-complete readiness, if required later for images,
+  fonts, or media posters, must compose on top of `createAssetPreloader`
+  instead of mutating its Node-compatible fetch-and-drain contract.
 
-Do not add a second route, mode enum, `screenshot` boolean, scene
-schema field, manifest flag, local URL parser, or
-screenshot-specific resolver. URL input remains the only source of
-mode selection; `screenshot` must not be recovered from
-localStorage, sessionStorage, cookies, `history.state`, or prior
-in-memory navigation state.
+## Seed And RNG Guardrails
 
-## Required Reuse
+Add the deterministic random source at the scene-context seam, not as a
+scene schema field and not as a global monkey patch.
 
-Implementation must reuse these cross-cutting concerns:
+Required shape constraints:
 
-- Identifier validation: `src/runtime/identifier.ts`.
-- URL and mode validation: `parseNavigationSearch()` and
-  `NAVIGATION_MODES`.
-- Effective mode derivation: `effectiveMode()`.
-- Scene and composition validation:
-  `assertSceneModule()`, `createSceneRegistry()`,
-  `assertCompositionManifest()`, and `createCompositionRegistry()`.
-- Navigation resolution: `resolveSceneNavigation()` and
-  `loadSceneNavigationTarget()`.
-- Lifecycle orchestration: `resolveComposition()` with injected
-  `createPreloader()` and `runTimeline()` adapters.
-- Asset handling: `createAssetPreloader()` with the existing
-  scheme, redirect, `baseUrl`, and `AbortSignal` rules. Screenshot
-  mode does not change preload semantics — the addressed scene's
-  assets must still be loaded before `create(ctx)` runs.
-  PUL-F018's "all asset preloads resolved" clause is already
-  satisfied by the existing PUL-F004 / PUL-F005 invariant.
-- Error rendering: `describeError()` plus the existing
-  `data-pulsar-navigation-error` stage diagnostic and `onError`
-  sink.
-- Cancellation and cleanup: one per-navigation `AbortController`,
-  forwarded to preload and timeline adapters; cleanup remains
-  resolver-owned.
-- Slice-truncation helper: the `applySingleSceneSlice` loader-side
-  helper and the `truncateToHead` bridge-level helper introduced
-  for `standalone` (ADR-017) and extended for `loop` (ADR-018),
-  `paused` (ADR-019), and `scrub` (ADR-020) are extended again to
-  fire under `screenshot`. The shape transform is shared; the
-  predicate widens.
-- Beat lookup / naming contract: `beat=` under `mode=screenshot`
-  is the captured-frame anchor PUL-F018 names directly. Reuse the
-  existing PUL-F011 / ADR-015 forwarding (`headBeat` /
-  `onBeatMissing`).
+- The loader/build-ctx path must create a per-navigation deterministic
+  seed and expose a scene-consumable RNG through `WorkbenchSceneCtx`.
+  Scenes that need randomness consume that ctx surface; they do not call
+  `Math.random`, `crypto.getRandomValues`, time APIs, storage, or process
+  state.
+- The default seed must derive from bounded, deterministic inputs: the
+  normalized navigation target, addressed beat when present, addressed
+  composition/index/scene locator, and a bundle/runtime revision literal
+  such as `PULSAR_RUNTIME_VERSION`. Do not derive from wall clock,
+  browser storage, cookies, `history.state`, `process.env`,
+  `process.argv`, or runtime command-line flags.
+- If an explicit seed is exposed later, add it through the canonical URL
+  grammar with the same repeated-key rejection and bounded validation as
+  existing public parameters. Do not let ignored unknown query keys
+  affect determinism.
+- The RNG algorithm must be deterministic in ordinary JavaScript across
+  supported engines. Arithmetic/hash-based PRNG code is acceptable; a
+  runtime entropy API is not.
+- RNG state is scoped to the navigation/scene activation. It must not be
+  a process-global singleton whose draw order can be perturbed by other
+  scenes, tests, HMR, or previous navigations.
+- The seed may be exposed as bounded diagnostic context if needed, but
+  errors must not echo raw URL strings containing credentials or any
+  secret-bearing environment/config value.
 
-## Scope: single-scene only
+The extensibility seam is the seed input handed to the ctx builder. A
+future explicit `seed=` URL parameter, viewport profile, theme, locale,
+or capture variant should populate that seed/options input at the
+navigation boundary, then flow through ctx. Do not add per-scene capture
+flags or a second screenshot schema.
 
-Screenshot is **single-scene execution at the addressed head**.
-PUL-F018's "the addressed scene at the addressed beat" describes
-ONE scene, ONE frame; "first frame if no beat" is the fallback
-position. There is no composition-wide capture — the runtime has
-no cross-scene timeline abstraction or frame-aggregation API, and
-PUL-F018 does not call for one. The user (or capture tooling)
-addresses a specific scene (directly via
-`?scene=x&mode=screenshot`, or within a composition via
-`?composition=c&scene=x&mode=screenshot` /
-`?composition=c&index=N&mode=screenshot`) and captures that
-scene's frame. To capture a different scene in the same
-composition, the URL targets that scene. The five
-single-scene-execution modes (standalone / loop / paused / scrub
-/ screenshot) share the same slice-truncation transform because
-they share the same structural "no following entries run"
-promise.
+## Cross-Cutting Layers In Scope
 
-## Screenshot Contract
+The intended implementation must pass these existing repository layers:
 
-Screenshot mode means: resolve the addressed scene through the
-existing URL/registry/composition path, preload declared assets,
-run normal `create(ctx)` and `timeline(ctx)`, then seek the
-timeline to the addressed beat (or frame 0), pause it, suppress
-all audio output, and source any randomness from a deterministic
-seed.
+- URL validation: `parseNavigationSearch()`, `NAVIGATION_MODES`,
+  `effectiveMode()`, plus loader defense checks for mode and beat. Any
+  future seed parameter goes through this layer; unknown query keys stay
+  ignored.
+- Identifier and beat validation: `isKebabIdentifier()`,
+  `assertSceneTimeline()`, `sceneTimelineLabel()`, and
+  `resolveHeadBeatLabel()`. Do not add a second beat list or parse
+  namespaced labels locally.
+- Scene and composition schemas: `assertSceneModule()`,
+  `createSceneRegistry()`, `assertCompositionManifest()`,
+  `createCompositionRegistry()`, `findUnregisteredEntries()`, and the
+  runtime validation pass. No RNG field belongs in `SceneModule`.
+- Lifecycle and cleanup: `resolveComposition()` with injected
+  `AssetPreloader` and `CompositionTimelineAdapter`. Preload failures
+  remain composition-wide; scene `create` / `timeline` / `cleanup`
+  failures remain scene failures per ADR-028.
+- Asset security: `resolveAssetUrl()`, `DEFAULT_ALLOWED_SCHEMES`,
+  post-redirect scheme revalidation, body cancellation, and
+  `AssetPreloaderOptions.baseUrl` / `allowedSchemes`. Screenshot mode
+  must not widen schemes, inject credentials, or introduce direct file
+  or OS path reads.
+- Audio security and validation: `createAudioService()`,
+  `AudioOutputPolicy`, `scene.audio` / `allowedSources`, group/sound id
+  validation, and `stopAll()` / `stopGroup()` cleanup. Screenshot silence
+  is `outputPolicy: 'silent'`; do not add raw audio bypasses.
+- Error rendering: `describeError()`, `describeErrorDetailed()`,
+  `formatSceneContext()`, `data-pulsar-navigation-error`, and `onError`.
+  Public diagnostics carry ids, beat, phase, and bounded messages only;
+  never serialize raw causes, stacks, scene objects, DOM nodes, headers,
+  cookies, auth values, environment, or argv.
+- Source policy: `tests/runtime/screenshot-determinism-source.test.ts`.
+  New deterministic RNG code must satisfy the ban on ambient entropy and
+  timing surfaces.
+- Build/workflow: `.ground-control.yaml`, `.gc/plan-rules.md`,
+  `pnpm lint`, `pnpm typecheck`, and `pnpm test`. Source changes require
+  a changelog fragment per `.gc/plan-rules.md`; docs-only preflight
+  updates do not.
 
-- A direct `scene` target captures that scene's frame.
-- A `composition` target captures the first scene's frame;
-  following composition entries do not run.
-- A `composition+scene` or `composition+index` target captures
-  the resolved head scene's frame, preserving the head entry's
-  `range` / `behavior` overrides; following composition entries
-  do not run.
-- `beat=<label>` under `mode=screenshot` IS honored as the
-  captured-frame anchor. Unlike paused mode (where ADR-019
-  records "first frame wins"), screenshot HONORS beat — that is
-  literally what PUL-F018 says ("at the addressed beat or first
-  frame if no beat"). The runner seeks to the named label, then
-  freezes.
+No auth layer, secret store, database, repository, persistence layer, or
+server API is in scope for PUL-F018. The OS-level exposure to guard is
+host/process input: do not read environment variables, argv, filesystem
+paths, or shell state to shape screenshot output.
 
-The requirement says deterministic visual capture. Do not
-implement screenshot by skipping `create(ctx)`, by skipping
-`timeline(ctx)`, or by short-circuiting the lifecycle. Scene
-setup runs normally; the seek-and-freeze, audio suppression, and
-deterministic-seed behaviors are runner-side concerns delivered
-by future PRs alongside ADR-003 / ADR-004.
+## Gotchas
 
-## Required Constraints (preflight guardrails)
+- Do not treat `await loader.handle(...)` as a screenshot-ready signal
+  under the browser loader path. Held modes park until navigation abort;
+  if capture tooling later needs an explicit readiness event, it belongs
+  at the loader/timeline observability seam after preloads, scene setup,
+  timeline composition, seek, and pause have completed.
+- Do not advance through animation to reach a beat. Resolve the beat
+  label on the master and seek directly.
+- Do not conflate paused and screenshot. Paused ignores beat and holds
+  frame 0; screenshot honors beat and then holds.
+- Do not use `setTimeout`, `requestAnimationFrame`, CSS/Web Animations,
+  `Date.now()`, or `performance.now()` as stabilization heuristics.
+- Do not change `scene.timeline(ctx)` to async or await it in the
+  resolver. Async setup belongs in `create(ctx)`; GSAP timelines are
+  thenable and awaiting them changes semantics.
+- Do not add a screenshot-only resolver, preloader, exception hierarchy,
+  logger, registry, or cache.
+- Do not replace slice truncation with direct-scene flattening; object
+  entry `range` and `behavior` on the addressed head must survive.
+- Do not rely on volume-zero as audio suppression. The runtime audio
+  service must construct muted sounds and avoid audible side effects
+  under the silent policy.
+- Do not patch `Math.random`, GSAP globals, timers, Howler globals, or
+  DOM prototypes. Determinism must be explicit and scoped.
 
-These are binding unless they are clearly wrong:
+## Non-Goals
 
-- Treat `mode=screenshot` as a runtime execution mode inside the
-  existing browser workbench architecture documented by ADR-007 /
-  ADR-008. It is not a screenshot export subsystem, persistence
-  feature, or separate rendering pipeline.
-- Reuse the existing workbench mode/address parsing path for
-  `mode=screenshot`. Do not duplicate the workbench mode enum,
-  scene address schema, beat schema, or validation rules.
-- Reuse existing scene and beat addressing schemas; do not
-  introduce parallel DTOs or ad hoc query parsing.
-- Reuse the existing scene loader and asset preload mechanism;
-  screenshot readiness must wait on the real preload contract.
-- Rendering must be driven to a stable addressed state: addressed
-  beat, or first frame if no beat. Do not advance through live
-  animation to reach a beat instead of resolving the addressed
-  beat state directly.
-- Time, animation, audio, and randomness must be controlled at
-  runtime boundaries, not patched piecemeal inside individual
-  scenes.
-- Determinism must be scoped to the screenshot runtime instance
-  so normal interactive mode is unaffected.
-- Do not add a screenshot-specific exception hierarchy, logger,
-  cache, repository, or workflow controller.
-- Do not use global monkey patches for `Math.random`, timers,
-  audio, or animation that leak into normal mode.
-- Suppression of audio is not "set volume to zero" — the audio
-  engine must not start playback or emit side effects under
-  screenshot.
-- Preloads are not done before images, fonts, textures, media
-  posters, or other render-critical assets are decoded/ready.
-  ADR-012's preloader contract already covers fetch + drain;
-  screenshot does not relax it.
-- Allow no arbitrary paths, asset URLs, or unsanitized query
-  values through screenshot addressing.
-- Persisting screenshot mode as user state or changing
-  authoring/runtime defaults is forbidden by ADR-007's
-  URL-only-source rule.
-
-## Cross-Cutting Concerns To Reuse
-
-- Existing `mode` parsing/routing/validation for `mode=screenshot`.
-- Existing scene manifest and beat resolution.
-- Existing asset preload/cache/decode readiness.
-- Existing timeline, animation frame, tween, and scheduler
-  control.
-- Existing audio manager/mixer/global mute behavior (when ADR-004
-  lands).
-- Existing seeded randomness or runtime config injection (when
-  established).
-- Existing error types and error-response handling.
-- Existing logging/diagnostic conventions for runtime readiness
-  failures.
-- Existing test runner and workbench/visual-regression harness.
-- Ground Control traceability: add `IMPLEMENTS` and `TESTS` links
-  only after implementation is complete (the `DOCUMENTS` link from
-  the issue stays until ACTIVE).
-
-## Gotchas And Anti-Patterns
-
-- Treating "no animation in progress" as "wait a bit and capture"
-  needs an explicit stable snapshot state, not a heuristic.
-- Considering preloads done before images, fonts, textures, media
-  posters, or other render-critical assets are decoded/ready will
-  produce non-deterministic captures.
-- Suppressing audio by volume alone (volume=0) leaks side
-  effects: the engine still starts playback and emits cues.
-- Advancing through live animation to reach a beat introduces
-  per-run timing variance and breaks determinism.
-- Persisting screenshot mode as user state or changing
-  authoring/runtime defaults violates ADR-007's URL-only-source
-  rule.
-
-## Non-Goals And Boundaries
-
-- No screenshot storage, image diffing, CI artifact upload, new
-  authoring schema, editor UI controls, or a second rendering
-  engine. The PR ships only the contract layer that lets future
-  capture tooling drive the existing runtime to a deterministic
-  frame.
-- No new persistence format.
-- No new timeline, beat, cue, exception, validation, or workflow
-  abstraction unless existing contracts are genuinely absent.
-- No authoring/editing of beats or seeds.
-- No production analytics expansion unless the project already
-  has safe telemetry for comparable playback events.
-- No GSAP runner, audio engine, or determinism convention in this
-  PR — those ship with ADR-003, ADR-004, and a future
-  determinism-convention PR. Until all three land, PUL-F018 stays
-  DRAFT.
+- No screenshot image capture, file writing, artifact upload, diffing,
+  storage, or CI reporting.
+- No new scene manifest field, composition field, renderer, export
+  pipeline, or persistence format.
+- No new URL grammar unless an explicit seed/capture option is actually
+  accepted as public API; derived deterministic seeding is enough for
+  PUL-F018.
+- No decode-complete asset pipeline unless a separate requirement
+  expands "preload resolved" beyond the existing fetch-and-drain fence.
+- No changes to presenter command semantics, chrome visibility rules, or
+  prompter lifecycle bypass.
