@@ -648,13 +648,50 @@ describe('createGsapCompositionTimeline', () => {
     await r2.settled;
   });
 
-  it('repeats the master indefinitely under headRepeat and keeps playing', async () => {
+  it('starts the master playing (unpaused) under headRepeat', async () => {
     const controller = new AbortController();
     const { master, settled } = runWith([segment('a', sceneTl(1))], {
       signal: controller.signal,
       headRepeat: 'until-aborted',
     });
     await flush();
+    expect(master().isPaused()).toBe(false);
+    controller.abort();
+    await settled;
+  });
+
+  it('actually restarts the timeline on completion under headRepeat (>= 2 distinct iterations)', async () => {
+    // PUL-F015 acceptance criterion 2: `mode=loop` must produce a
+    // timeline that genuinely *restarts* on completion, not one that
+    // plays once and parks at its last frame. The test above only
+    // proves the master is unpaused; a runner that played the
+    // composition exactly once and never advanced would still pass
+    // it. This test pins the real contract: a scene timeline with a
+    // terminal `.call()` re-fires that callback on every loop cycle,
+    // so the cycle counter must reach >= 2. The promise resolves the
+    // instant the second iteration completes — a non-restarting
+    // implementation never reaches 2, so the test fails by hitting
+    // the vitest timeout rather than passing silently.
+    const controller = new AbortController();
+    let iterations = 0;
+    let reachedTwo: () => void = () => undefined;
+    const twoIterations = new Promise<void>((resolve) => {
+      reachedTwo = resolve;
+    });
+    const counted = gsap.timeline({ paused: true });
+    counted.to({ v: 0 }, { v: 1, duration: 0.02 });
+    counted.call(() => {
+      iterations += 1;
+      if (iterations >= 2) reachedTwo();
+    });
+
+    const { master, settled } = runWith([segment('a', counted)], {
+      signal: controller.signal,
+      headRepeat: 'until-aborted',
+    });
+    await twoIterations;
+    expect(iterations).toBeGreaterThanOrEqual(2);
+    // Still looping (not parked) when the second iteration landed.
     expect(master().isPaused()).toBe(false);
     controller.abort();
     await settled;
