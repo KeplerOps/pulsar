@@ -63,6 +63,7 @@
 //    transport API.
 
 import { gsap } from 'gsap';
+import type { CueGateControl } from './audio';
 import type {
   CompositionTimelineAdapter,
   CompositionTimelineRunOptions,
@@ -272,8 +273,15 @@ export interface MasterBeat {
  * timeline directly.
  */
 export interface MasterTimeline {
-  /** Resume (or start) playback from the current playhead. */
+  /** Resume (or start) monotonic forward playback from the current playhead. */
   play(): void;
+  /**
+   * Play backward from the current playhead (PUL-F017 / ADR-020). The
+   * `scrub`-mode transport surface uses this for the "scrub backward"
+   * affordance; the adapter treats reverse playback as non-monotonic,
+   * so audio cues crossed in reverse do not fire.
+   */
+  reverse(): void;
   /** Pause at the current playhead. */
   pause(): void;
   /** Whether playback is currently paused. */
@@ -343,16 +351,35 @@ const validateRepeat = (count: number): void => {
 
 class GsapMasterTimeline implements MasterTimeline {
   readonly #tl: GsapTimeline;
+  /**
+   * Dynamic audio cue gate (PUL-F017 / ADR-020). Present only for a
+   * `scrub`-mode master; the transport methods toggle eligibility so
+   * cues fire only on monotonic forward playback. Absent for every
+   * other run mode — `#cueGate?.setEligible(...)` is then a no-op.
+   */
+  readonly #cueGate: CueGateControl | undefined;
 
-  constructor(tl: GsapTimeline) {
+  constructor(tl: GsapTimeline, cueGate?: CueGateControl) {
     this.#tl = tl;
+    this.#cueGate = cueGate;
   }
 
   play(): void {
+    // Monotonic forward playback — cues crossed forward are eligible.
+    this.#cueGate?.setEligible(true);
     this.#tl.play();
   }
 
+  reverse(): void {
+    // Reverse playback is not monotonic forward — close the gate so a
+    // cue crossed backward does not fire (PUL-F017 / ADR-020).
+    this.#cueGate?.setEligible(false);
+    this.#tl.reverse();
+  }
+
   pause(): void {
+    // A paused master is not playing forward — close the gate.
+    this.#cueGate?.setEligible(false);
     this.#tl.pause();
   }
 
@@ -555,6 +582,13 @@ export interface ComposeMasterTimelineOptions {
   readonly transitions?: TransitionRegistry;
   /** Optional overlay element the registered transitions may mutate. */
   readonly transitionOverlay?: HTMLElement | null;
+  /**
+   * Dynamic audio cue gate (PUL-F017 / ADR-020). Supplied only for a
+   * `scrub`-mode master; the resulting {@link MasterTimeline}'s
+   * transport methods toggle it so audio cues fire only on monotonic
+   * forward playback. Absent for every other run mode.
+   */
+  readonly audioCueGate?: CueGateControl;
 }
 
 /**
@@ -623,7 +657,7 @@ export function composeMasterTimeline(
       }
       segmentIndex++;
     }
-    return new GsapMasterTimeline(master);
+    return new GsapMasterTimeline(master, options.audioCueGate);
   } catch (err) {
     master?.kill();
     for (const segment of segments) {
@@ -692,8 +726,11 @@ function resolveHeadBeatLabel(
  *    `headScreenshot`).
  *  - `'loop'` — plays, repeating forever; never completes (`headRepeat`).
  *  - `'play'` — plays once and reaches its natural end.
+ *  - `'scrub'` — left mounted and live, paused at the initial cursor;
+ *    never auto-completes (`headCueGate`). The workbench scrub controls
+ *    drive playback; the run resolves only on navigation abort.
  */
-type MasterRunMode = 'hold' | 'loop' | 'play';
+type MasterRunMode = 'hold' | 'loop' | 'play' | 'scrub';
 
 /**
  * Apply the URL/runner-input head hints to the freshly-composed master
@@ -710,10 +747,12 @@ type MasterRunMode = 'hold' | 'loop' | 'play';
  *    frame 0), then play forward. → `'play'`.
  *  - `headRepeat: 'until-aborted'` (PUL-F015 / ADR-018): loop the master
  *    forever. → `'loop'`.
- *  - `headCueGate: 'monotonic-forward'` (PUL-F017 / ADR-020): no effect
- *    here yet — the PUL-F024 audio service exists (`ctx.audio`), but
- *    timeline-callback cue gating is a separate follow-up; scenes fire
- *    their own `ctx.audio` cues from their timeline callbacks today.
+ *  - `headCueGate: 'monotonic-forward'` (PUL-F017 / ADR-020): the scrub
+ *    run mode. Seek to the addressed beat (the initial cursor — ADR-020
+ *    §Beat semantics) or frame 0, then hold the master live so the
+ *    workbench scrub controls can drive it. The initial seek is a
+ *    direct seek, not monotonic forward play, so no cue fires for it.
+ *    → `'scrub'`.
  *  - default: → `'play'`.
  */
 function positionMaster(
@@ -731,6 +770,11 @@ function positionMaster(
     master.seek(beatLabel ?? 0);
     master.pause();
     return 'hold';
+  }
+  if (opts.headCueGate === 'monotonic-forward') {
+    master.seek(beatLabel ?? 0);
+    master.pause();
+    return 'scrub';
   }
   if (beatLabel !== undefined) {
     master.seek(beatLabel);
@@ -867,9 +911,12 @@ function applyPresenterCommandToMaster(
  *  - `'loop'`: start (infinite) playback; only abort resolves it. With
  *    no signal there is nothing to wait for, so resolve immediately —
  *    a loop cannot be observed without cancellation.
- *  - `'hold'`: the master is already paused; only abort resolves it.
- *    With no signal, resolve immediately — the held frame has been
- *    rendered.
+ *  - `'hold'` / `'scrub'`: the master is already paused; only abort
+ *    resolves it. With no signal, resolve immediately — the held frame
+ *    has been rendered. Under `'scrub'` the master is additionally left
+ *    live for the workbench scrub controls to drive between now and
+ *    abort; the run does not arm a completion handler, so playing the
+ *    scrub master to its natural end does not tear the scene down.
  */
 function runMasterUntilDone(
   master: MasterTimeline,
@@ -952,6 +999,13 @@ export function createGsapCompositionTimeline(
         if (transitionOverlay !== undefined) {
           (composeOpts as { transitionOverlay?: HTMLElement | null }).transitionOverlay =
             transitionOverlay;
+        }
+        // PUL-F017 / ADR-020: wire the dynamic audio cue gate into the
+        // master ONLY under the scrub run mode. Outside scrub the gate
+        // is never wired, so a normal play-through master's transport
+        // never toggles cue eligibility.
+        if (opts.headCueGate === 'monotonic-forward' && opts.audioCueGate !== undefined) {
+          (composeOpts as { audioCueGate?: CueGateControl }).audioCueGate = opts.audioCueGate;
         }
         master = composeMasterTimeline(engine, segments, composeOpts);
         mode = positionMaster(master, segments[0]?.id, opts);

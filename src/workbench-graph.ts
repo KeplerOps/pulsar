@@ -21,6 +21,7 @@ import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-
 import { loopFixtureScene } from './scenes/loop-fixture';
 import { pausedFixtureScene } from './scenes/paused-fixture';
 import { placeholderScene } from './scenes/placeholder';
+import { scrubFixtureScene } from './scenes/scrub-fixture';
 
 // Optional local decks live under `src/decks/local-*/index.ts` and
 // are gitignored — never enter the public repo, but auto-register at
@@ -61,6 +62,12 @@ const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
 // genuinely holding at its first frame (a `data-pulsar-paused-progress`
 // attribute pinned at `"0"`).
 //
+// PUL-F017 / ADR-020: the scrub verification fixture is registered the
+// same way so the scrub-mode Playwright spec can boot it via
+// `?scene=scrub-fixture&mode=scrub` and observe the workbench scrub
+// controls driving a real master timeline (a `data-pulsar-scrub-progress`
+// attribute that responds to play / reverse / beat-jump).
+//
 // Pulsar L2: the pulsar-intro reference deck (`?composition=pulsar-intro`)
 // is the self-referential proof of the L2 system layer. Its 15 scenes
 // collectively exercise every shipped template, every transition, every
@@ -73,6 +80,7 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   domCssAccessibilityFixtureScene,
   loopFixtureScene,
   pausedFixtureScene,
+  scrubFixtureScene,
   ...PULSAR_INTRO_SCENES,
   ...LOCAL_SCENES,
 ];

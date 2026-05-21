@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type AudioEngine,
   type AudioService,
   type Caption,
   type CompositionTimelineAdapter,
@@ -1313,6 +1314,205 @@ describe('createSceneLoader — paused & scrub modes (PUL-F008)', () => {
           cueGate: 'monotonic-forward',
         },
       ]);
+    });
+  });
+
+  describe('scrub-mode audio cue gate wiring (PUL-F017 / ADR-020)', () => {
+    // PUL-F017: "Audio cues SHALL fire only on monotonic forward
+    // playback." The loader builds ONE dynamic cue gate under
+    // `mode=scrub` and shares it between the per-navigation audio
+    // service (which consults it to suppress a cue's output) and the
+    // timeline adapter (which toggles it by playhead direction). These
+    // tests pin that wiring at the loader seam; the timeline+audio
+    // behavior itself is covered by tests/runtime/scrub-cue-gating.test.ts.
+
+    const scrubSceneTarget = (id: string): NavigationTarget => ({
+      locator: { kind: 'scene', scene: id },
+      mode: 'scrub',
+    });
+
+    /** A recording audio engine — counts every `play()` that reaches it. */
+    const recordingAudioEngine = (): { engine: AudioEngine; plays: () => number } => {
+      let plays = 0;
+      const handle = {
+        play: () => {
+          plays += 1;
+          return plays;
+        },
+        stop: () => undefined,
+        fade: () => undefined,
+        loop: () => undefined,
+        volume: () => undefined,
+        rate: () => undefined,
+        unload: () => undefined,
+      };
+      return {
+        plays: () => plays,
+        engine: {
+          createSound: () => handle,
+          setMasterMute: () => undefined,
+          isMasterMuted: () => false,
+          unlock: () => Promise.resolve(),
+        },
+      };
+    };
+
+    it('forwards an audio cue gate to the timeline adapter under `mode=scrub`', async () => {
+      const sceneA = buildScene({ id: 'scene-a' });
+      const stage = buildStage();
+      const timeline = recordingTimeline();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: timeline.adapter,
+      });
+
+      await loader.handle(scrubSceneTarget('scene-a'));
+
+      expect(timeline.calls).toHaveLength(1);
+      const opts = timeline.calls[0]?.opts;
+      expect(opts?.headCueGate).toBe('monotonic-forward');
+      expect(opts?.audioCueGate).toBeDefined();
+      expect(typeof opts?.audioCueGate?.setEligible).toBe('function');
+      expect(typeof opts?.audioCueGate?.isEligible).toBe('function');
+    });
+
+    it('does not forward an audio cue gate for any non-scrub, lifecycle-running mode', async () => {
+      const modes = NAVIGATION_MODES.filter((m) => m !== 'scrub' && m !== 'prompter');
+      for (const mode of modes) {
+        const sceneA = buildScene({ id: 'scene-a' });
+        const stage = buildStage();
+        const timeline = recordingTimeline();
+        const loader = createSceneLoader({
+          scenes: createSceneRegistry([sceneA]),
+          compositions: createCompositionRegistry([]),
+          stage: stage.element,
+          buildCtx: stubCtx,
+          createPreloader: () => () => undefined,
+          timeline: timeline.adapter,
+        });
+        await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode });
+        expect(timeline.calls[0]?.opts.audioCueGate, `mode=${mode}`).toBeUndefined();
+      }
+    });
+
+    it('builds a cue-gated audio service under `mode=scrub`, initialized closed — a cue fired before forward playback is suppressed', async () => {
+      // The scrub master starts held — not playing monotonically
+      // forward — so the gate starts closed: a cue fired during scene
+      // `create(ctx)` (before any play()) produces no audible output.
+      const audio = recordingAudioEngine();
+      let capturedAudio: AudioService | null = null;
+      const sceneA = buildScene({
+        id: 'scene-a',
+        audio: ['/cue.webm'],
+        assets: ['/cue.webm'],
+        create: (ctx) => {
+          const c = ctx as WorkbenchSceneCtx;
+          capturedAudio = c.audio;
+          c.audio.load('cue', { src: '/cue.webm' });
+          c.audio.play('cue');
+        },
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: recordingTimeline().adapter,
+        audioEngine: audio.engine,
+      });
+
+      await loader.handle(scrubSceneTarget('scene-a'));
+
+      expect(capturedAudio).not.toBeNull();
+      expect(audio.plays()).toBe(0);
+    });
+
+    it('fires a cue from create() under a non-scrub mode — no gate wired (control)', async () => {
+      const audio = recordingAudioEngine();
+      const sceneA = buildScene({
+        id: 'scene-a',
+        audio: ['/cue.webm'],
+        assets: ['/cue.webm'],
+        create: (ctx) => {
+          const c = ctx as WorkbenchSceneCtx;
+          c.audio.load('cue', { src: '/cue.webm' });
+          c.audio.play('cue');
+        },
+      });
+      const stage = buildStage();
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: recordingTimeline().adapter,
+        audioEngine: audio.engine,
+      });
+
+      await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+
+      expect(audio.plays()).toBe(1);
+    });
+
+    it('hands the SAME gate instance to the audio service and the timeline adapter', async () => {
+      // Toggling the gate the timeline adapter received must change
+      // what the audio service does — proving one shared instance. The
+      // checks run inside the adapter's `run`, mid-navigation, so the
+      // audio service is still live (it is disposed once the
+      // navigation completes).
+      const audio = recordingAudioEngine();
+      let capturedAudio: AudioService | null = null;
+      const observed: number[] = [];
+      const sceneA = buildScene({
+        id: 'scene-a',
+        audio: ['/cue.webm'],
+        assets: ['/cue.webm'],
+        create: (ctx) => {
+          const c = ctx as WorkbenchSceneCtx;
+          capturedAudio = c.audio;
+          c.audio.load('cue', { src: '/cue.webm' });
+        },
+      });
+      const stage = buildStage();
+      const adapter: CompositionTimelineAdapter = {
+        run: (_segments, opts) => {
+          const svc = capturedAudio as unknown as AudioService;
+          const gate = opts.audioCueGate;
+          // Gate still closed (initial scrub state) → cue suppressed.
+          svc.play('cue');
+          observed.push(audio.plays());
+          // Open the gate via the timeline-facing handle → the audio
+          // service the loader built fires the cue.
+          gate?.setEligible(true);
+          svc.play('cue');
+          observed.push(audio.plays());
+          // Close again → suppressed.
+          gate?.setEligible(false);
+          svc.play('cue');
+          observed.push(audio.plays());
+          return Promise.resolve();
+        },
+      };
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([sceneA]),
+        compositions: createCompositionRegistry([]),
+        stage: stage.element,
+        buildCtx: stubCtx,
+        createPreloader: () => () => undefined,
+        timeline: adapter,
+        audioEngine: audio.engine,
+      });
+
+      await loader.handle(scrubSceneTarget('scene-a'));
+
+      expect(observed).toEqual([0, 1, 1]);
     });
   });
 });

@@ -361,3 +361,91 @@
   max-width: 50vw;
   text-align: right;
 }
+
+/* ----- scrub-mode transport controls (PUL-F017 / ADR-020) ------- */
+/* The workbench scrub controls are the one chrome surface that IS
+ * interactive — they drive the live master timeline — so, unlike the
+ * passive chrome slots above, they opt back into pointer events. */
+.pulsar-scrub {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(20px, 4vh, 56px);
+  transform: translateX(-50%);
+  z-index: var(--pulsar-z-hud);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: min(92vw, 980px);
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(8, 9, 12, 0.82);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--pulsar-color-fg-hair) inset;
+  color: var(--pulsar-color-fg-soft);
+  font-family: var(--pulsar-type-mono);
+  pointer-events: auto;
+}
+
+.pulsar-scrub[hidden] {
+  display: none;
+}
+
+.pulsar-scrub__btn,
+.pulsar-scrub__beat {
+  cursor: pointer;
+  color: var(--pulsar-color-fg-soft);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--pulsar-color-fg-hair);
+  border-radius: 6px;
+  font-family: var(--pulsar-type-mono);
+}
+
+.pulsar-scrub__btn {
+  min-width: 44px;
+  padding: 6px 10px;
+  font-size: var(--pulsar-type-caption-size);
+}
+
+.pulsar-scrub__btn:hover,
+.pulsar-scrub__beat:hover {
+  background: rgba(125, 245, 255, 0.16);
+  border-color: var(--pulsar-color-accent-cyan);
+}
+
+.pulsar-scrub__btn:focus-visible,
+.pulsar-scrub__beat:focus-visible,
+.pulsar-scrub__seek:focus-visible {
+  outline: 2px solid var(--pulsar-color-accent-cyan);
+  outline-offset: 2px;
+}
+
+.pulsar-scrub__seek {
+  flex: 1 1 220px;
+  min-width: 160px;
+  accent-color: var(--pulsar-color-accent-cyan);
+  cursor: pointer;
+}
+
+.pulsar-scrub__time {
+  font-size: var(--pulsar-type-caption-size);
+  color: var(--pulsar-color-fg-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pulsar-scrub__beats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.pulsar-scrub__beat {
+  padding: 4px 9px;
+  font-size: var(--pulsar-type-caption-size);
+  letter-spacing: 0.04em;
+}
+
+.pulsar-scrub__beats:empty {
+  display: none;
+}

@@ -33,6 +33,7 @@ import {
   PULSAR_NAVIGATE_ERROR_EVENT_TYPE,
   PULSAR_NAVIGATE_EVENT_TYPE,
   bootstrapNavigation,
+  effectiveMode,
 } from './runtime/navigation';
 import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
@@ -45,7 +46,12 @@ import './system/register/tokens.css';
 import './system/chrome/atmospheric.css';
 import './system/chrome/chrome.css';
 import './system/templates/templates.css';
-import { type ChromeSlots, mountChromeSlots } from './system/chrome';
+import {
+  type ChromeSlots,
+  type ScrubControlsHandle,
+  createScrubControls,
+  mountChromeSlots,
+} from './system/chrome';
 import {
   type PracticeRendererHandle,
   type PresenterBridgeHandle,
@@ -165,10 +171,26 @@ transitionOverlay.style.opacity = '0';
 transitionOverlay.style.display = 'none';
 document.body.appendChild(transitionOverlay);
 
+// PUL-F017 / ADR-020: the workbench scrub controls. Built after the
+// chrome surface is mounted (below); declared here so the timeline
+// adapter's `onMaster` hook can attach the live master to them. The
+// controls are revealed only under `mode=scrub` — `scrubMode` is
+// re-derived from the URL on every navigation (`onNavigate`), so a
+// non-scrub navigation never surfaces the transport bar.
+let scrubControls: ScrubControlsHandle | undefined;
+let scrubMode = false;
+
 const timeline = createGsapCompositionTimeline({
   engine: timelineEngine,
   transitions: defaultTransitions(),
   transitionOverlay,
+  // The composition timeline adapter reports the live master once per
+  // activation. Under `mode=scrub` the master is held live for the
+  // scrub controls to drive (PUL-F017 / ADR-020); every other mode
+  // ignores the hook.
+  onMaster: (master) => {
+    if (scrubMode) scrubControls?.attach(master);
+  },
 });
 
 // Scene context carries the stage handle, the per-navigation effective
@@ -323,7 +345,22 @@ if (chromeSurfaceEl !== null) {
     surface: chromeSurfaceEl,
     ownerDocument: document,
   });
+  // PUL-F017 / ADR-020: mount the scrub transport controls into the
+  // chrome surface AFTER the slot DOM (`mountChromeSlots` clears the
+  // surface, so it must run first). The controls stay hidden until a
+  // `mode=scrub` navigation attaches a master.
+  scrubControls = createScrubControls({
+    ownerDocument: document,
+    parent: chromeSurfaceEl,
+  });
 }
+
+// PUL-F017 / ADR-020: drive the scrub readout off the GSAP ticker so
+// the scrubber thumb and time display track playback. `sync()` is a
+// no-op when the controls are hidden / detached, so this is inert
+// outside `mode=scrub`.
+const syncScrubControls = (): void => scrubControls?.sync();
+timelineEngine.gsap.ticker.add(syncScrubControls);
 
 // Pulsar L2 keyboard presenter source. Arrows / Space / P / M / Escape.
 // `onHome` navigates to the default composition; `bootstrapNavigation`
@@ -398,9 +435,18 @@ const loader = createSceneLoader({
 
 const onNavigate = (event: Event): void => {
   const target = (event as CustomEvent<NavigationTarget>).detail;
+  // PUL-F017 / ADR-020: re-derive scrub mode from the URL (the only
+  // source of mode — ADR-007) and detach the controls from any prior
+  // master. A successful `mode=scrub` activation re-attaches via the
+  // timeline adapter's `onMaster` hook; every other navigation leaves
+  // the controls hidden.
+  scrubMode = effectiveMode(target) === 'scrub';
+  scrubControls?.detach();
   void loader.handle(target);
 };
 const onNavigateError = (event: Event): void => {
+  scrubMode = false;
+  scrubControls?.detach();
   loader.handleError((event as CustomEvent<Error>).detail);
 };
 
@@ -435,4 +481,9 @@ import.meta.hot?.dispose(() => {
   // so HMR re-evaluation does not stack duplicates.
   stageObserver?.disconnect();
   practiceRenderer?.dispose();
+  // PUL-F017 / ADR-020: drop the scrub controls + their ticker sync so
+  // HMR re-evaluation does not accumulate transport bars or ticker
+  // callbacks.
+  timelineEngine.gsap.ticker.remove(syncScrubControls);
+  scrubControls?.dispose();
 });

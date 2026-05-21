@@ -468,15 +468,99 @@ cues, AND a workbench scrub-controls surface reading `ctx.mode ===
 end-to-end tests alongside the seam tests in this PR. Treating this
 PR as satisfying PUL-F017 would be a traceability/status mismatch.
 
+## Subsequent update (2026-05-21)
+
+ADR-025 has since landed the GSAP composition timeline adapter, and
+ADR-004 has since landed the Howler-backed per-navigation
+`AudioService`. The historical "future GSAP / future audio engine"
+wording above described the first seam PR; it is no longer the
+implementation blocker for PUL-F017.
+
+The remaining PUL-F017 work is now an integration across existing
+boundaries:
+
+- `src/runtime/timeline.ts` must stop treating
+  `headCueGate: 'monotonic-forward'` as a no-op. Under scrub, the
+  adapter must keep the addressed head scene mounted with a live,
+  workbench-drivable master instead of auto-playing to natural
+  completion before the user can inspect it.
+- `src/runtime/audio.ts` must provide the dynamic cue eligibility
+  behavior the runner toggles by playhead movement direction. This
+  stays distinct from static `AudioOutputPolicy`: scrub is not
+  `silent`, not `log-cues`, and not master mute.
+- The workbench chrome surface must render scrub controls under
+  `mode=scrub` and drive the master through the `MasterTimeline`
+  transport seam exposed by `createGsapCompositionTimeline({ onMaster })`.
+  The UI must consume `master.beats()` for named beat affordances and
+  must not parse master-label strings locally or touch raw GSAP.
+
+PUL-F017 still remains DRAFT until scrub controls and actual
+monotonic-forward cue gating both land with tests. The acceptance
+bar is no longer "GSAP and audio exist"; it is "the existing GSAP
+adapter and audio service actively enforce the scrub cue contract and
+the existing chrome surface exposes the transport controls."
+
+## Implementation (2026-05-21)
+
+Issue #130 delivers the remaining work; PUL-F017 transitions DRAFT →
+ACTIVE. The integration landed across the existing boundaries with no
+new URL grammar, no new schema, and the resolver still mode-opaque:
+
+- **Scrub run mode** — `src/runtime/timeline.ts`. `positionMaster`
+  treats `headCueGate: 'monotonic-forward'` as a real run mode
+  (`'scrub'`): it seeks the master to the addressed beat (the initial
+  cursor — §Beat semantics) or frame 0 and leaves it held and live
+  for the workbench controls, instead of auto-playing to natural
+  completion. `MasterTimeline` gained `reverse()` for backward
+  playback.
+
+- **Dynamic cue gate** — `src/runtime/audio.ts`. A `CueGate` /
+  `CueGateControl` pair (`createCueGate`) is a dynamic cue-eligibility
+  gate, distinct from the static `AudioOutputPolicy`. The audio
+  service consults it inside `play()` *after* every boundary
+  validation and *before* engine output: an accepted cue is suppressed
+  while the gate is closed, but a malformed cue still fails loud.
+  Gating is scoped to cue *firing* (`play`); `fade` / `stop` /
+  `stopGroup` act on already-playing instances and are not gated.
+
+- **Direction-aware gating** — the GSAP `MasterTimeline` toggles the
+  gate synchronously from its transport methods: `play()` opens it
+  (monotonic forward), `pause()` / `reverse()` close it. GSAP ticks
+  asynchronously, so the gate is always set before any `.call()` cue
+  callback fires for that direction. `seek()` keeps GSAP's default
+  `suppressEvents`, so jump-to-beat / drag-preview / direct seek fire
+  no callbacks and replay no cues.
+
+- **Loader wiring** — `src/runtime/scene-loader.ts` builds one
+  `createCueGate(false)` under `mode=scrub` and shares the single
+  instance between the per-navigation `AudioService` (`cueGate`
+  option) and the timeline adapter (`audioCueGate`, forwarded opaquely
+  through `loadSceneNavigationTarget` → `resolveComposition` → `run`
+  the same way the `presenter` controller is).
+
+- **Scrub controls** — `src/system/chrome/scrub.ts`
+  (`createScrubControls`) is the workbench transport surface: play /
+  pause / reverse, a drag scrubber, an `m:ss` readout, and one
+  jump button per `master.beats()` entry. It drives the master only
+  through the `MasterTimeline` port, never raw GSAP, and never parses
+  master-label strings. `src/main.ts` mounts it into the chrome
+  surface and attaches the master via the `onMaster` hook only under
+  `mode=scrub`.
+
+The `cueGate: 'monotonic-forward'` runner-input hint and the
+loader/bridge/resolver slice-truncation seam from the original PR are
+unchanged; this PR makes them behave.
+
 ## Related ADRs
 
 - [ADR-003](003-gsap-timeline-engine.md) — the timeline runner is
-  the seam through which monotonic-forward cue gating will flow
-  when the GSAP runner lands. Today the runner is a placeholder, so
-  scrub behavior is structurally vacuous.
+  the seam through which monotonic-forward cue gating flows. After
+  ADR-025, the live GSAP adapter is the implementation point for
+  direction-aware scrub transport.
 - [ADR-004](004-howler-audio-engine.md) — audio cues are the
-  consumer of the cue gate. Today there is no audio engine, so the
-  gate has no consumer.
+  consumer of the cue gate. After PUL-F024, the per-navigation
+  `AudioService` is the implementation point for dynamic cue
+  suppression.
 - [ADR-007](007-browser-workbench.md) — defines the eight workbench
   modes and the URL-only-source invariant for mode selection.
   Specifically references `mode=scrub` as the timing/beat-alignment

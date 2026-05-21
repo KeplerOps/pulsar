@@ -25,7 +25,7 @@
 //  - ADR-011 — composition resolver as pure orchestrator with
 //    injected adapters; reused via `loadSceneNavigationTarget`.
 
-import type { AudioBedDeclaration } from './audio';
+import type { AudioBedDeclaration, CueGateControl } from './audio';
 import {
   type CompositionEntry,
   type CompositionManifest,
@@ -202,6 +202,15 @@ export interface LoadSceneNavigationTargetOptions {
    * parameter.
    */
   readonly cueGate?: 'monotonic-forward';
+  /**
+   * Dynamic audio cue-eligibility gate (PUL-F017 / ADR-020) paired with
+   * {@link cueGate}. Forwarded to {@link resolveComposition} as
+   * `audioCueGate`; the GSAP timeline adapter toggles it by playhead
+   * direction so the per-navigation audio service suppresses cues that
+   * are not produced by monotonic forward playback. Absent when the
+   * navigation target had no `mode=scrub` parameter.
+   */
+  readonly audioCueGate?: CueGateControl;
   /**
    * URL screenshot-mode capture-bundle hint (PUL-F018 / ADR-021) the
    * runner uses to decide whether to render the addressed scene at
@@ -715,6 +724,7 @@ function buildResolverOptions(
     ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
     ...(options.hold === undefined ? {} : { headHold: options.hold }),
     ...(options.cueGate === undefined ? {} : { headCueGate: options.cueGate }),
+    ...(options.audioCueGate === undefined ? {} : { audioCueGate: options.audioCueGate }),
     ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
     ...presenterPair,
     ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),

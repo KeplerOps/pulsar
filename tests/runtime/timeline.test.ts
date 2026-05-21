@@ -734,14 +734,109 @@ describe('createGsapCompositionTimeline', () => {
     await settled;
   });
 
-  it('ignores headCueGate (no audio engine yet) and plays normally', async () => {
+  it('holds the master mounted and live (paused at frame 0) under headCueGate — scrub run mode', async () => {
+    // PUL-F017 / ADR-020: under scrub the adapter must keep the head
+    // scene mounted with a live master the workbench controls can
+    // drive, instead of auto-playing it to natural completion before
+    // the user can inspect it.
     const controller = new AbortController();
-    const { master, settled } = runWith([segment('a', sceneTl(1))], {
+    const done = vi.fn();
+    const { master, settled } = runWith([segment('a', sceneTl(30))], {
+      signal: controller.signal,
+      headCueGate: 'monotonic-forward',
+    });
+    void settled.then(done);
+    await flush();
+    expect(master().isPaused()).toBe(true);
+    expect(master().time()).toBeCloseTo(0);
+    expect(done).not.toHaveBeenCalled();
+    controller.abort();
+    await settled;
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('honors headBeat as the initial scrub cursor under headCueGate', async () => {
+    const controller = new AbortController();
+    const { master, settled } = runWith([segment('intro', sceneTl(4, { hook: 2 }))], {
+      signal: controller.signal,
+      headCueGate: 'monotonic-forward',
+      headBeat: 'hook',
+      onBeatMissing: vi.fn(),
+    });
+    await flush();
+    expect(master().time()).toBeCloseTo(2, 1);
+    expect(master().isPaused()).toBe(true);
+    controller.abort();
+    await settled;
+  });
+
+  it('resolves immediately with no abort signal under headCueGate (held frame rendered)', async () => {
+    const adapter = createGsapCompositionTimeline({ engine });
+    await expect(
+      adapter.run([segment('a', sceneTl(30))], { headCueGate: 'monotonic-forward' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('exposes a reverse() transport method on the scrub master', async () => {
+    const controller = new AbortController();
+    const { master, settled } = runWith([segment('a', sceneTl(2))], {
       signal: controller.signal,
       headCueGate: 'monotonic-forward',
     });
     await flush();
+    expect(master().reverse).toBeTypeOf('function');
+    master().seek(1);
+    master().reverse();
     expect(master().isPaused()).toBe(false);
+    controller.abort();
+    await settled;
+  });
+
+  it('toggles the audio cue gate by transport direction — pause/reverse close it, play opens it', async () => {
+    // PUL-F017 / ADR-020: cue eligibility tracks "the master is playing
+    // monotonically forward." The adapter sets it synchronously inside
+    // each transport method, before GSAP's async tick fires any cue.
+    const controller = new AbortController();
+    const calls: boolean[] = [];
+    const gate = {
+      isEligible: () => calls.at(-1) ?? true,
+      setEligible: (e: boolean) => calls.push(e),
+    };
+    const { master, settled } = runWith([segment('a', sceneTl(2))], {
+      signal: controller.signal,
+      headCueGate: 'monotonic-forward',
+      audioCueGate: gate,
+    });
+    await flush();
+    // The initial held frame is not forward playback → gate closed.
+    expect(calls.at(-1)).toBe(false);
+    master().play();
+    expect(calls.at(-1)).toBe(true);
+    master().pause();
+    expect(calls.at(-1)).toBe(false);
+    master().play();
+    expect(calls.at(-1)).toBe(true);
+    master().reverse();
+    expect(calls.at(-1)).toBe(false);
+    controller.abort();
+    await settled;
+  });
+
+  it('does not touch a cue gate for a non-scrub navigation (no headCueGate)', async () => {
+    // The cue gate exists only for scrub. A plain play-through master
+    // must never call into a wired gate.
+    const controller = new AbortController();
+    const calls: boolean[] = [];
+    const gate = {
+      isEligible: () => true,
+      setEligible: (e: boolean) => calls.push(e),
+    };
+    const { settled } = runWith([segment('a', sceneTl(0.02))], {
+      signal: controller.signal,
+      audioCueGate: gate,
+    });
+    await flush();
+    expect(calls).toEqual([]);
     controller.abort();
     await settled;
   });
