@@ -1,158 +1,207 @@
 # PUL-F020 Presenter Controls Preflight
 
-PUL-F020 specifies the runtime-side acceptance of presenter input
-under `mode=present`: advance to the next beat, hold the current
-beat, skip forward, and skip backward, with beat progression
-interruptible without breaking timeline state. It is one of the
-four facets ADR-016 names as gating PUL-F013 ACTIVE; the visible
-presenter UI surface and the GSAP runner that translates commands
-to transport calls are out of scope for this requirement and are
-the gating deliveries for PUL-F020 ACTIVE.
+PUL-F020 specifies runtime acceptance of presenter input under
+`mode=present`: advance to the next beat, hold the current beat, skip
+forward, and skip backward. Beat progression must be interruptible
+without breaking timeline state.
 
-## Boundary
+This note is design guidance only. It is not an implementation plan.
 
-Presenter input must flow through the existing navigation /
-lifecycle boundary:
+## Current Boundary
 
-- `src/runtime/navigation.ts` owns the `mode` URL grammar and the
-  `NAVIGATION_MODES` allowlist. Presenter input is not a URL
-  parameter; it is a workbench-supplied stream.
-- `effectiveMode()` owns the absent-mode default to `present`. The
-  loader uses this to scope presenter forwarding to mode=present
-  (explicit OR absent).
-- `src/runtime/scene-loader.ts` owns per-navigation mode dispatch,
-  `ctx.mode` construction, AND the per-navigation
-  `PresenterController` construction.
-- `src/runtime/scene-navigation.ts` owns scene/composition target
-  resolution and the lifecycle bridge; it forwards `presenter`
-  without interpretation.
-- `src/runtime/composition-resolver.ts` owns lifecycle ordering,
-  abort propagation, and cleanup; it forwards `presenter` to every
-  scene's run input.
-- `src/runtime/presenter.ts` is the new pure module that defines
-  the command shape, the source/controller interfaces, and the
-  per-navigation controller factory.
+The current repository already has the presenter-control seam and the
+browser input surfaces that issue #132 described as pending. Follow-up
+work must harden and test those seams, not add a second runtime path.
 
-Do not add a parallel keyboard listener at the runtime level, a
-second cleanup pathway for presenter-driven aborts, or a
-per-scene command pump. Mode dispatch and per-navigation
-controller construction live at one seam (`buildLoad` in the
-loader); subscriptions auto-detach via the existing
-`AbortController.signal`.
+- `src/runtime/navigation.ts` owns the URL grammar, `NAVIGATION_MODES`,
+  and `effectiveMode()`. Presenter input is not URL state.
+- `src/main.ts` is the browser composition root. It wires the keyboard
+  source, same-origin presenter bridge, practice overlay subscriber,
+  and `SceneLoaderOptions.presenterCommands`, and disposes those
+  long-lived surfaces during Vite HMR teardown.
+- `src/system/presenter/keyboard-source.ts` owns DOM keyboard event to
+  `PresenterCommand` translation. It is parameterized by
+  `KeyboardPresenterBindings`; do not duplicate the key map elsewhere.
+- `src/system/presenter/bridge.ts` owns same-origin
+  `BroadcastChannel` fan-out and `combinePresenterSources()`. It is a
+  local workbench bridge, not an auth boundary or remote protocol.
+- `src/runtime/presenter.ts` owns the single command schema,
+  allowlist, shape guard, defensive frozen copy, handler isolation, and
+  abort-tied controller cleanup.
+- `src/runtime/scene-loader.ts` owns mode scoping. It builds a
+  `PresenterController` only when `effectiveMode(target) === 'present'`
+  and a source was supplied, then threads it into `ctx.presenter` and
+  the timeline adapter options.
+- `src/runtime/scene-navigation.ts` and
+  `src/runtime/composition-resolver.ts` forward `presenter`; they do
+  not interpret commands. `mode=present` runs the full composition
+  slice, so presenter forwarding is not head-only.
+- `src/runtime/timeline.ts` owns command-to-master-transport behavior
+  through `MasterTimeline`, namespaced beat labels, and segment-start
+  labels. The runner is the only layer that should translate
+  `advance`, `hold`, `skip-forward`, and `skip-backward` into
+  `play()`, `pause()`, or `seek()`.
+- `src/system/helpers/timing.ts` owns scene-authoring helpers such as
+  `addAdvanceGate()`, `aSleep()`, and `holdUntilAdvance()`. Scenes use
+  these helper seams rather than binding keyboard events.
+
+## Architecture Decisions
+
+- Presenter controls are a command stream, not a workbench mode, URL
+  parameter, persistent state, manifest field, or scene schema field.
+- The command bus is single-source. `PRESENTER_COMMAND_KINDS` and
+  `isPresenterCommand()` are the only runtime command allowlist and
+  validator.
+- Local keyboard input and cross-window bridge input are workbench
+  sources. They may be composed into one `PresenterCommandSource`, but
+  the loader remains the mode gate.
+- Timeline behavior is runner-owned. Loader, resolver, scenes, chrome,
+  and keyboard code must not call GSAP transport methods to satisfy
+  PUL-F020.
+- F020 beat-pacing state must not be conflated with F021 transport
+  pause/resume. GSAP exposes one `paused()` bit, but the runtime
+  semantics are not one bit:
+  - `hold` is a beat-pacing hold. It must not be implemented as a
+    toggle that resumes playback on a second `hold`.
+  - `pause` / `resume` are explicit transport-freeze commands owned by
+    PUL-F021. Only `resume` unfreezes an explicit pause.
+  - `advance` may release a beat hold or move to the next authored beat
+    / segment boundary, but it must not silently clear an explicit
+    PUL-F021 pause.
+  - `skip-forward` / `skip-backward` may seek the frozen playhead while
+    paused, but they must not implicitly resume playback when ADR-024's
+    explicit pause gate is active.
+  Any private state needed to distinguish those cases belongs inside
+  the timeline adapter, not in URL state, loader state, scene globals,
+  or storage.
+- Skip semantics are discrete navigation. They seek to canonical master
+  labels: authored beats via `MasterTimeline.beats()` and scene
+  boundaries via `sceneSegmentLabel()` / the segment label map. Do not
+  treat skip as scrub or arbitrary millisecond seeking.
 
 ## Required Reuse
 
-Implementation must reuse these cross-cutting concerns:
+Implementation must reuse these incumbents:
 
-- URL grammar and mode validation: `parseNavigationSearch()`,
-  `NAVIGATION_MODES`, `effectiveMode()`. Do not introduce a
-  parallel "is present" check or a duplicate mode allowlist.
-- Lifecycle orchestration: `loadSceneNavigationTarget()` and
-  `resolveComposition()`. Forward `presenter` through the existing
-  spread-when-defined pattern parallel to `signal`.
-- Abort and cleanup: one per-navigation `AbortController`. The
-  presenter controller's auto-detach binds to the same signal that
-  drives lifecycle cleanup; no separate cleanup wiring.
-- Error rendering: the loader's `onError` sink. Boundary
-  diagnostics from the controller (unknown command kind, handler
-  exception) flow through the same channel as every other
-  runtime-level error.
-- Frozen invariants: `Object.freeze` for the command-kind allowlist
-  and the command discriminator object so a misbehaving runner
-  cannot mutate them post-emission. `deepFreeze` is not needed
-  (commands are flat).
-- Identifier validation: `src/runtime/identifier.ts` is not used
-  here (commands are kind-based, not id-based).
+- URL and mode validation: `parseNavigationSearch()`,
+  `NAVIGATION_MODES`, `effectiveMode()`, and loader-side defensive mode
+  checks for hand-built `NavigationTarget` values.
+- Presenter input schema and cleanup: `PRESENTER_COMMAND_KINDS`,
+  `PresenterCommand`, `isPresenterCommand()`,
+  `PresenterCommandSource`, `PresenterController`, and
+  `createPresenterController()`.
+- Browser input surfaces: `createKeyboardPresenterSource()`,
+  `DEFAULT_KEYBOARD_BINDINGS`, `KeyboardPresenterBindings`,
+  `createPresenterBridge()`, and `combinePresenterSources()`.
+- Lifecycle orchestration: `createSceneLoader()`,
+  `loadSceneNavigationTarget()`, `resolveComposition()`, the
+  per-navigation `AbortSignal`, and resolver cleanup. Presenter
+  commands must not add a cleanup path.
+- Timeline transport and beat grammar: `createGsapCompositionTimeline()`,
+  `MasterTimeline`, `assertSceneTimeline()`, `MasterTimeline.beats()`,
+  `sceneSegmentLabel()`, `sceneTimelineLabel()`, and
+  `parseSceneTimelineLabel()`.
+- Scene authoring helpers: `addAdvanceGate()`, `aSleep()`, and
+  `holdUntilAdvance()` for presenter-driven waits and advance gates.
+- Error rendering and diagnostics: `describeErrorDetailed()`,
+  `formatSceneContext()`, loader `onError`,
+  `data-pulsar-navigation-error`, and `data-pulsar-scene-failures`.
+- Workbench cleanup: HMR disposal of navigation listeners, loader,
+  chrome, transition overlay, keyboard source, presenter bridge,
+  stage observer, practice renderer, scrub controls, and GSAP ticker
+  callbacks.
 
-## Guardrails
+## Cross-Cutting Layers
 
-- Presenter input is scoped to `mode=present`. The loader builds
-  the controller only when `effectiveMode(target) === 'present'`
-  AND `presenterCommands` is supplied. No leak into standalone /
-  loop / paused / scrub / screenshot / prompter.
-- Commands are translated to timeline operations by the runner,
-  not the runtime core. ADR-003 names GSAP `play()` / `pause()` /
-  `seek()` / `tweenTo()` as the legitimate transport calls. No
-  `setTimeout` / `setInterval` polling for command arrivals.
-- The runtime does not attach keyboard listeners. The future
-  presenter UI module (a workbench surface) attaches listeners,
-  translates them to `PresenterCommand`s, and emits via a
-  `PresenterCommandSource`. ADR-007's "URL is the only source for
-  mode" rule extends here: the runtime does not look at
-  `window.location` or any global to decide whether commands are
-  active; the workbench-supplied source IS the gate.
-- The controller's auto-detach is a safety net, not a substitute
-  for runner hygiene. A runner that subscribes SHOULD still call
-  the returned unsubscribe on its own scene-exit path; the abort-
-  driven detach catches the runner that forgets.
-- Boundary validation drops unknown command kinds. The runner does
-  not see malformed commands; the diagnostic flows through
-  `onError`. Do not throw from the boundary; do not unmount the
-  scene to report a malformed command.
-- The interruptibility clause ("beat progression SHALL be
-  interruptible without breaking timeline state") is satisfied by
-  the existing PUL-F006 mandatory-cleanup invariant. Do not
-  introduce a second cleanup path or skip cleanup on the abort
-  branch.
+| Layer | Canonical gate | Required behavior |
+|-------|----------------|-------------------|
+| URL grammar | `parseNavigationSearch()` | Add no presenter query keys. Unknown query keys stay ignored; malformed canonical keys fail through the navigation error path. |
+| Mode selection | `effectiveMode()` in the loader | Recompute mode per navigation. Do not read `window.location`, localStorage, sessionStorage, cookies, `history.state`, env, argv, or cached state inside the runner or source. |
+| Keyboard input | `createKeyboardPresenterSource()` | Translate only configured bindings, ignore editable targets, prevent default only for bound keys, and dispose the listener on HMR. The documented mapping must expose every accepted command that the UI claims to support, including `skip-forward`. |
+| Cross-window input | `createPresenterBridge()` | Validate inbound channel data with `isPresenterCommand()`. Treat `BroadcastChannel` as same-origin convenience only; never as remote authorization. No tokens or secrets in channel names or messages. |
+| Source composition | `combinePresenterSources()` | Merge sources once at the composition root. Avoid double-wiring the same keyboard source, which would duplicate commands. |
+| Command shape | `PRESENTER_COMMAND_KINDS` / `isPresenterCommand()` | Keep commands flat and discriminator-based unless a future kind needs data. Unknown kinds are dropped before the runner and reported through the existing diagnostic sink. |
+| Command payload safety | `createPresenterController()` | Fan out one frozen defensive copy per accepted emission, isolate throwing subscribers, and auto-detach on abort/completion. |
+| Timeline shape | `assertSceneTimeline()` / `MasterTimeline` | Only GSAP timelines or null enter the master. Beat labels are kebab-case finite scene-local labels copied into namespaced master labels. |
+| Lifecycle | loader abort + resolver cleanup | Presenter commands do not abort, remount, or call `cleanup(ctx)` directly. Superseding navigation still aborts and cleans up exactly once. |
+| Audio sibling command | loader mute subscriber + `AudioService` | `toggle-master-mute` may share the bus, but the timeline runner ignores audio-owned commands and audio code does not inspect beat commands. |
+| Error envelope | `describeErrorDetailed()` and loader `onError` | Do not serialize raw future remote payloads, stacks, DOM nodes, scene objects, captions, cookies, headers, env, auth values, GSAP instances, or Howler handles. |
+| Config/env/OS exposure | package scripts and in-browser state | No env vars, config files, CLI flags, process argv tokens, shell commands, files, cookies, or browser storage are needed for F020. |
+| Structural validation | `validateRuntime()` over `WORKBENCH_SCENES` / `WORKBENCH_COMPOSITIONS` | Presenter controls do not bypass the canonical graph validation pass or create a deck-only registry path. |
+
+## Extensibility
+
+- New keyboard mappings belong in `KeyboardPresenterBindings` and tests
+  for `createKeyboardPresenterSource()`, not in the loader, runner, or
+  scene modules.
+- Future on-screen controls should implement `PresenterCommandSource`
+  and be composed with existing sources. They should not call the
+  loader, resolver, or `MasterTimeline` directly.
+- Future remote presenter protocols must authenticate and authorize
+  before emitting into `PresenterCommandSource`. The presenter
+  controller remains the local shape gate, not the security boundary.
+- Future command payloads extend `PresenterCommand` as a discriminated
+  union and update `isPresenterCommand()` in the same module. Do not add
+  a second command schema.
+- Future presenter status UI needs a separate runner/workbench status
+  surface. Do not overload `PresenterCommandSource`, URL grammar, stage
+  error attributes, or timeline labels as a state store.
+- L2-only commands such as `toggle-practice` may ride the same bus only
+  with explicit ownership. Runtime transport code must ignore
+  non-transport commands.
+
+## Gotchas
+
+- Issue text may be stale. In this checkout keyboard and GSAP command
+  plumbing already exist; evaluate the live incumbents before adding
+  anything.
+- `MasterTimeline.isPaused()` is not enough to distinguish beat hold,
+  GSAP addPause gates, and explicit PUL-F021 pause. Treating all three
+  as the same state creates resume/advance bugs.
+- `advance` and `skip-forward` are different commands. A keyboard map
+  that exposes only `advance` and `skip-backward` does not prove the
+  full PUL-F020 input surface.
+- `hold` and `pause` are different commands. Reusing one for the other
+  breaks ADR-024 cross-command precedence.
+- `mode=present` and absent `mode` are equivalent only through
+  `effectiveMode()`. Branching on `target.mode === 'present'` misses the
+  default-present path.
+- Presenter forwarding is full-slice under `mode=present`. Making it
+  head-only silently drops controls for later scenes.
+- Source-level validation and controller-level validation are both
+  useful. Do not remove the controller guard because keyboard or bridge
+  sources currently emit typed objects.
+- Same-origin `BroadcastChannel` delivery is asynchronous and may be
+  unavailable. The bridge must remain inert when unsupported.
 
 ## Non-Goals
 
-PUL-F020 should not implement:
+PUL-F020 should not implement new URL grammar, new workbench modes,
+remote presenter auth, persistence, telemetry, new scene or composition
+schemas, a second event bus, a second command validator, a new
+exception hierarchy, direct Howler or raw audio handling, scrub-mode
+controls, export behavior, requirement status transition, or
+traceability automation.
 
-- Pause / resume (PUL-F021 — separate requirement).
-- Master mute (PUL-F025 — separate requirement).
-- Scene-level skip ("jump to next/prev scene"). The four named
-  commands are beat-level navigation within the active scene;
-  scene-level navigation is a URL-grammar concern (PUL-F008 / PUL-F011).
-- Scrub controls (PUL-F017 / `mode=scrub`). Skip is a discrete
-  beat jump, not a continuous millisecond seek.
-- A remote-presenter protocol (HTTP, WebSocket, etc.). The source
-  is workbench-supplied; how it gathers input (keyboard, on-screen
-  controls, future remote-presenter bridge) is the source's
-  concern.
-- The visible presenter UI surface (keyboard listener, on-screen
-  controls). PUL-F020 ACTIVE depends on this surface; the
-  contract layer ships first per the ADR-016 / ADR-017 / ADR-018 /
-  ADR-019 / ADR-020 / ADR-021 / ADR-022 precedent.
-- The GSAP runner that translates commands to transport calls
-  (ADR-003 territory). PUL-F020 ACTIVE depends on this runner.
+It should not redesign PUL-F021 pause/resume or PUL-F025 master mute.
+Those commands share the presenter seam but retain separate behavior
+ownership.
 
 ## Anti-Patterns
 
-- Attaching keyboard listeners at the scene level. Scenes receive
-  commands through the runner's `input.presenter` subscription
-  (when the runner needs that signal); they do not run their own
-  input pumps.
-- Duplicating `PRESENTER_COMMAND_KINDS` or re-validating command
-  shapes inside the runner. The controller's `isPresenterCommand`
-  check is the single boundary; the runner sees only well-formed
+- Attaching keyboard listeners in scenes, decks, templates, or the
+  runtime core.
+- Duplicating `PRESENTER_COMMAND_KINDS`, `NAVIGATION_MODES`, beat-label
+  parsing, or segment-label parsing.
+- Reading mode from globals inside the keyboard source or timeline
+  adapter.
+- Implementing beat controls by mutating URL/history, browser storage,
+  scene globals, or manifest data.
+- Calling `cleanup(ctx)`, aborting navigation, or remounting scenes for
+  `advance`, `hold`, or `skip-*`.
+- Using `setTimeout`, polling, or wall-clock state to detect presenter
   commands.
-- Treating skip as scrub. Skip is a beat-level jump; scrub is a
-  continuous-seek interaction model owned by `mode=scrub`.
-- Treating hold as pause. Hold pauses the current beat (timeline
-  paused at the current position); pause / resume is a separate
-  full-composition transport state owned by PUL-F021.
-- Building a long-lived controller that survives across
-  navigations. The controller is per-navigation; subscriptions
-  auto-detach when the navigation aborts. A long-lived controller
-  re-introduces the leak failure mode the per-navigation design
-  defends against.
-- Reading mode from `window.location` to decide whether to subscribe
-  inside the runner. The runner subscribes when `input.presenter`
-  is present; the loader's mode-scoping decides presence.
-- Building a second exception hierarchy for presenter errors. The
-  controller's boundary diagnostics use the existing `onError`
-  sink with plain `Error` objects. Callers pattern-match on the
-  prefix `presenter command rejected:` if they need to (the
-  message naming follows the resolver's `composition resolution
-  failed:` envelope precedent — same prefix-style diagnostic
-  surface, no separate type).
-- Using `setTimeout` / polling to schedule command arrivals. The
-  source emits synchronously; the controller forwards
-  synchronously; the runner translates to GSAP transport calls
-  that are themselves frame-aligned (ADR-003).
-- Creating a `data-pulsar-mode-*` suppression attribute under
-  `mode=present` to gate the runner's subscription. ADR-016 forbids
-  preemptive suppression attributes under `mode=present`. The
-  runner's behavior is gated by `input.presenter`'s presence, not
-  by stage-attribute introspection.
+- Treating skip as scrub or as arbitrary millisecond seek.
+- Letting audio-owned commands, practice-overlay commands, or future UI
+  commands leak into master-timeline transport behavior.
+- Emitting raw remote/channel payloads into public diagnostics.

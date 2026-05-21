@@ -26,9 +26,11 @@
 // MUST NOT abort the navigation, call `cleanup(ctx)`, remount the
 // scene, rewrite URL/history, or persist the playhead; they are
 // runner-owned transport state on the same command seam, not a new
-// mode or lifecycle path (ADR-024). PUL-F020 and PUL-F021 both stay
-// DRAFT until a real presenter UI lands AND a GSAP runner proves the
-// command-to-transport behavior end to end.
+// mode or lifecycle path (ADR-024). The keyboard presenter source
+// (`src/system/presenter/keyboard-source.ts`) and the GSAP runner's
+// `applyPresenterCommandToMaster` (`src/runtime/timeline.ts`) now
+// deliver and honor these commands end to end — PUL-F020 / PUL-F021 are
+// ACTIVE (issue #132).
 //
 // PUL-F025 (master mute) composes ADR-004 with this same seam by
 // adding the `toggle-master-mute` kind to the allowlist below. The
@@ -42,9 +44,9 @@
 // timeline, aborts the navigation, calls `cleanup(ctx)`, or mutates
 // URL / history. Master mute is engine-level runtime state, so it
 // survives scene cleanup and navigation completion (the existing
-// `AudioService.stopAll()` does not reset it). PUL-F025 stays DRAFT
-// until a presenter UI surface lands and emits the kind end-to-end,
-// mirroring the PUL-F020 / PUL-F021 precedent.
+// `AudioService.stopAll()` does not reset it). The keyboard presenter
+// source emits `toggle-master-mute` (KeyM) end-to-end — PUL-F025 is
+// ACTIVE (issue #132).
 //
 // References:
 //  - PUL-F020 — runtime SHALL accept presenter input under

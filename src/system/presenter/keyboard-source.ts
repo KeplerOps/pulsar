@@ -3,11 +3,21 @@
 // Translates keyboard events on the document into PresenterCommands.
 // The default mapping covers the documented presenter UX:
 //
-//   ArrowRight, Space  → advance (next beat / next scene)
-//   ArrowLeft          → skip-backward
-//   KeyP               → hold (presenter holds the current beat)
+//   ArrowRight, Space  → advance (next beat)
+//   PageDown           → skip-forward (next scene)
+//   ArrowLeft, PageUp  → skip-backward (previous scene)
+//   KeyP               → hold (hold the current beat)
+//   KeyK               → pause (freeze the active timeline — PUL-F021)
+//   KeyL               → resume (resume from the same point — PUL-F021)
 //   KeyM               → toggle-master-mute
+//   KeyN               → toggle-practice (speaker-notes overlay)
 //   Escape             → navigates to ?composition=default (home)
+//
+// `pause` / `resume` are deliberately separate keys, not one toggle
+// key: the source maps one key to one command kind, and ADR-024 forbids
+// a source-local hidden paused boolean. A future single toggle key
+// belongs with a runner→workbench status surface (ADR-024, own design
+// pass).
 //
 // Listeners are added on construction and removed by the returned
 // `dispose()` so HMR replacement does not leak handlers. Keys
@@ -29,8 +39,12 @@ export interface KeyboardPresenterBindings {
 export const DEFAULT_KEYBOARD_BINDINGS: KeyboardPresenterBindings = {
   ArrowRight: 'advance',
   Space: 'advance',
+  PageDown: 'skip-forward',
   ArrowLeft: 'skip-backward',
+  PageUp: 'skip-backward',
   KeyP: 'hold',
+  KeyK: 'pause',
+  KeyL: 'resume',
   KeyM: 'toggle-master-mute',
   KeyN: 'toggle-practice',
   Escape: 'home',

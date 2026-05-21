@@ -811,24 +811,60 @@ function buildSegmentLabelMap(
 }
 
 /**
+ * Per-activation presenter transport state, held inside the
+ * {@link createGsapCompositionTimeline} `run` closure (fresh per
+ * navigation). GSAP exposes only a single `paused()` bit, which is not
+ * a sufficient state model: a PUL-F020 beat `hold`, a GSAP `addPause`
+ * advance-gate, and an explicit PUL-F021 `pause` all read as "paused"
+ * but compose differently. ADR-024 *Cross-command precedence* requires
+ * the runner to keep them apart; these two flags are that private
+ * state, scoped to the timeline adapter — not URL, loader, scene, or
+ * storage state.
+ */
+interface PresenterTransportState {
+  /** A PUL-F020 beat `hold` is engaged. */
+  held: boolean;
+  /** A PUL-F021 transport `pause` freeze is engaged. */
+  explicitlyPaused: boolean;
+}
+
+/**
  * Translate a {@link PresenterCommand} into a master-timeline transport
  * action. Wired by {@link createGsapCompositionTimeline} so the
  * presenter keyboard / cross-window bridge / future remote source all
- * drive playback the same way:
+ * drive playback the same way. ADR-024 *Cross-command precedence* is
+ * the binding contract:
  *
- *  - `advance` — if paused (at an addPause gate or a `hold`), resume.
- *    Otherwise seek forward to the next authored beat label OR next
- *    segment boundary (whichever is closer), then keep playing.
- *  - `hold` — toggle pause/resume at the current playhead.
- *  - `skip-forward` — seek to the start of the next segment.
- *  - `skip-backward` — seek to the start of the previous segment, or
- *    frame 0 if before the first segment.
- *  - `pause` / `resume` — explicit pause/play.
- *  - `toggle-master-mute` — handled by the loader against the audio
- *    service; ignored here.
+ *  - `pause` — engage the explicit PUL-F021 transport freeze. The
+ *    playhead stops wherever it is.
+ *  - `resume` — release an explicit `pause`. A `resume` with no explicit
+ *    pause in effect is a no-op; a `resume` that lifts a pause engaged
+ *    while a `hold` was active leaves the master held (the snapshotted
+ *    beat-pacing state survives — only the freeze is lifted).
+ *  - `hold` — engage a PUL-F020 beat hold at the current playhead.
+ *    Idempotent: a second `hold` keeps the master held; it is NOT a
+ *    play/pause toggle.
+ *  - `advance` — release a beat hold / `addPause` gate, or (when
+ *    playing) seek forward to the next authored beat label OR next
+ *    segment boundary (whichever is closer). Dropped while explicitly
+ *    paused — a beat-pacing command never unfreezes an explicit pause.
+ *  - `skip-forward` / `skip-backward` — seek to the start of the next /
+ *    previous segment (frame 0 before the first). While explicitly
+ *    paused this seeks the frozen playhead but does not resume.
+ *  - `toggle-master-mute` / `toggle-practice` — audio-owned / L2-owned;
+ *    ignored here.
  */
-function presenterAdvance(master: MasterTimeline, segments: readonly SceneTimelineSegment[]): void {
+function presenterAdvance(
+  master: MasterTimeline,
+  segments: readonly SceneTimelineSegment[],
+  state: PresenterTransportState,
+): void {
+  // ADR-024: a beat-pacing command received while explicitly paused
+  // MUST NOT resume playback — drop it; the frozen playhead stays put.
+  if (state.explicitlyPaused) return;
+  state.held = false;
   if (master.isPaused()) {
+    // Release the beat hold (or a GSAP addPause advance-gate).
     master.play();
     return;
   }
@@ -839,53 +875,79 @@ function presenterAdvance(master: MasterTimeline, segments: readonly SceneTimeli
     .filter((t) => t > now + 0.05)
     .sort((a, b) => a - b)[0];
   if (next !== undefined) master.seek(next);
+}
+
+/**
+ * Shared skip body: seek to `target` (when defined), then — unless an
+ * explicit PUL-F021 pause is in effect — release any beat hold and
+ * resume playback. ADR-024 permits skip to move the frozen playhead
+ * while paused (presenter scrubbing), but it must not resume.
+ */
+function presenterSkip(
+  master: MasterTimeline,
+  state: PresenterTransportState,
+  target: number | undefined,
+): void {
+  if (target !== undefined) master.seek(target);
+  if (state.explicitlyPaused) return;
+  state.held = false;
   if (master.isPaused()) master.play();
 }
 
 function presenterSkipForward(
   master: MasterTimeline,
   segments: readonly SceneTimelineSegment[],
+  state: PresenterTransportState,
 ): void {
-  const segs = buildSegmentLabelMap(segments, master);
-  const next = segs.find((s) => s.time > master.time() + 0.05);
-  if (next !== undefined) master.seek(next.time);
-  if (master.isPaused()) master.play();
+  const next = buildSegmentLabelMap(segments, master).find((s) => s.time > master.time() + 0.05);
+  presenterSkip(master, state, next?.time);
 }
 
 function presenterSkipBackward(
   master: MasterTimeline,
   segments: readonly SceneTimelineSegment[],
+  state: PresenterTransportState,
 ): void {
   const segs = buildSegmentLabelMap(segments, master);
   const prev = [...segs].reverse().find((s) => s.time < master.time() - 0.2);
-  master.seek(prev?.time ?? 0);
-  if (master.isPaused()) master.play();
+  presenterSkip(master, state, prev?.time ?? 0);
 }
 
 function applyPresenterCommandToMaster(
   master: MasterTimeline,
   segments: readonly SceneTimelineSegment[],
+  state: PresenterTransportState,
   cmd: { readonly kind: string },
 ): void {
   switch (cmd.kind) {
     case 'hold':
-      if (master.isPaused()) master.play();
-      else master.pause();
+      // Engage a PUL-F020 beat hold. Idempotent — NOT a toggle.
+      state.held = true;
+      master.pause();
       return;
     case 'pause':
+      // Engage the explicit PUL-F021 transport freeze.
+      state.explicitlyPaused = true;
       master.pause();
       return;
     case 'resume':
+      // ADR-024: only `resume` unfreezes an explicit pause; a `resume`
+      // with no explicit pause in effect is a no-op.
+      if (!state.explicitlyPaused) return;
+      state.explicitlyPaused = false;
+      // Restore the snapshotted beat-pacing state: a `hold` engaged
+      // before the pause survives the resume — the master stays held.
+      if (state.held) return;
       master.play();
       return;
     case 'advance':
-      presenterAdvance(master, segments);
+      presenterAdvance(master, segments, state);
       return;
     case 'skip-forward':
-      presenterSkipForward(master, segments);
+      presenterSkipForward(master, segments, state);
       return;
     case 'skip-backward':
-      presenterSkipBackward(master, segments);
+      presenterSkipBackward(master, segments, state);
       return;
     default:
       return; // toggle-master-mute / toggle-practice / unknown — not master's concern
@@ -973,12 +1035,14 @@ function runMasterUntilDone(
  * (the resolver wraps it with `composition resolution failed:` and
  * tears every scene down).
  *
- * `opts.presenter` (the presenter command controller) and a segment's
- * `range` (per-entry composition override) are not interpreted here yet
- * — presenter → transport translation is PUL-F020 / PUL-F021's runner
- * contract and sub-range cuts are PUL-F003's; both extend this adapter's
- * `MasterTimeline` transport seam when those requirements are
- * implemented.
+ * `opts.presenter` (the per-navigation presenter command controller) is
+ * subscribed here: each {@link PresenterCommand} is translated into a
+ * master transport action by {@link applyPresenterCommandToMaster}
+ * (PUL-F020 advance / hold / skip-forward / skip-backward; PUL-F021
+ * pause / resume). A segment's `range` (per-entry composition override)
+ * is still not interpreted — sub-range cuts are PUL-F003's and extend
+ * this adapter's `MasterTimeline` transport seam when that requirement
+ * is implemented.
  */
 export function createGsapCompositionTimeline(
   options: GsapCompositionTimelineOptions,
@@ -1025,8 +1089,11 @@ export function createGsapCompositionTimeline(
       // auto-detach on navigation abort), so we never accumulate
       // subscriptions across activations.
       if (opts.presenter !== undefined) {
+        // Per-activation transport state — fresh per navigation, so a
+        // prior navigation's hold / pause never leaks into this run.
+        const transport: PresenterTransportState = { held: false, explicitlyPaused: false };
         opts.presenter.subscribe((cmd) => {
-          applyPresenterCommandToMaster(master, segments, cmd);
+          applyPresenterCommandToMaster(master, segments, transport, cmd);
         });
       }
       return runMasterUntilDone(master, mode, opts.signal);

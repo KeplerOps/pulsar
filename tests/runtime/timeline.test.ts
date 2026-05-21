@@ -31,6 +31,11 @@ import type {
   SceneTimelineSegment,
 } from '../../src/runtime/composition-resolver';
 import { resolveComposition } from '../../src/runtime/composition-resolver';
+import {
+  type PresenterCommand,
+  type PresenterCommandSource,
+  createPresenterController,
+} from '../../src/runtime/presenter';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneModule } from '../../src/runtime/scene';
 import {
@@ -1003,5 +1008,190 @@ describe('createGsapCompositionTimeline', () => {
     expect(master.isPaused()).toBe(true);
     expect(master.time()).toBe(0);
     master.kill();
+  });
+});
+
+// PUL-F020 (advance / hold / skip-forward / skip-backward) and PUL-F021
+// (pause / resume) — the runner's translation of presenter commands into
+// master-timeline transport. ADR-024 *Cross-command precedence* is the
+// binding contract: an explicit `pause` is distinct from a beat `hold`,
+// and only `resume` unfreezes an explicit pause.
+describe('createGsapCompositionTimeline — presenter command transport (PUL-F020 / PUL-F021)', () => {
+  // A programmatic PresenterCommandSource the test drives via `emit`.
+  const makeSource = (): {
+    source: PresenterCommandSource;
+    emit: (cmd: PresenterCommand) => void;
+  } => {
+    const handlers = new Set<(cmd: PresenterCommand) => void>();
+    return {
+      source: {
+        subscribe(handler) {
+          handlers.add(handler);
+          return () => {
+            handlers.delete(handler);
+          };
+        },
+      },
+      emit(cmd) {
+        for (const handler of [...handlers]) handler(cmd);
+      },
+    };
+  };
+
+  /** Run the adapter with a live presenter controller wired to the runner. */
+  const runWithPresenter = (
+    segments: readonly SceneTimelineSegment[],
+  ): {
+    emit: (cmd: PresenterCommand) => void;
+    master: () => MasterTimeline;
+    abort: () => void;
+    settled: Promise<void>;
+  } => {
+    const ctrl = new AbortController();
+    const { source, emit } = makeSource();
+    const presenter = createPresenterController(source, ctrl.signal);
+    let captured: MasterTimeline | null = null;
+    const adapter = createGsapCompositionTimeline({
+      engine,
+      onMaster: (m) => {
+        captured = m;
+      },
+    });
+    const settled = adapter.run(segments, { signal: ctrl.signal, presenter });
+    return {
+      emit,
+      master: () => {
+        if (captured === null) throw new Error('master not captured');
+        return captured;
+      },
+      abort: () => ctrl.abort(),
+      settled,
+    };
+  };
+
+  it('pause freezes the master at the current playhead; resume continues from there', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    expect(r.master().isPaused()).toBe(false);
+    r.emit({ kind: 'pause' });
+    const frozenAt = r.master().time();
+    expect(r.master().isPaused()).toBe(true);
+    await flush();
+    expect(r.master().time()).toBeCloseTo(frozenAt, 3);
+    r.emit({ kind: 'resume' });
+    expect(r.master().isPaused()).toBe(false);
+    expect(r.master().time()).toBeCloseTo(frozenAt, 1);
+    r.abort();
+    await r.settled;
+  });
+
+  it('a second pause keeps the master frozen (idempotent)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    r.emit({ kind: 'pause' });
+    r.emit({ kind: 'pause' });
+    expect(r.master().isPaused()).toBe(true);
+    r.abort();
+    await r.settled;
+  });
+
+  it('resume while playing is a no-op — it does not stop or restart the master', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    r.emit({ kind: 'resume' });
+    expect(r.master().isPaused()).toBe(false);
+    r.abort();
+    await r.settled;
+  });
+
+  it('hold pauses the master; a second hold keeps it paused (not a play/pause toggle)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    r.emit({ kind: 'hold' });
+    expect(r.master().isPaused()).toBe(true);
+    r.emit({ kind: 'hold' });
+    expect(r.master().isPaused()).toBe(true);
+    r.abort();
+    await r.settled;
+  });
+
+  it('advance releases a beat hold (resumes playback)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    r.emit({ kind: 'hold' });
+    expect(r.master().isPaused()).toBe(true);
+    r.emit({ kind: 'advance' });
+    expect(r.master().isPaused()).toBe(false);
+    r.abort();
+    await r.settled;
+  });
+
+  it('advance seeks forward to the next authored beat while playing', async () => {
+    const r = runWithPresenter([segment('intro', sceneTl(30, { 'mid-beat': 15 }))]);
+    await flush();
+    r.emit({ kind: 'advance' });
+    expect(r.master().time()).toBeCloseTo(15, 0);
+    r.abort();
+    await r.settled;
+  });
+
+  it('skip-forward seeks to the next scene segment; skip-backward to the previous', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(20)), segment('b', sceneTl(20))]);
+    await flush();
+    r.emit({ kind: 'skip-forward' });
+    expect(r.master().time()).toBeCloseTo(20, 0);
+    r.emit({ kind: 'skip-backward' });
+    expect(r.master().time()).toBeCloseTo(0, 0);
+    r.abort();
+    await r.settled;
+  });
+
+  it('advance received while explicitly paused does not resume or move the playhead (ADR-024)', async () => {
+    const r = runWithPresenter([segment('intro', sceneTl(30, { 'mid-beat': 15 }))]);
+    await flush();
+    r.emit({ kind: 'pause' });
+    const frozenAt = r.master().time();
+    r.emit({ kind: 'advance' });
+    expect(r.master().isPaused()).toBe(true);
+    expect(r.master().time()).toBeCloseTo(frozenAt, 3);
+    r.emit({ kind: 'resume' });
+    expect(r.master().isPaused()).toBe(false);
+    r.abort();
+    await r.settled;
+  });
+
+  it('skip-forward while explicitly paused moves the frozen playhead but does not resume (ADR-024)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(20)), segment('b', sceneTl(20))]);
+    await flush();
+    r.emit({ kind: 'pause' });
+    r.emit({ kind: 'skip-forward' });
+    expect(r.master().isPaused()).toBe(true);
+    expect(r.master().time()).toBeCloseTo(20, 0);
+    r.abort();
+    await r.settled;
+  });
+
+  it('resume restores a hold engaged before pause — stays paused until advance releases it (ADR-024)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    r.emit({ kind: 'hold' });
+    r.emit({ kind: 'pause' });
+    r.emit({ kind: 'resume' });
+    // resume unfreezes the PUL-F021 pause but MUST NOT clear the prior hold.
+    expect(r.master().isPaused()).toBe(true);
+    r.emit({ kind: 'advance' });
+    expect(r.master().isPaused()).toBe(false);
+    r.abort();
+    await r.settled;
+  });
+
+  it('toggle-master-mute does not affect master transport (audio-owned; runner ignores it)', async () => {
+    const r = runWithPresenter([segment('a', sceneTl(30))]);
+    await flush();
+    expect(r.master().isPaused()).toBe(false);
+    r.emit({ kind: 'toggle-master-mute' });
+    expect(r.master().isPaused()).toBe(false);
+    r.abort();
+    await r.settled;
   });
 });
