@@ -38,83 +38,24 @@
 // replays that one timeline, so a per-`timeline`-call counter
 // matches the contract — a fresh navigation starts a fresh count.
 //
-// Scope intentionally narrow, mirroring the browser-support fixture:
-// no declared assets, no declared audio. The scene is
-// `standalone: true` — it does not assume surrounding composition
-// context. `trailerSafe: false` — it has nothing trailer-worthy to
-// show.
+// The ctx validation and DOM mount/find/remove scaffolding is shared
+// with the browser-support fixture via `./fixture-support.ts`. Scope
+// intentionally narrow: no declared assets, no declared audio. The
+// scene is `standalone: true` — it does not assume surrounding
+// composition context. `trailerSafe: false` — it has nothing
+// trailer-worthy to show.
 
-import { NAVIGATION_MODES } from '../runtime/navigation';
 import type { SceneModule } from '../runtime/scene';
-import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
+import {
+  findFixtureElement,
+  isFixtureCtx,
+  mountFixtureElement,
+  removeFixtureElement,
+} from './fixture-support';
 
 const FIXTURE_TARGET_ATTR = 'data-pulsar-loop-target';
 const FIXTURE_ITERATION_ATTR = 'data-pulsar-loop-iteration';
 const FIXTURE_DURATION_SECONDS = 0.1;
-
-interface FixtureDomFactory {
-  createElement(tag: string): { setAttribute(name: string, value: string): void };
-}
-
-interface FixtureStageElement {
-  setAttribute(name: string, value: string): void;
-  removeAttribute(name: string): void;
-  appendChild?(node: unknown): unknown;
-  querySelector?(selector: string): {
-    setAttribute(name: string, value: string): void;
-    remove?(): void;
-  } | null;
-  // Real DOM elements expose `ownerDocument`; the fixture allocates
-  // DOM through the injected stage's owner document rather than the
-  // ambient global `document` so the scene stays pure against
-  // injected dependencies (ADR-008 #2). Optional so off-DOM test
-  // harnesses can supply a bare stage without a document.
-  readonly ownerDocument?: FixtureDomFactory | null;
-}
-
-// PUL-F012 / PUL-F022 / ADR-003: the runtime fills `ctx.stage`,
-// `ctx.mode`, and `ctx.gsap`. The fixture only reads those three
-// fields; the predicate narrows to that subset so a malformed ctx
-// (no `stage`, no `mode`, unknown `mode`, non-element `stage`) is a
-// no-op rather than a crash. Same defensive pattern the
-// browser-support fixture uses, scoped to what this scene reads.
-interface FixtureCtx {
-  readonly stage: FixtureStageElement | null;
-  readonly mode: WorkbenchSceneCtx['mode'];
-  readonly gsap: WorkbenchSceneCtx['gsap'];
-}
-
-const isStageShape = (stage: unknown): stage is FixtureStageElement | null => {
-  if (stage === null) return true;
-  if (typeof stage !== 'object') return false;
-  const candidate = stage as Partial<Record<'setAttribute' | 'removeAttribute', unknown>>;
-  return (
-    typeof candidate.setAttribute === 'function' && typeof candidate.removeAttribute === 'function'
-  );
-};
-
-const isGsapShape = (gsap: unknown): gsap is WorkbenchSceneCtx['gsap'] => {
-  if (gsap === null || typeof gsap !== 'object') return false;
-  return typeof (gsap as { timeline?: unknown }).timeline === 'function';
-};
-
-const isFixtureCtx = (value: unknown): value is FixtureCtx => {
-  if (typeof value !== 'object' || value === null) return false;
-  if (!('stage' in value) || !('mode' in value) || !('gsap' in value)) return false;
-  const { stage, mode, gsap } = value;
-  if (!isStageShape(stage)) return false;
-  if (typeof mode !== 'string' || !(NAVIGATION_MODES as readonly string[]).includes(mode)) {
-    return false;
-  }
-  return isGsapShape(gsap);
-};
-
-const findFixtureElement = (
-  stage: FixtureStageElement,
-): { setAttribute(name: string, value: string): void; remove?: () => void } | null => {
-  if (typeof stage.querySelector !== 'function') return null;
-  return stage.querySelector(`[${FIXTURE_TARGET_ATTR}]`);
-};
 
 export const loopFixtureScene: SceneModule = {
   id: 'loop-fixture',
@@ -127,33 +68,17 @@ export const loopFixtureScene: SceneModule = {
   defaultNext: null,
   standalone: true,
   trailerSafe: false,
+  // The element starts at iteration 0 — "mounted, not yet run" — so a
+  // Playwright poll can distinguish a mounted-but-stalled runner from
+  // a looping one.
   create: (ctx: unknown) => {
-    if (!isFixtureCtx(ctx)) return;
-    const stage = ctx.stage;
-    if (stage === null) return;
-    if (typeof stage.appendChild !== 'function') return;
-    // Allocate the fixture element through the stage's owner
-    // document — the same dependency seam the runtime hands scenes
-    // via `ctx.stage`. Reaching for the ambient global `document`
-    // would bypass the explicit-dependency boundary the rest of the
-    // runtime enforces (ADR-008 #2). Off-DOM test harnesses that
-    // supply a stage without `ownerDocument` are a no-op rather than
-    // a crash.
-    const ownerDoc = stage.ownerDocument;
-    if (ownerDoc === undefined || ownerDoc === null) return;
-    if (typeof ownerDoc.createElement !== 'function') return;
-    const el = ownerDoc.createElement('div');
-    el.setAttribute(FIXTURE_TARGET_ATTR, '');
-    // Start at 0 — "mounted, not yet run" — so a Playwright poll can
-    // distinguish a mounted-but-stalled runner from a looping one.
-    el.setAttribute(FIXTURE_ITERATION_ATTR, '0');
-    stage.appendChild(el);
+    mountFixtureElement(ctx, FIXTURE_TARGET_ATTR, [[FIXTURE_ITERATION_ATTR, '0']]);
   },
   timeline: (ctx: unknown) => {
     if (!isFixtureCtx(ctx)) return null;
     const stage = ctx.stage;
     if (stage === null) return null;
-    const el = findFixtureElement(stage);
+    const el = findFixtureElement(stage, FIXTURE_TARGET_ATTR);
     if (el === null) return null;
     // Build a real GSAP timeline through `ctx.gsap`. The `.call(...)`
     // at the timeline's end increments a per-navigation counter and
@@ -175,12 +100,6 @@ export const loopFixtureScene: SceneModule = {
     return tl;
   },
   cleanup: (ctx: unknown) => {
-    if (!isFixtureCtx(ctx)) return;
-    const stage = ctx.stage;
-    if (stage === null) return;
-    const el = findFixtureElement(stage);
-    if (el !== null && typeof el.remove === 'function') {
-      el.remove();
-    }
+    removeFixtureElement(ctx, FIXTURE_TARGET_ATTR);
   },
 };
