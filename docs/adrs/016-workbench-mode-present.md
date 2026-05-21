@@ -25,19 +25,22 @@ chrome, inter-scene transitions, and the audio bed (PUL-F014);
 suppresses audible playback (silenced or logged as cues —
 PUL-F026 / ADR-004).
 
-Each of the four facets PUL-F013 names depends on a surface that has
-not yet landed in this repo:
+At the time this ADR was accepted, each of the four facets PUL-F013
+names depended on a surface that had not yet landed in this repo. The
+update sections below record the later deliveries.
 
 | Facet | Surface that delivers it | Status |
 |-------|--------------------------|--------|
-| Render full chrome | PUL-F031 / ADR-031 workbench chrome surface | **delivered (structure)** — workbench-owned DOM root mounted by `src/runtime/workbench-chrome.ts`, mode-governed via `chromeVisibilityFor`. The chrome surface ships empty today; actual presenter UI content lands with the presenter-input facet (PUL-F020 / F021 / F025). |
-| Render audio | Audio service per ADR-004 (Howler.js); a future PUL-F* requirement will deliver the service | absent |
-| Render inter-scene transitions | GSAP timeline runner per ADR-003; the runner's adapter slot exists in `composition-resolver.ts` but the GSAP implementation has not landed | absent (placeholder runner in `src/main.ts`) |
-| Respond to presenter input | Presenter controls per PUL-F020 (advance / hold / skip), PUL-F021 (pause / resume), PUL-F025 (master mute) | absent |
+| Render full chrome | PUL-F031 / ADR-031 workbench chrome surface plus L2 chrome slots | delivered — `src/runtime/workbench-chrome.ts`, `src/system/chrome/*`, and `src/main.ts` mount a workbench-owned surface and slot DOM before navigation. |
+| Render audio | Audio service per ADR-004 (Howler.js) plus the PUL-F030 / ADR-029 unlock gate | delivered — `src/runtime/audio.ts`, `src/runtime/audio-unlock-dom.ts`, and `src/runtime/scene-loader.ts` build per-navigation audio with mode policy, source allowlists, unlock, cleanup, and master mute. |
+| Render inter-scene transitions | GSAP composition master per ADR-003 / ADR-025 plus transition registry | delivered — `src/runtime/timeline.ts` invokes registered `Transition`s between composition segments, and `src/system/transitions/*` ships the default implementations. |
+| Respond to presenter input | Presenter controls per PUL-F020 / F021 / F025 / ADR-023 / ADR-024 | delivered at runtime seam — `src/runtime/presenter.ts`, `src/runtime/scene-loader.ts`, `src/runtime/timeline.ts`, and `src/system/presenter/*` validate commands, bind keyboard / bridge sources, drive master transport, and toggle master mute. |
 
-PUL-F013's natural ACTIVE state — "all four facets are rendered /
-accepting input under `mode=present` end to end" — is therefore not
-currently testable. Three options exist:
+PUL-F013's natural ACTIVE state is "all four facets are rendered /
+accepting input under `mode=present` end to end." It was not testable
+when this ADR first landed, so the original decision was to pin the
+contract seams and defer ACTIVE. That historical decision remains
+below because it explains why the seams exist before their surfaces.
 
 1. **Pre-land an abstraction** (e.g., a `ModePolicy` record on `ctx`)
    so PUL-F013 has something to point at. Risk: the abstraction has
@@ -56,7 +59,7 @@ currently testable. Three options exist:
    and the diagnostic path landed; PUL-F011 stays DRAFT pending the
    GSAP runner that will exercise label seeking end to end.
 
-## Decision
+## Initial Decision (2026-05-06)
 
 Take option 3. PUL-F013 today delivers:
 
@@ -195,6 +198,69 @@ inter-scene transitions, presenter input). The ACTIVE bar is
 unchanged — every facet must land as a real rendering / input
 surface with end-to-end tests.
 
+## Update — 2026-05-21 (PUL-F013 current state)
+
+PUL-F013 is now an integration requirement over shipped runtime and L2
+surfaces, not a placeholder for absent seams. The provided Ground
+Control payload reports PUL-F013 as ACTIVE; this update supersedes the
+historical DRAFT-state notes above.
+
+Current canonical implementation boundaries:
+
+- **Chrome:** `src/runtime/workbench-chrome.ts` owns the workbench
+  surface and `chromeVisibilityFor()`. `src/main.ts` mounts it before
+  navigation and `src/system/chrome/slots.ts` populates the L2 slots.
+  The loader dispatches chrome synchronously at enqueue and applies
+  the optional head-entry chrome override through
+  `WorkbenchChromeAdapter.setForcedVisibility()`.
+- **Audio:** `src/runtime/audio.ts` owns the Howler-backed engine,
+  per-navigation `AudioService`, source allowlist, output policy, cue
+  logging, master mute, and validation. `src/runtime/scene-loader.ts`
+  builds the service once per navigation, enforces the present-mode
+  audio unlock gate, forwards `ctx.audio`, and tears down groups /
+  services through resolver cleanup hooks.
+- **Transitions:** `src/runtime/timeline.ts` owns the
+  `Transition` / `TransitionRegistry` contract and invokes registered
+  transitions while composing the GSAP master timeline. Default L2
+  transitions live in `src/system/transitions/*`; `src/main.ts` wires
+  `defaultTransitions()` and a workbench-owned
+  `[data-pulsar-transition="overlay"]` element.
+- **Presenter input:** `src/runtime/presenter.ts` owns the command
+  schema and boundary validator. The loader creates a per-navigation
+  `PresenterController` only under `mode=present`, threads it into
+  `ctx.presenter` and the timeline adapter, handles master mute at the
+  audio seam, and aborts presenter subscriptions on navigation abort
+  and normal completion. `src/system/presenter/keyboard-source.ts`
+  and `src/system/presenter/bridge.ts` provide the local keyboard and
+  same-origin cross-window sources that `src/main.ts` combines.
+
+Current guardrails for follow-up work:
+
+- Do not create a second present-mode controller, transition adapter,
+  presenter schema, audio policy, chrome ownership model, validation
+  pass, or error hierarchy.
+- Keep the resolver mode-opaque. Mode-specific behavior remains in the
+  loader, timeline adapter, audio service, chrome adapter, or L2
+  workbench modules.
+- Keep transition declarations adapter-owned under
+  `behavior.transition`. Strengthen `durationMs` or future
+  transition-parameter validation centrally before invoking
+  transition implementations; do not add deck-local validators.
+- Keep presenter input on the existing command stream. New commands
+  extend `PRESENTER_COMMAND_KINDS`, `isPresenterCommand()`, and the
+  timeline/audio dispatch sites. A future remote source must
+  authenticate before emitting into `PresenterCommandSource`.
+- Keep public diagnostics on `describeErrorDetailed()`, loader
+  `onError`, and stage attributes. Never serialize raw causes, stacks,
+  DOM nodes, scene objects, full captions, headers, cookies, env,
+  auth values, source URLs beyond existing asset diagnostics, or
+  engine handles.
+
+The companion preflight note
+`docs/design/pul-f013-present-mode-preflight.md` is the current
+repo-wide guardrail summary for implementation work that touches
+present mode.
+
 ## Related ADRs
 
 - [ADR-003](003-gsap-timeline-engine.md) — the timeline runner is
@@ -218,3 +284,11 @@ surface with end-to-end tests.
 - [ADR-015](015-url-beat-positioning.md) — precedent for "deliver
   the contract layer; keep the requirement DRAFT until the
   dependent subsystem lands."
+- [ADR-023](023-presenter-controls.md) — presenter command source and
+  per-navigation controller seam.
+- [ADR-024](024-presenter-pause-resume.md) — pause/resume as
+  runner-owned transport state on the presenter command seam.
+- [ADR-029](029-present-mode-audio-unlock-gate.md) — present-mode
+  audio unlock before lifecycle work.
+- [ADR-031](031-workbench-chrome-surface.md) — workbench-owned,
+  mode-governed chrome surface.
