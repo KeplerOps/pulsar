@@ -250,7 +250,8 @@ const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
 // Presenter command source (PUL-F013 / PUL-F020 / PUL-F021 /
 // ADR-023 / ADR-024): present-mode presenter input is wired in this
 // composition root. `createKeyboardPresenterSource()` (arrows /
-// Space / P / M / Escape) and `createPresenterBridge()` (same-origin
+// Space / PageUp / PageDown / P / K / L / M / N / Escape) and
+// `createPresenterBridge()` (same-origin
 // cross-window `BroadcastChannel`) are constructed below and merged
 // by `combinePresenterSources()` into the single
 // `PresenterCommandSource` handed to `createSceneLoader` as
@@ -363,7 +364,9 @@ if (chromeSurfaceEl !== null) {
 const syncScrubControls = (): void => scrubControls?.sync();
 timelineEngine.gsap.ticker.add(syncScrubControls);
 
-// Pulsar L2 keyboard presenter source. Arrows / Space / P / M / Escape.
+// Pulsar L2 keyboard presenter source. Arrows / Space / PageUp /
+// PageDown / P / K / L / M / N / Escape (see `keyboard-source.ts` for
+// the command each key maps to).
 // `onHome` navigates to the default composition; `bootstrapNavigation`
 // in this file owns history state, so we just push the URL and let
 // the existing navigate-on-popstate listener handle the rest.
