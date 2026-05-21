@@ -477,7 +477,7 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       readonly buildCtx: (
         mode: NavigationMode,
         audio: AudioService,
-      ) => Omit<WorkbenchSceneCtx, 'activation'>;
+      ) => Omit<WorkbenchSceneCtx, 'activation' | 'rng'>;
     }
 
     const buildModeProbe = (): ModeProbe => {
@@ -485,7 +485,10 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       return {
         modes,
         buildCtx: vi.fn(
-          (mode: NavigationMode, audio: AudioService): Omit<WorkbenchSceneCtx, 'activation'> => {
+          (
+            mode: NavigationMode,
+            audio: AudioService,
+          ): Omit<WorkbenchSceneCtx, 'activation' | 'rng'> => {
             modes.push(mode);
             return { stage: null, mode, gsap, audio };
           },
@@ -761,7 +764,7 @@ describe('createSceneLoader — beat positioning & mode dispatch (PUL-F008)', ()
       const buildCtx = (
         mode: NavigationMode,
         audio: AudioService,
-      ): Omit<WorkbenchSceneCtx, 'activation'> => {
+      ): Omit<WorkbenchSceneCtx, 'activation' | 'rng'> => {
         ctxCalls += 1;
         if (ctxCalls === 1) {
           throw new Error('builder bug');

@@ -741,7 +741,7 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
       readonly buildCtxFn: (
         mode: NavigationMode,
         audio: AudioService,
-      ) => Omit<WorkbenchSceneCtx, 'activation'>;
+      ) => Omit<WorkbenchSceneCtx, 'activation' | 'rng'>;
       readonly scenes: readonly SceneModule[];
     };
 
@@ -778,7 +778,7 @@ describe('createSceneLoader — screenshot & prompter modes (PUL-F008)', () => {
       const buildCtxFn = (
         mode: NavigationMode,
         audio: AudioService,
-      ): Omit<WorkbenchSceneCtx, 'activation'> => {
+      ): Omit<WorkbenchSceneCtx, 'activation' | 'rng'> => {
         probe.buildCtxInvocations += 1;
         return { stage: null, mode, gsap, audio };
       };

@@ -50,6 +50,7 @@ import { describeErrorDetailed, formatSceneContext } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import {
   NAVIGATION_MODES,
+  type NavigationLocator,
   type NavigationMode,
   type NavigationTarget,
   effectiveMode,
@@ -66,6 +67,7 @@ import {
   buildPrompterScript,
 } from './prompter';
 import type { SceneRegistry } from './registry';
+import { createSeededRng } from './rng';
 import { sceneDeclaresAudio } from './scene';
 import {
   type SceneNavigationTarget,
@@ -73,6 +75,7 @@ import {
   resolveSceneNavigation,
 } from './scene-navigation';
 import { type TimelineEngine, sceneSegmentLabel } from './timeline';
+import { PULSAR_RUNTIME_VERSION } from './version';
 
 /** The minimal subset of an HTMLElement the loader writes to. */
 export interface StageElement {
@@ -179,6 +182,32 @@ export interface WorkbenchSceneCtx {
    */
   readonly audio: AudioService;
   /**
+   * Deterministic seeded random generator (PUL-F018 / ADR-021). Each
+   * call returns the next float in `[0, 1)`, advancing a PRNG whose
+   * state is scoped to this scene activation. Scenes that consume
+   * randomness — jittered tween offsets, particle start times,
+   * procedural visuals — draw from `ctx.rng` instead of `Math.random`
+   * (which the PUL-Q001 source scanner bans across `src/**`).
+   *
+   * The seed is derived per navigation from bounded, deterministic
+   * URL inputs — the normalized navigation locator, the addressed
+   * beat, and `PULSAR_RUNTIME_VERSION` (see {@link deriveNavigationSeed})
+   * — combined with this activation's per-occurrence identity. It
+   * never reads the wall clock, storage, cookies, `history.state`, or
+   * process state. Under `mode=screenshot` that makes the captured
+   * frame reproducible across reloads: the same workbench URL replays
+   * the same random sequence. The field is present in every mode (the
+   * generator is always deterministic); screenshot capture is the mode
+   * where that determinism is the PUL-F018 guarantee.
+   *
+   * Loader-contributed per occurrence, alongside `activation`: a
+   * composition slice that repeats a scene id gives every occurrence
+   * its OWN generator with an OWN seed, so one occurrence's draws can
+   * never perturb a sibling's draw order. `buildCtx`'s return type
+   * therefore omits `rng` the same way it omits `activation`.
+   */
+  readonly rng: () => number;
+  /**
    * This activation's stable per-occurrence identity (issue #99 — see
    * {@link import('./composition-resolver').SceneActivation}):
    * `{ sceneId, entryIndex, occurrence }`. A composition slice may
@@ -230,11 +259,13 @@ export interface SceneLoaderOptions {
    * target — and a fresh audio service per navigation makes "audio
    * survives the scene that started it" structurally impossible.
    *
-   * The return type omits `activation` (issue #99): `buildCtx` is
-   * called once per navigation and cannot know a per-occurrence
-   * identity. The loader adds each occurrence's `SceneActivation` on
-   * top of this base, so a composition slice that repeats a scene id
-   * gives every occurrence a distinct `ctx`.
+   * The return type omits `activation` (issue #99) AND `rng`
+   * (PUL-F018 / ADR-021): `buildCtx` is called once per navigation and
+   * cannot know a per-occurrence identity, and the deterministic RNG
+   * is seeded per occurrence. The loader adds each occurrence's
+   * `SceneActivation` and its seeded `rng` on top of this base, so a
+   * composition slice that repeats a scene id gives every occurrence a
+   * distinct `ctx` with an independent random stream.
    *
    * Not invoked when the locator is `kind: 'none'` (no scene mounts)
    * or when the navigation event is a parse-error event, because
@@ -244,7 +275,7 @@ export interface SceneLoaderOptions {
     mode: NavigationMode,
     audio: AudioService,
     presenter?: PresenterController,
-  ) => Omit<WorkbenchSceneCtx, 'activation'>;
+  ) => Omit<WorkbenchSceneCtx, 'activation' | 'rng'>;
   /**
    * The audio engine (PUL-F024 / ADR-004) — a process singleton, like
    * the timeline engine (ADR-003). The loader builds a fresh
@@ -616,6 +647,73 @@ function audioOutputPolicyFor(mode: NavigationMode): AudioOutputPolicy {
   if (mode === 'rehearsal') return 'log-cues';
   if (mode === 'screenshot' || mode === 'paused') return 'silent';
   return 'audible';
+}
+
+/**
+ * Serialize a {@link NavigationLocator} into a stable, collision-free
+ * string. Every locator kind contributes its discriminant plus its
+ * identifier fields, so two distinct addressed targets never fold to
+ * the same string. Pure helper for {@link deriveNavigationSeed}.
+ */
+function serializeLocator(locator: NavigationLocator): string {
+  switch (locator.kind) {
+    case 'none':
+      return 'none';
+    case 'scene':
+      return `scene:${locator.scene}`;
+    case 'composition':
+      return `composition:${locator.composition}`;
+    case 'composition-scene':
+      return `composition:${locator.composition}/scene:${locator.scene}`;
+    case 'composition-index':
+      return `composition:${locator.composition}/index:${locator.index}`;
+  }
+}
+
+/**
+ * PUL-F018 / ADR-021: derive the per-navigation deterministic seed
+ * string for the scene-context RNG ({@link WorkbenchSceneCtx.rng}).
+ *
+ * The seed is built only from bounded, deterministic inputs the
+ * workbench URL already carries: the normalized navigation locator
+ * (the addressed scene / composition / index), the addressed beat,
+ * and `PULSAR_RUNTIME_VERSION` — ADR-021's "bundle/runtime revision
+ * literal" so a code revision changes the seed. It deliberately does
+ * NOT read the wall clock, `localStorage`, `sessionStorage`, cookies,
+ * `history.state`, `process.env`, `process.argv`, or the workbench
+ * `mode` (the addressed frame is mode-independent — `?scene=x&beat=y`
+ * names the same frame whether captured or played).
+ *
+ * Under `mode=screenshot` this makes the captured frame reproducible:
+ * the same workbench URL derives the same seed and so replays the same
+ * random sequence across reloads. A future explicit `seed=` URL
+ * parameter would populate this same derivation through the canonical
+ * `parseNavigationSearch` grammar — the seam ADR-021 reserves.
+ *
+ * Pure function (no closure captures), hoisted to module scope and
+ * exported so the per-navigation seam is unit-testable in isolation.
+ */
+export function deriveNavigationSeed(target: NavigationTarget): string {
+  return [
+    'pulsar-rng',
+    serializeLocator(target.locator),
+    `beat:${target.beat ?? ''}`,
+    `v:${PULSAR_RUNTIME_VERSION}`,
+  ].join('|');
+}
+
+/**
+ * PUL-F018 / ADR-021: combine the per-navigation seed from
+ * {@link deriveNavigationSeed} with one scene occurrence's identity
+ * ({@link SceneActivation}) so every occurrence gets its OWN seeded
+ * generator. A composition slice that repeats a scene id (issue #99)
+ * therefore hands each occurrence an independent random stream — one
+ * occurrence's draws cannot perturb a sibling's draw order, the
+ * RNG-scoping the ADR-021 guardrail requires. Pure function, hoisted
+ * to module scope.
+ */
+function deriveActivationSeed(navigationSeed: string, activation: SceneActivation): string {
+  return `${navigationSeed}|occ:${activation.sceneId}#${activation.entryIndex}.${activation.occurrence}`;
 }
 
 /**
@@ -1128,6 +1226,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // selects whether the audio service is `silent` (screenshot /
     // paused suppress audible playback — ADR-019 / ADR-021).
     const mode = effectiveMode(target);
+    // PUL-F018 / ADR-021: the per-navigation deterministic RNG seed,
+    // derived from the addressed URL target. Computed once here and
+    // combined per occurrence in `buildSceneCtx` so every scene
+    // occurrence gets its own seeded `ctx.rng`.
+    const navigationSeed = deriveNavigationSeed(target);
     applyChromeOverride(resolved, mode);
     let preloadAssets: AssetPreloader;
     try {
@@ -1222,7 +1325,16 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       presenter = pipe.presenter;
       presenterAbort = pipe.presenterAbort;
       const baseCtx = options.buildCtx(mode, audio, presenter);
-      buildSceneCtx = (activation) => ({ ...baseCtx, activation });
+      // PUL-F018 / ADR-021: the loader adds each occurrence's
+      // `activation` AND a deterministic `rng` seeded from the
+      // navigation seed + that occurrence's identity, so a slice that
+      // repeats a scene id gives every occurrence an independent
+      // random stream.
+      buildSceneCtx = (activation) => ({
+        ...baseCtx,
+        activation,
+        rng: createSeededRng(deriveActivationSeed(navigationSeed, activation)),
+      });
     } catch (err) {
       // Abort the freshly-created controller before bailing so any
       // signal-tied resource (the preloader factory's fetch listener,

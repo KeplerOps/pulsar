@@ -73,12 +73,13 @@ export type {
 import { createTimelineEngine } from '../../src/runtime/timeline';
 export const { gsap } = createTimelineEngine();
 // `buildCtx` builds the navigation-scoped ctx; the loader adds each
-// occurrence's `activation` (issue #99), so the stub's return type
-// omits it — same as the production `SceneLoaderOptions.buildCtx`.
+// occurrence's `activation` (issue #99) and its seeded `rng` (PUL-F018
+// / ADR-021), so the stub's return type omits both — same as the
+// production `SceneLoaderOptions.buildCtx`.
 export const stubCtx = (
   mode: NavigationMode,
   audio: AudioService,
-): Omit<WorkbenchSceneCtx, 'activation'> => ({
+): Omit<WorkbenchSceneCtx, 'activation' | 'rng'> => ({
   stage: null,
   mode,
   gsap,

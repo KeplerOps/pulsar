@@ -537,6 +537,56 @@ deterministic-randomness convention that scenes consume under
 tests in this PR. Treating this PR as satisfying PUL-F018 would be
 a traceability/status mismatch.
 
+## Current state (2026-05-21)
+
+The three capture-bundle subsystems this ADR gated PUL-F018's
+DRAFT → ACTIVE transition on have all landed:
+
+1. **Frame freeze** — ADR-003's GSAP composition timeline adapter
+   reads `headScreenshot === 'capture'` in `positionMaster`
+   (`src/runtime/timeline.ts`): it seeks the master to the addressed
+   beat label (or frame 0 when no beat is supplied), pauses it, and
+   returns the held run mode so playback never advances. Pinned by
+   `tests/runtime/timeline.test.ts` ("screenshot capture freezes the
+   master at the beat / at 0").
+
+2. **Audio suppression** — the loader maps `mode=screenshot` to
+   `AudioOutputPolicy: 'silent'` (`audioOutputPolicyFor`), and
+   `createAudioService` constructs every sound muted under that
+   policy (`src/runtime/audio.ts`). Pinned by
+   `tests/runtime/audio.test.ts`.
+
+3. **Deterministic randomness** — the PR for issue #131 lands the
+   scene-side seed surface this ADR reserved. `WorkbenchSceneCtx`
+   gains `rng: () => number`, a deterministic generator seeded per
+   scene occurrence. `src/runtime/rng.ts` provides the pure PRNG
+   (`mulberry32` seeded through an `xmur3` string hash — integer
+   arithmetic only, so it satisfies the PUL-Q001 entropy scanner).
+   The loader's `deriveNavigationSeed` builds the per-navigation seed
+   from bounded deterministic inputs — the normalized navigation
+   locator, the addressed beat, and `PULSAR_RUNTIME_VERSION` — and
+   `buildSceneCtx` combines it with each occurrence's identity so a
+   repeated scene id gets an independent stream. Scenes consume
+   `ctx.rng` instead of `Math.random` (banned in `src/**` by the
+   PUL-Q001 source scanner). Pinned by `tests/runtime/rng.test.ts`
+   and `tests/runtime/scene-loader-screenshot-seed.test.ts`, which
+   proves two navigations of the same screenshot URL replay an
+   identical random sequence.
+
+The asset-preload fence ("all asset preloads resolved") was already
+an invariant of the composition resolver, which awaits
+`preloadAssets(scene)` before `create(ctx)` and before any master
+playback (`src/runtime/composition-resolver.ts`).
+
+With all four runtime axes delivered end to end, **PUL-F018
+transitions DRAFT → ACTIVE** and the issue ↔ requirement link moves
+from `DOCUMENTS` to `IMPLEMENTS`. A future explicit `seed=` URL
+parameter — should screenshot tooling need to vary the seed
+independently of the addressed frame — would populate the
+`deriveNavigationSeed` input through the canonical
+`parseNavigationSearch` grammar; derived seeding is sufficient for
+PUL-F018 and that parameter is not added here.
+
 ## Related ADRs
 
 - [ADR-003](003-gsap-timeline-engine.md) — the timeline runner is

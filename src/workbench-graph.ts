@@ -21,6 +21,7 @@ import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-
 import { loopFixtureScene } from './scenes/loop-fixture';
 import { pausedFixtureScene } from './scenes/paused-fixture';
 import { placeholderScene } from './scenes/placeholder';
+import { screenshotRngFixtureScene } from './scenes/screenshot-rng-fixture';
 import { scrubFixtureScene } from './scenes/scrub-fixture';
 
 // Optional local decks live under `src/decks/local-*/index.ts` and
@@ -68,6 +69,13 @@ const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
 // controls driving a real master timeline (a `data-pulsar-scrub-progress`
 // attribute that responds to play / reverse / beat-jump).
 //
+// PUL-F018 / ADR-021: the screenshot RNG verification fixture is
+// registered the same way so the screenshot-mode Playwright spec can
+// boot it via `?scene=screenshot-rng-fixture&mode=screenshot` and
+// observe the deterministic seeded generator replaying an identical
+// sequence across reloads (a `data-pulsar-screenshot-rng` attribute
+// that is byte-identical between two loads of the same URL).
+//
 // Pulsar L2: the pulsar-intro reference deck (`?composition=pulsar-intro`)
 // is the self-referential proof of the L2 system layer. Its 15 scenes
 // collectively exercise every shipped template, every transition, every
@@ -81,6 +89,7 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   loopFixtureScene,
   pausedFixtureScene,
   scrubFixtureScene,
+  screenshotRngFixtureScene,
   ...PULSAR_INTRO_SCENES,
   ...LOCAL_SCENES,
 ];
