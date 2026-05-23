@@ -691,6 +691,7 @@ describe('createAudioService — lifecycle / cleanup (ADR-004)', () => {
     service.stopGroup('scene-a');
     service.mute(true);
     expect(fake.calls).toEqual([]);
+    expect(fake.masterMuted()).toBe(false);
     expect(fake.created).toHaveLength(1);
     expect(service.isDisposed()).toBe(true);
   });
@@ -1365,6 +1366,43 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
         bed: { src: 'file:///etc/passwd' },
       }),
     ).toThrow(AudioSourceError);
+  });
+
+  it('applies the supplied asset URL policy to a string bed source', () => {
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        bed: { src: 'http://cdn.example.test/bed.webm' },
+        assetPolicy: { allowedSchemes: ['https:'] },
+      }),
+    ).toThrow(AudioSourceError);
+    expect(fake.created).toHaveLength(0);
+  });
+
+  it('applies the supplied asset URL policy to every array bed source', () => {
+    const fake = fakeEngine();
+    expect(() =>
+      createAudioService(fake.engine, {
+        signal: liveSignal(),
+        bed: {
+          src: ['https://cdn.example.test/bed.webm', 'data:audio/webm;base64,AAAA'],
+        },
+        assetPolicy: { allowedSchemes: ['https:'] },
+      }),
+    ).toThrow(AudioSourceError);
+    expect(fake.created).toHaveLength(0);
+  });
+
+  it('resolves a relative bed source against the supplied asset baseUrl before constructing it', () => {
+    const { fake } = buildService({
+      bed: bed(),
+      assetPolicy: {
+        baseUrl: 'https://cdn.example.test/decks/',
+        allowedSchemes: ['https:'],
+      },
+    });
+    expect(fake.created[0]?.src).toEqual(['https://cdn.example.test/audio/bed.webm']);
   });
 
   it('rejects an out-of-range bed volume', () => {

@@ -1263,6 +1263,38 @@ describe('scene loader — composition audio bed (PUL-F014 / ADR-004)', () => {
     },
   );
 
+  it('applies the loader asset policy to the composition bed before playback', async () => {
+    const audio = recordingAudioEngine();
+    const stage = buildStage();
+    const errors: unknown[] = [];
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+      compositions: createCompositionRegistry([
+        {
+          id: 'deck',
+          manifest: ['head'],
+          audioBed: { src: 'http://cdn.example.test/bed.webm' },
+        },
+      ]),
+      stage: stage.element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => Promise.resolve(),
+      timeline: noopTimeline,
+      audioEngine: audio.engine,
+      assetPolicy: { allowedSchemes: ['https:'] },
+      onError: (err) => {
+        errors.push(err);
+      },
+    });
+
+    await loader.handle(compositionTarget('deck'));
+    await loader.idle();
+
+    expect(audio.created).toHaveLength(0);
+    expect(stage.attrs.get('data-pulsar-navigation-error')).toMatch(/audio bed/);
+    expect((errors[0] as Error | undefined)?.message).toMatch(/http:/);
+  });
+
   it('suppresses the composition audio bed under mode=standalone', async () => {
     const audio = recordingAudioEngine();
     const loader = createSceneLoader({

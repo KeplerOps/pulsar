@@ -52,8 +52,8 @@
 // `readonly Finding[]`; callers format for the workbench error sink,
 // a CI summary, or a JSON report.
 
-import { DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
-import { assertAudioBedDeclaration } from './audio';
+import { type AssetUrlPolicy, DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
+import { type AudioBedDeclaration, assertAudioBedDeclaration } from './audio';
 import {
   CompositionManifestError,
   assertCompositionManifest,
@@ -142,7 +142,11 @@ export type FindingCode =
   // shape check reuses `assertAudioBedDeclaration` (the same gate the
   // composition registry and audio service use), so a bad bed fails
   // the validation pass at boot rather than at navigation time.
-  | 'composition-audio-bed-invalid';
+  | 'composition-audio-bed-invalid'
+  // PUL-F014 / ADR-012 — a composition audio bed source does not
+  // satisfy the same asset URL policy (`baseUrl`, `allowedSchemes`)
+  // used for scene assets and preloading.
+  | 'composition-audio-bed-unresolvable';
 
 /**
  * One composition registration as the validator sees it. Matches the
@@ -178,17 +182,14 @@ export interface ValidationCompositionInput {
  *    going to reject anyway.
  *  - `compositions` — optional list of composition registrations. When
  *    omitted, clauses (a) / manifest-shape are no-ops.
- *  - `assets` — optional asset-policy block mirroring the preloader's
- *    `baseUrl` / `allowedSchemes` options. Defaults match the
+ *  - `assets` — optional asset-policy block shared with the
+ *    preloader and runtime audio source checks. Defaults match the
  *    preloader: no `baseUrl`, {@link DEFAULT_ALLOWED_SCHEMES}.
  */
 export interface ValidationInput {
   readonly scenes: Iterable<unknown>;
   readonly compositions?: Iterable<ValidationCompositionInput>;
-  readonly assets?: {
-    readonly baseUrl?: string;
-    readonly allowedSchemes?: readonly string[];
-  };
+  readonly assets?: AssetUrlPolicy;
 }
 
 /**
@@ -227,7 +228,7 @@ export function validateRuntime(input: ValidationInput): readonly Finding[] {
   const findings: Finding[] = [];
   const inspected = runSceneShapePhase(input.scenes, findings);
   const validIds = runDuplicateIdPhase(inspected, findings);
-  runCompositionPhase(input.compositions, validIds, findings);
+  runCompositionPhase(input.compositions, validIds, input.assets, findings);
   runAssetPhase(inspected, input.assets, findings);
   return Object.freeze(findings);
 }
@@ -350,6 +351,7 @@ function* idEntries(inspected: readonly Inspected[]): Iterable<{ id: string; val
 function runCompositionPhase(
   compositions: Iterable<ValidationCompositionInput> | undefined,
   validIds: ReadonlySet<string>,
+  policy: AssetUrlPolicy | undefined,
   findings: Finding[],
 ): void {
   if (compositions === undefined) return;
@@ -357,8 +359,7 @@ function runCompositionPhase(
     // The audio-bed shape check (PUL-F014) is independent of the
     // manifest shape — a bad bed must not suppress the reference
     // check, and a bad manifest must not suppress the bed check.
-    const bedFinding = checkCompositionAudioBed(composition);
-    if (bedFinding !== null) findings.push(bedFinding);
+    appendCompositionAudioBedFindings(composition, policy, findings);
     const manifestFinding = checkCompositionShape(composition);
     if (manifestFinding !== null) {
       findings.push(manifestFinding);
@@ -371,20 +372,54 @@ function runCompositionPhase(
 /**
  * PUL-F014 — when a composition declares an `audioBed`, validate its
  * shape through `assertAudioBedDeclaration` (the same gate the
- * composition registry and audio service use). Returns a
- * `composition-audio-bed-invalid` finding on a malformed bed, or
- * `null` when there is no bed or the bed is well-formed.
+ * composition registry and audio service use), then validate every
+ * bed source through the same asset URL policy scene assets use.
  */
-function checkCompositionAudioBed(composition: ValidationCompositionInput): Finding | null {
-  if (composition.audioBed === undefined) return null;
+function appendCompositionAudioBedFindings(
+  composition: ValidationCompositionInput,
+  policy: AssetUrlPolicy | undefined,
+  findings: Finding[],
+): void {
+  if (composition.audioBed === undefined) return;
+  const bed = composition.audioBed;
   try {
-    assertAudioBedDeclaration(composition.audioBed);
-    return null;
+    assertAudioBedDeclaration(bed);
   } catch (cause) {
-    return {
+    findings.push({
       code: 'composition-audio-bed-invalid',
       message: `composition "${composition.id}": ${describeError(cause)}`,
       compositionId: composition.id,
+    });
+    return;
+  }
+  const baseUrl = policy?.baseUrl;
+  const allowedSchemes = policy?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES;
+  for (const source of audioBedSources(bed)) {
+    const finding = checkCompositionAudioBedSource(composition.id, source, baseUrl, allowedSchemes);
+    if (finding !== null) findings.push(finding);
+  }
+}
+
+const audioBedSources = (bed: AudioBedDeclaration): readonly string[] =>
+  typeof bed.src === 'string' ? [bed.src] : bed.src;
+
+function checkCompositionAudioBedSource(
+  compositionId: string,
+  source: string,
+  baseUrl: string | undefined,
+  allowedSchemes: readonly string[],
+): Finding | null {
+  try {
+    resolveAssetUrl(source, baseUrl, allowedSchemes);
+    return null;
+  } catch (cause) {
+    return {
+      code: 'composition-audio-bed-unresolvable',
+      message: `composition "${compositionId}": audio bed source "${source}" is invalid: ${describeError(
+        cause,
+      )}`,
+      compositionId,
+      asset: source,
     };
   }
 }

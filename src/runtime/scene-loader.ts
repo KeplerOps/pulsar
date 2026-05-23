@@ -29,6 +29,7 @@
 //  - ADR-007 — runtime parses URL parameters at startup AND popstate.
 //  - ADR-013 — URL navigation grammar boundary; F007 owns parsing.
 
+import type { AssetUrlPolicy } from './asset-preloader';
 import {
   type AudioCueLogEntry,
   type AudioEngine,
@@ -290,6 +291,14 @@ export interface SceneLoaderOptions {
    * follow.
    */
   readonly audioEngine?: AudioEngine;
+  /**
+   * Asset URL policy shared with validation, preloading, and runtime
+   * audio checks. Workbench bootstraps that harden
+   * `createAssetPreloader({ baseUrl, allowedSchemes })` should pass
+   * the same policy here so composition audio beds cannot bypass it
+   * when validation was skipped.
+   */
+  readonly assetPolicy?: AssetUrlPolicy;
   /**
    * Workbench-supplied cue-log sink (PUL-F026 / ADR-004). When set,
    * the loader threads it through to every per-navigation
@@ -1304,6 +1313,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         signal: controller.signal,
         outputPolicy,
         allowedSources: collectAudioSources(resolved),
+        ...(options.assetPolicy === undefined ? {} : { assetPolicy: options.assetPolicy }),
         onError,
         ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
         // PUL-F014 / ADR-004: the composition audio bed, played

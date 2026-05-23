@@ -74,27 +74,11 @@ export const DEFAULT_ALLOWED_SCHEMES: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Options for {@link createAssetPreloader}. All fields are optional;
- * the defaults pull from `globalThis.fetch`, no extra request init,
- * no base URL, and the {@link DEFAULT_ALLOWED_SCHEMES} allowlist.
+ * URL policy shared by validation, preloading, and runtime audio
+ * source checks. All fields are optional; omitted values mean no
+ * base URL and the {@link DEFAULT_ALLOWED_SCHEMES} allowlist.
  */
-export interface AssetPreloaderOptions {
-  /**
-   * Override the fetch implementation. Production callers default to
-   * `globalThis.fetch`; tests inject a fake to record calls and shape
-   * responses. Injection (rather than module-level global mutation)
-   * keeps tests isolated and matches the orchestrator-with-adapters
-   * pattern PUL-F004 uses.
-   */
-  readonly fetch?: typeof globalThis.fetch;
-  /**
-   * `RequestInit` forwarded to every fetch call (e.g. headers, signal,
-   * cache mode). Forwarded by reference so callers can attach a single
-   * `AbortSignal` to all per-scene fetches. NB: credentials in
-   * `init.headers` flow to every asset URL — see ADR-012's
-   * cross-origin caveat before attaching `Authorization` or `Cookie`.
-   */
-  readonly init?: RequestInit;
+export interface AssetUrlPolicy {
   /**
    * Base URL used to resolve relative asset paths. Required when the
    * runtime is preloading on Node — Node's `fetch` rejects relative
@@ -128,6 +112,30 @@ export interface AssetPreloaderOptions {
    * which is rejected outright).
    */
   readonly allowedSchemes?: readonly string[];
+}
+
+/**
+ * Options for {@link createAssetPreloader}. All fields are optional;
+ * the defaults pull from `globalThis.fetch`, no extra request init,
+ * no base URL, and the {@link DEFAULT_ALLOWED_SCHEMES} allowlist.
+ */
+export interface AssetPreloaderOptions extends AssetUrlPolicy {
+  /**
+   * Override the fetch implementation. Production callers default to
+   * `globalThis.fetch`; tests inject a fake to record calls and shape
+   * responses. Injection (rather than module-level global mutation)
+   * keeps tests isolated and matches the orchestrator-with-adapters
+   * pattern PUL-F004 uses.
+   */
+  readonly fetch?: typeof globalThis.fetch;
+  /**
+   * `RequestInit` forwarded to every fetch call (e.g. headers, signal,
+   * cache mode). Forwarded by reference so callers can attach a single
+   * `AbortSignal` to all per-scene fetches. NB: credentials in
+   * `init.headers` flow to every asset URL — see ADR-012's
+   * cross-origin caveat before attaching `Authorization` or `Cookie`.
+   */
+  readonly init?: RequestInit;
 }
 
 /**
