@@ -17,10 +17,21 @@
 //   `clock`       — `'on-mount'` auto-mounts the elapsed clock at scene
 //                   activation; `false` (default) skips it.
 //   `srcMark`     — corner attribution string (rendered via `srcMark`).
+//   `audio`       — a soundtrack that loads + plays when the script
+//                   starts and fades out when the scene tears down.
 
+import type { AudioService } from '../../runtime/audio';
 import type { SceneModule } from '../../runtime/scene';
 import { type ClockHandle, startClock } from '../chrome';
-import { aSleep, markedTextHtml, schedule, srcMark, typeNode } from '../helpers';
+import {
+  aSleep,
+  fadeAndStop,
+  loadAndPlayCue,
+  markedTextHtml,
+  schedule,
+  srcMark,
+  typeNode,
+} from '../helpers';
 import type { SrcMarkHandle } from '../helpers/srcmark';
 import {
   buildTemplateScene,
@@ -45,6 +56,26 @@ export type TerminalStep =
     }
   | { readonly t: 'popout'; readonly text: string; readonly stopClock?: boolean };
 
+/**
+ * A scene soundtrack for a {@link terminal} scene. The template
+ * declares `src` in both `scene.assets` (so the preloader warms it)
+ * and `scene.audio` (the audio-source allowlist) for you; the track
+ * loads + plays through `ctx.audio` when the script begins and fades
+ * to silence over {@link fadeOutMs} when the scene tears down.
+ */
+export interface TerminalAudio {
+  /** Soundtrack source URL. */
+  readonly src: string;
+  /** Sound id (kebab-case) the soundtrack registers under. */
+  readonly soundId: string;
+  /** Playback volume, 0..1. Defaults to 0.7. */
+  readonly volume?: number;
+  /** Playback-rate multiplier (pitch-preserving in WebAudio). Defaults to 1. */
+  readonly rate?: number;
+  /** Fade-out duration (ms) when the scene tears down. Defaults to 1200. */
+  readonly fadeOutMs?: number;
+}
+
 export interface TerminalContent {
   readonly script: readonly TerminalStep[];
   /** Base typing delay per char (ms). Defaults to 24. */
@@ -57,12 +88,52 @@ export interface TerminalContent {
   readonly clock?: 'on-mount' | false;
   /** Source-attribution text rendered as a `.src-mark` corner badge. */
   readonly srcMark?: string;
+  /**
+   * Optional soundtrack that plays while the script runs and fades
+   * out on scene teardown.
+   */
+  readonly audio?: TerminalAudio;
 }
 
+const TERMINAL_AUDIO_DEFAULT_VOLUME = 0.7;
+const TERMINAL_AUDIO_DEFAULT_FADE_MS = 1200;
+
+/**
+ * Start a terminal scene's soundtrack: load + play through
+ * {@link AudioService} and return the fade-and-stop closure the
+ * template registers on its session for teardown.
+ *
+ * Exported so the audio integration is unit-testable directly with a
+ * mock {@link AudioService}; `playScript` is the only production
+ * caller. Defaults: volume {@link TERMINAL_AUDIO_DEFAULT_VOLUME},
+ * fade-out {@link TERMINAL_AUDIO_DEFAULT_FADE_MS}.
+ */
+export const startTerminalAudio = (
+  audio: AudioService | undefined,
+  config: TerminalAudio,
+): (() => void) => {
+  const { src, soundId, rate } = config;
+  const volume = config.volume ?? TERMINAL_AUDIO_DEFAULT_VOLUME;
+  const fadeMs = config.fadeOutMs ?? TERMINAL_AUDIO_DEFAULT_FADE_MS;
+  loadAndPlayCue(
+    audio,
+    soundId,
+    { src: [src] },
+    { volume, ...(rate === undefined ? {} : { rate }) },
+  );
+  return (): void => fadeAndStop(audio, soundId, volume, fadeMs);
+};
+
 export const terminal = (id: string, content: TerminalContent): SceneModule => {
+  // The soundtrack URL is declared in both `assets` (preloader warms
+  // it) and `audio` (the audio-source allowlist) so `ctx.audio.load`
+  // is allowed to register it.
+  const audioAssets = content.audio === undefined ? [] : [content.audio.src];
   return buildTemplateScene({
     id,
     title: 'Terminal',
+    assets: audioAssets,
+    audio: audioAssets,
     captions: content.script
       .map((s, i) => {
         if (s.t === 'user' || s.t === 'agent') return { at: `term-${i}`, text: s.text };
@@ -131,6 +202,12 @@ interface TerminalSession {
   ffTracking: HTMLElement | null;
   srcMarkEl: SrcMarkHandle | null;
   abortedFlag: { aborted: boolean };
+  /**
+   * Fades out + stops the scene soundtrack. Set by `startTerminalAudio`
+   * when the scene declares an `audio` content field; absent (`?.()`
+   * no-op in `sessionTeardown`) when the scene declares no audio.
+   */
+  audioFadeOut?: () => void;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -158,6 +235,9 @@ const sessionTeardown = (id: string): void => {
   s.ffSymbol?.remove();
   s.ffTracking?.remove();
   s.srcMarkEl?.remove();
+  // Fade the soundtrack to silence + stop it so it never bleeds into
+  // the next scene.
+  s.audioFadeOut?.();
   sessions.delete(id);
 };
 
@@ -347,6 +427,13 @@ const playScript = (id: string, ctx: unknown, content: TerminalContent): void =>
       { ownerDocument: refs.ownerDoc, parent: document.body },
       content.srcMark,
     );
+  }
+
+  // Opt-in soundtrack: load + play when the script begins; the
+  // teardown closure fades it out on scene exit.
+  if (content.audio !== undefined) {
+    const audio = (ctx as { audio?: AudioService }).audio;
+    session.audioFadeOut = startTerminalAudio(audio, content.audio);
   }
 
   void (async (): Promise<void> => {

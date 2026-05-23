@@ -335,14 +335,13 @@ export interface SceneLoaderOptions {
    * cleanup. A trivial / no-DOM renderer (e.g. a test stub) is free
    * to return synchronously because there is nothing to tear down.
    *
-   * Optional: a workbench bootstrap that has not yet wired a captions
-   * UI omits the field. Under `mode=prompter` the loader still
-   * suppresses the resolver lifecycle (no preload, no `create`, no
-   * `timeline`, no `cleanup`) because that suppression is the
-   * structural defense PUL-F019 / ADR-022 record; the captions data
-   * path simply has no consumer until the UI lands. Production
-   * bootstrap supplies a concrete renderer when the captions/script
-   * UI surface lands.
+   * Optional: callers that don't render a captions view (test
+   * harnesses, embedders) omit the field. Under `mode=prompter` the
+   * loader still suppresses the resolver lifecycle (no preload, no
+   * `create`, no `timeline`, no `cleanup`) because that suppression
+   * is the structural defense PUL-F019 / ADR-022 record; the captions
+   * data path simply has no consumer in that configuration. The
+   * workbench supplies the L2 `createChromePrompterRenderer`.
    */
   readonly renderPrompter?: PrompterRenderer;
   /**
@@ -360,11 +359,11 @@ export interface SceneLoaderOptions {
    * subscribes via `input.presenter.subscribe(...)` and forgets to
    * unsubscribe cannot leak across navigations.
    *
-   * Optional: a workbench bootstrap that has not yet wired a
-   * presenter UI omits the field. Under that configuration the
-   * loader does not build a controller, runners see
+   * Optional: callers that don't supply presenter input (test
+   * harnesses, embedders, non-presenter contexts) omit the field. The
+   * loader then does not build a controller, runners see
    * `input.presenter === undefined`, and the seam is structurally
-   * inert until the workbench wires a real source.
+   * inert.
    */
   readonly presenterCommands?: PresenterCommandSource;
   /**

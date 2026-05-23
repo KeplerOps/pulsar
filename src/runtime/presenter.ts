@@ -309,8 +309,8 @@ export function createPresenterController(
 
   // Lazy source attachment: register the central wrapper on the
   // source the first time a subscriber attaches. A controller with
-  // zero subscribers (e.g., the placeholder timeline runner that
-  // ignores `input.presenter`) does not pay a source registration.
+  // zero subscribers (e.g., a timeline runner that ignores
+  // `input.presenter`) does not pay a source registration.
   // Subscribe-time failures from the workbench-supplied source are
   // routed through `onError` here rather than escaping the loader's
   // `buildLoad` (codex review, post-PUL-F025: a throwing source
