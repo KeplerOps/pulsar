@@ -91,6 +91,7 @@ scene-*.png
 probe*.png
 g-pi-*.png
 cv-*.png
+cg2-*.png
 
 # Local-only decks (per-developer scratch, never check in)
 src/decks/local-*/
