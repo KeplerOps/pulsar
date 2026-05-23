@@ -98,8 +98,8 @@ export type { StatPair, StatPairGridContent } from './stat-pair-grid';
 export { statRow } from './stat-row';
 export type { StatRowContent, StatRowEntry } from './stat-row';
 
-export { terminal } from './terminal';
-export type { TerminalContent, TerminalStep } from './terminal';
+export { startTerminalAudio, terminal } from './terminal';
+export type { TerminalAudio, TerminalContent, TerminalStep } from './terminal';
 
 export { titleSlam } from './title-slam';
 export type { TitleSlamContent } from './title-slam';

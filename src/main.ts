@@ -10,8 +10,9 @@
 //     scene/composition modules. Both registries are immutable after
 //     construction (ADR-008 #2 "manifests over flow control").
 //  3. Build a `SceneLoader` (PUL-F008) wired to those registries plus
-//     the lifecycle adapters (PUL-F005 asset preloader; placeholder
-//     timeline runner until ADR-003's GSAP runner lands).
+//     the lifecycle adapters: PUL-F005 asset preloader, the ADR-003 /
+//     PUL-F022 GSAP-backed composition timeline, the PUL-F024 / ADR-004
+//     audio service, and the PUL-F030 / ADR-029 audio-unlock adapter.
 //  4. Subscribe to the parsed-target events PUL-F007's
 //     `bootstrapNavigation` dispatches: `pulsar:navigate` carries a
 //     parsed `NavigationTarget`, `pulsar:navigate-error` carries a
@@ -144,16 +145,15 @@ const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPrel
 // timeline (`composeMasterTimeline` — namespaced labels, sequential
 // nesting), applies the URL/runner-input head hints (`beat` seek with
 // the `onBeatMissing` fallback, `mode=loop` repeat, `mode=paused` hold,
-// `mode=screenshot` freeze-at-beat; the audio engine lands with
-// PUL-F024, but `cueGate`→audio cue gating is a separate follow-up —
-// scenes hang `ctx.audio` cues off their own timeline callbacks today),
-// plays the master, and resolves on its natural completion (the
-// resolver then tears every scene down) or on the per-navigation
-// `AbortSignal`. Per-entry `range` overrides
-// (PUL-F003) and the presenter command controller (PUL-F020 / PUL-F021)
-// are not interpreted here yet — both land on this adapter's
-// `MasterTimeline` transport seam when their requirements are
-// implemented.
+// `mode=screenshot` freeze-at-beat), wires the PUL-F024 audio engine
+// and the PUL-F017 / ADR-020 cue gate (closed on reverse scrub),
+// subscribes the per-navigation presenter command controller
+// (PUL-F020 advance / hold / skip-forward / skip-backward + PUL-F021
+// pause / resume), plays the master, and resolves on its natural
+// completion (the resolver then tears every scene down) or on the
+// per-navigation `AbortSignal`. Per-entry `range` overrides (PUL-F003)
+// are not interpreted — sub-range cuts extend this adapter's
+// `MasterTimeline` transport seam when that requirement lands.
 // Inter-scene transition overlay — a transient `<div>` parented to
 // `document.body` (above the chrome surface). The L2 transitions
 // library (cut / dissolve / hard-slam / hold-on-black / push) tweens
@@ -229,20 +229,15 @@ const buildCtx = (
   return { ...base, chrome: chromeSlots as unknown as Readonly<Record<string, unknown>> };
 };
 
-// Prompter renderer placeholder (PUL-F019 / ADR-022). Under
-// `mode=prompter` the loader bypasses the resolver lifecycle
-// structurally — no preload, no `create`, no `timeline`, no
-// `cleanup` — and hands a `PrompterScript` (captions aggregated
-// from the addressed scene or composition slice) to this adapter.
-// Until the captions/script UI surface lands, the placeholder
-// produces no visible output; the structural visual-rendering
-// suppression is delivered by the loader's lifecycle bypass, not by
-// this adapter.
-//
-// Pulsar L2 renderer: paints the full prompter script (composition
-// id + per-scene captions) into the workbench. Falls back to
-// `document.body` if the chrome slot resolution returns null. The
-// returned dispose callback removes the panel on next navigation.
+// Prompter renderer (PUL-F019 / ADR-022). Under `mode=prompter` the
+// loader bypasses the resolver lifecycle structurally — no preload,
+// no `create`, no `timeline`, no `cleanup` — and hands a
+// `PrompterScript` (captions aggregated from the addressed scene or
+// composition slice) to this adapter. The L2
+// `createChromePrompterRenderer` paints the full script (composition
+// id + per-scene captions) into the chrome lower-third slot, falling
+// back to `document.body` when the slot is unavailable. The returned
+// dispose callback removes the panel on the next navigation.
 const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
   () => chromeSlots?.lowerThird ?? document.body,
 );

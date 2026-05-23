@@ -40,8 +40,8 @@
 //    resolves on the master's natural completion (so the resolver tears
 //    every scene down) or on navigation abort.
 //
-// Scenes that have not yet authored a timeline return `null` (the
-// placeholder scene does this); the adapter composes such a scene as a
+// Scenes that don't author a timeline return `null` (the placeholder
+// scene does this); the adapter composes such a scene as a
 // zero-duration segment rather than rejecting it.
 //
 // References:
@@ -114,8 +114,8 @@ const isGsapTimeline = (value: unknown): value is GsapTimeline =>
 
 /**
  * Validate the value a scene's `timeline(ctx)` returned, including its
- * beats. `null` / `undefined` are accepted as "no timeline authored
- * yet" (the placeholder scene returns `null`); any other non-timeline
+ * beats. `null` / `undefined` are accepted as "no timeline authored"
+ * (the placeholder scene returns `null`); any other non-timeline
  * value is a scene-contract violation and throws
  * {@link SceneTimelineTypeError} with the scene id in the message.
  *
@@ -1024,9 +1024,9 @@ function runMasterUntilDone(
 }
 
 /**
- * Build the GSAP-backed {@link CompositionTimelineAdapter} the workbench
- * wires onto the composition resolver (replacing the placeholder
- * runner). Each `run(segments, opts)` call: composes `segments` (the
+ * Build the GSAP-backed {@link CompositionTimelineAdapter} the
+ * workbench wires onto the composition resolver. Each
+ * `run(segments, opts)` call: composes `segments` (the
  * active composition slice's scene timeline values, in manifest order)
  * into one master GSAP timeline; applies the head hints; reports the
  * live master to `onMaster`; then plays the master, resolving on its

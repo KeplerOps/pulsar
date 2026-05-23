@@ -3,8 +3,9 @@
 // Pure function over a {@link SceneNavigationTarget} (already validated
 // by `resolveSceneNavigation` per PUL-F008 / ADR-014). Produces a
 // {@link PrompterScript} carrying the captions metadata of the
-// addressed scene or composition slice. The future captions/script UI
-// surface consumes this shape; the scene loader hands it to a
+// addressed scene or composition slice. The captions/script UI surface
+// (the L2 `createChromePrompterRenderer` the workbench bootstrap
+// wires) consumes this shape; the scene loader hands it to a
 // {@link PrompterRenderer} adapter without interpreting it.
 //
 // Why prompter is structurally different from `mode=loop` /
@@ -113,20 +114,19 @@ export type PrompterDispose = () => void | Promise<void>;
  *    obtain the dispose callback (if any), then proceeds.
  *
  * A renderer can ALSO use the older parking-until-abort pattern
- * (return a `Promise<void>` that resolves on `signal.aborted`,
- * with cleanup in the abort listener), which the placeholder under
- * `mode=present` uses for the timeline runner. Both patterns
- * satisfy the contract; the dispose-return pattern is preferred
- * for renderers that mount DOM because the loader OWNS the abort
- * sequencing — there is no documentation-only "you must keep your
- * promise pending" convention for the renderer to forget.
+ * (return a `Promise<void>` that resolves on `signal.aborted`, with
+ * cleanup in the abort listener). Both patterns satisfy the contract;
+ * the dispose-return pattern is preferred for renderers that mount
+ * DOM because the loader OWNS the abort sequencing — there is no
+ * documentation-only "you must keep your promise pending" convention
+ * for the renderer to forget.
  *
- * Optional on {@link import('./scene-loader').SceneLoaderOptions}: a
- * workbench bootstrap that has not yet wired a captions UI omits the
- * field and the loader dispatches `mode=prompter` without invoking any
- * renderer (visual rendering is still structurally suppressed because
- * the resolver lifecycle is bypassed). Production bootstrap supplies a
- * concrete renderer when the UI surface lands.
+ * Optional on {@link import('./scene-loader').SceneLoaderOptions}:
+ * callers that don't render a captions view (test harnesses,
+ * embedders) omit the field and the loader dispatches `mode=prompter`
+ * without invoking any renderer (visual rendering is still
+ * structurally suppressed because the resolver lifecycle is bypassed).
+ * The workbench supplies the L2 `createChromePrompterRenderer`.
  */
 // `void` in this union is intentional: the "no cleanup obligation"
 // half of the contract must accept implicit-return arrow functions
