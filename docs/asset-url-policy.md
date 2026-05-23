@@ -296,5 +296,9 @@ Anti-patterns this doc rules out (per preflight):
 
 - [ADR-012 — asset preloader fetch + drain](adrs/012-asset-preloader-fetch-and-drain.md)
 - [Issue #101 preflight](design/issue-101-production-asset-policy-preflight.md)
+- [`docs/scene-trust-model.md`](scene-trust-model.md) — scene module
+  trust model. Asset URL policy is a URL and credential gate; it is
+  not a sandbox for scene code. Untrusted scene-module execution is a
+  separate, currently-non-existent surface tracked there.
 - `src/runtime/asset-preloader.ts` — `createAssetPreloader`, `resolveAssetUrl`, `DEFAULT_ALLOWED_SCHEMES`.
 - `src/runtime/validation.ts` — `validateRuntime`, `ValidationInput.assets`.
