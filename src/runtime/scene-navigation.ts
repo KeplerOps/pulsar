@@ -504,6 +504,9 @@ function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): Scene
       id: target.composition.id,
       manifestSlice: Object.freeze([headEntry]),
       sceneSlice: Object.freeze([headScene]),
+      ...(target.composition.audioBed === undefined
+        ? {}
+        : { audioBed: target.composition.audioBed }),
       // PUL-F029 / ADR-028: preserve the absolute composition start
       // index so a failure diagnostic still points operators at the
       // right manifest entry even after the slice was truncated to
