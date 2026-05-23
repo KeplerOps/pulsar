@@ -98,6 +98,32 @@ export interface TerminalContent {
 const TERMINAL_AUDIO_DEFAULT_VOLUME = 0.7;
 const TERMINAL_AUDIO_DEFAULT_FADE_MS = 1200;
 
+/**
+ * Start a terminal scene's soundtrack: load + play through
+ * {@link AudioService} and return the fade-and-stop closure the
+ * template registers on its session for teardown.
+ *
+ * Exported so the audio integration is unit-testable directly with a
+ * mock {@link AudioService}; `playScript` is the only production
+ * caller. Defaults: volume {@link TERMINAL_AUDIO_DEFAULT_VOLUME},
+ * fade-out {@link TERMINAL_AUDIO_DEFAULT_FADE_MS}.
+ */
+export const startTerminalAudio = (
+  audio: AudioService | undefined,
+  config: TerminalAudio,
+): (() => void) => {
+  const { src, soundId, rate } = config;
+  const volume = config.volume ?? TERMINAL_AUDIO_DEFAULT_VOLUME;
+  const fadeMs = config.fadeOutMs ?? TERMINAL_AUDIO_DEFAULT_FADE_MS;
+  loadAndPlayCue(
+    audio,
+    soundId,
+    { src: [src] },
+    { volume, ...(rate === undefined ? {} : { rate }) },
+  );
+  return (): void => fadeAndStop(audio, soundId, volume, fadeMs);
+};
+
 export const terminal = (id: string, content: TerminalContent): SceneModule => {
   // The soundtrack URL is declared in both `assets` (preloader warms
   // it) and `audio` (the audio-source allowlist) so `ctx.audio.load`
@@ -176,8 +202,12 @@ interface TerminalSession {
   ffTracking: HTMLElement | null;
   srcMarkEl: SrcMarkHandle | null;
   abortedFlag: { aborted: boolean };
-  /** Fades out + stops the scene soundtrack, or `null` when the scene declares no audio. */
-  audioFadeOut: (() => void) | null;
+  /**
+   * Fades out + stops the scene soundtrack. Set by `startTerminalAudio`
+   * when the scene declares an `audio` content field; absent (`?.()`
+   * no-op in `sessionTeardown`) when the scene declares no audio.
+   */
+  audioFadeOut?: () => void;
 }
 
 const sessions = new Map<string, TerminalSession>();
@@ -191,7 +221,6 @@ const ensureSession = (id: string): TerminalSession => {
       ffTracking: null,
       srcMarkEl: null,
       abortedFlag: { aborted: false },
-      audioFadeOut: null,
     };
     sessions.set(id, s);
   }
@@ -404,16 +433,7 @@ const playScript = (id: string, ctx: unknown, content: TerminalContent): void =>
   // teardown closure fades it out on scene exit.
   if (content.audio !== undefined) {
     const audio = (ctx as { audio?: AudioService }).audio;
-    const { src, soundId, rate } = content.audio;
-    const volume = content.audio.volume ?? TERMINAL_AUDIO_DEFAULT_VOLUME;
-    const fadeMs = content.audio.fadeOutMs ?? TERMINAL_AUDIO_DEFAULT_FADE_MS;
-    loadAndPlayCue(
-      audio,
-      soundId,
-      { src: [src] },
-      { volume, ...(rate === undefined ? {} : { rate }) },
-    );
-    session.audioFadeOut = (): void => fadeAndStop(audio, soundId, volume, fadeMs);
+    session.audioFadeOut = startTerminalAudio(audio, content.audio);
   }
 
   void (async (): Promise<void> => {

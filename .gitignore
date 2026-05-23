@@ -93,6 +93,9 @@ g-pi-*.png
 cv-*.png
 cg2-*.png
 
+# Ground Control SonarCloud server-side analytical reports
+.gc/sonar/
+
 # Local-only decks (per-developer scratch, never check in)
 src/decks/local-*/
 public/local-*/
