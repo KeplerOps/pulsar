@@ -212,6 +212,34 @@ not need to change for that layer to land.
 | `init.signal` cancellation arrives mid-drain and the preloader propagates a partial failure. | The current behavior surfaces the cancellation as one entry in `AggregateError.errors`. Callers driving cancellation from outside (e.g. the workbench during scene navigation) are responsible for treating cancellation as a non-fatal abort separate from genuine asset failures. |
 | SSRF via `scene.assets` declaring loopback / link-local IPs (e.g. `http://127.0.0.1:...`, `http://169.254.169.254/`). | The scheme allowlist alone does not block these; `http:` and `https:` allow any host. Production deployments wanting host-level defense need to either restrict at the network layer (egress firewall blocking RFC 1918 / RFC 6890 ranges) or wait for a future `originAllowlist` option on the preloader. Surfaces processing untrusted scene metadata MUST adopt one of these defenses. |
 
+## Production profile
+
+The preloader's defaults are authoring defaults
+(`DEFAULT_ALLOWED_SCHEMES = ['http:', 'https:', 'data:', 'blob:']`,
+no `baseUrl`, no custom `fetch`). Deployments opt into the hardened
+production profile at the entrypoint by passing
+`{ baseUrl, allowedSchemes: ['https:'], fetch?: <per-origin-credential-guard> }`
+to **both** `createAssetPreloader` and `validateRuntime`.
+
+The canonical deployment-facing policy doc is
+[`docs/asset-url-policy.md`](../asset-url-policy.md). It covers:
+
+- when `baseUrl` is required (every production entrypoint);
+- which schemes are allowed in public production (`https:` only) and
+  why each forbidden scheme is forbidden;
+- how credentialed `fetch` options must be bound per destination URL
+  rather than via shared `init.headers`;
+- post-redirect scheme re-validation as a non-negotiable gate;
+- the SSRF caveat — scheme allowlisting is not host hardening, and
+  deployments processing untrusted scene metadata still need network
+  egress controls;
+- the named future seams (`allowedOrigins`, `credentialedOrigins`)
+  for any runtime tightening beyond the current behavior.
+
+Future changes to accepted production policy SHOULD update both the
+policy doc and this ADR; the policy doc is the operational source of
+truth, the ADR is the decision record.
+
 ## Related ADRs
 
 - [ADR-002](002-scene-registry-and-compositions.md) §Resolution —
@@ -223,3 +251,9 @@ not need to change for that layer to land.
   whose `AssetPreloader` adapter slot this preloader fills.
 - [ADR-007](007-browser-workbench.md) — the workbench whose
   `mode=screenshot` is the future customer of decode-complete.
+
+## Related docs
+
+- [`docs/asset-url-policy.md`](../asset-url-policy.md) — production
+  policy for `baseUrl`, schemes, credentials, redirects, and SSRF
+  posture.
