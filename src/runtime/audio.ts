@@ -441,8 +441,8 @@ export const AUDIO_OUTPUT_POLICIES = Object.freeze(['audible', 'silent', 'log-cu
  *    {@link AudioServiceOptions.onCue} sink. The PUL-F026 / ADR-004
  *    rehearsal-mode contract: "audio is silenced OR logged as cues
  *    without altering timeline state." With no sink wired the policy
- *    is effectively silent (the workbench has not yet attached a cue
- *    UI / log surface).
+ *    is effectively silent (the workbench attaches no cue UI / log
+ *    surface today).
  *
  * Future variations (silent rehearsal as a distinct mode, export
  * silence, ducking, bus volume, an audio-status UI) extend this same
