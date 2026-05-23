@@ -12,4 +12,7 @@ The runtime owns the scene/composition model. External libraries are
 adopted where they make a specific layer stronger, not where they force
 the project back into slide semantics.
 
-See `docs/adrs/` for architectural decisions.
+See `docs/adrs/` for architectural decisions. The trust model for
+scene modules — what the runtime treats as trusted application code,
+and what current validation does not cover — is documented in
+[`docs/scene-trust-model.md`](docs/scene-trust-model.md).
