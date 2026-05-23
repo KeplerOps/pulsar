@@ -357,6 +357,7 @@ describe('scene loader — audio service wiring (PUL-F024 / ADR-004)', () => {
     const head = buildScene({
       id: 'head',
       assets: ['/audio/head.mp3'],
+      audio: ['/audio/head.mp3'],
       create: (ctx) => {
         // Would register a sound — but prompter never mounts the scene.
         (ctx as { audio: AudioService }).audio.load('head-bed', { src: '/audio/head.mp3' });
@@ -1232,6 +1233,35 @@ describe('scene loader — composition audio bed (PUL-F014 / ADR-004)', () => {
     // It was marked looping (composition-level continuous bed).
     expect(audio.calls.some((c) => c.method === 'loop')).toBe(true);
   });
+
+  it.each(['loop', 'scrub'] as const)(
+    'preserves and starts the composition audio bed under mode=%s head slices',
+    async (mode) => {
+      const audio = recordingAudioEngine();
+      const { adapter } = buildRecordingUnlockAdapter('resolve');
+      const loader = createSceneLoader({
+        scenes: createSceneRegistry([buildScene({ id: 'head' })]),
+        compositions: bedComposition(),
+        stage: null,
+        buildCtx: stubCtx,
+        createPreloader: () => () => Promise.resolve(),
+        timeline: noopTimeline,
+        audioEngine: audio.engine,
+        audioUnlockAdapter: adapter,
+      });
+
+      await loader.handle({
+        locator: { kind: 'composition', composition: 'deck' },
+        mode,
+      });
+      await loader.idle();
+
+      expect(audio.created).toHaveLength(1);
+      expect(audio.created[0]?.src).toEqual([BED_SRC]);
+      expect(audio.calls).toContainEqual({ sound: 0, method: 'play' });
+      expect(audio.calls).toContainEqual({ sound: 0, method: 'loop' });
+    },
+  );
 
   it('suppresses the composition audio bed under mode=standalone', async () => {
     const audio = recordingAudioEngine();

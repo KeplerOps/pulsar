@@ -1584,6 +1584,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         id: resolved.composition.id,
         manifestSlice: Object.freeze([headEntry]),
         sceneSlice: Object.freeze([headScene]),
+        ...(resolved.composition.audioBed === undefined
+          ? {}
+          : { audioBed: resolved.composition.audioBed }),
         // PUL-F029 / ADR-028: preserve the absolute composition start
         // index even when the slice is truncated to its head, so a
         // failure diagnostic names the right manifest entry.
