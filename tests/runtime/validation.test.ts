@@ -851,5 +851,60 @@ describe('validateRuntime (PUL-Q005 — actionability)', () => {
       });
       expect(findings).toEqual([]);
     });
+
+    it.each([
+      ['http:', 'http://cdn.example.test/bed.webm'],
+      ['data:', 'data:audio/webm;base64,AAAA'],
+      ['blob:', 'blob:https://app.example.test/bed'],
+      ['file:', 'file:///tmp/bed.webm'],
+      ['ftp:', 'ftp://cdn.example.test/bed.webm'],
+    ] as const)(
+      'reports composition-audio-bed-unresolvable for a string src with disallowed %s policy',
+      (_scheme, src) => {
+        const findings = validateRuntime({
+          scenes: [buildScene({ id: 'real' })],
+          compositions: [{ id: 'deck', manifest: ['real'], audioBed: { src } }],
+          assets: { baseUrl: 'https://app.example.test/', allowedSchemes: ['https:'] },
+        });
+        expect(findingCodes(findings)).toEqual(['composition-audio-bed-unresolvable']);
+        expect(findings[0]).toMatchObject({
+          compositionId: 'deck',
+          asset: src,
+        });
+        expect(findings[0]?.message).toMatch(/^composition "deck": audio bed source/);
+      },
+    );
+
+    it('reports only the disallowed member of an audioBed.src array', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [
+          {
+            id: 'deck',
+            manifest: ['real'],
+            audioBed: {
+              src: ['https://cdn.example.test/bed.webm', 'http://cdn.example.test/bed.webm'],
+            },
+          },
+        ],
+        assets: { baseUrl: 'https://app.example.test/', allowedSchemes: ['https:'] },
+      });
+      expect(findingCodes(findings)).toEqual(['composition-audio-bed-unresolvable']);
+      expect(findings[0]?.asset).toBe('http://cdn.example.test/bed.webm');
+    });
+
+    it('keeps the permissive default bed source policy when no production policy is supplied', () => {
+      const findings = validateRuntime({
+        scenes: [buildScene({ id: 'real' })],
+        compositions: [
+          {
+            id: 'deck',
+            manifest: ['real'],
+            audioBed: { src: ['http://cdn.example.test/bed.webm', 'data:audio/webm;base64,AAAA'] },
+          },
+        ],
+      });
+      expect(findings).toEqual([]);
+    });
   });
 });

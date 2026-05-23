@@ -57,7 +57,7 @@
 //    module reuses; declared audio sources are warmed before mount.
 
 import { Howl, Howler, type SoundSpriteDefinitions } from 'howler';
-import { DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
+import { type AssetUrlPolicy, DEFAULT_ALLOWED_SCHEMES, resolveAssetUrl } from './asset-preloader';
 import { describeError } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { deepFreeze, isPlainRecord } from './object';
@@ -651,6 +651,13 @@ export interface AudioServiceOptions {
    * test callers); scheme validation still applies.
    */
   readonly allowedSources?: Iterable<string>;
+  /**
+   * Asset URL policy shared with validation and the preloader. When
+   * supplied, every scene sound source and composition bed source is
+   * resolved with the same `baseUrl` / `allowedSchemes` rules before
+   * reaching the engine. Omit to keep the default authoring policy.
+   */
+  readonly assetPolicy?: AssetUrlPolicy;
   /** Sink for non-fatal async audio errors (load / play failure). Defaults to a no-op. */
   readonly onError?: (err: unknown) => void;
   /**
@@ -957,14 +964,12 @@ const assertSpriteMap = (soundId: string, sprite: unknown): void => {
  *
  *  1. The URL is a non-empty string — scene modules can be plain JS,
  *     so the static type does not hold.
- *  2. The URL resolves under {@link DEFAULT_ALLOWED_SCHEMES}.
- *     Defense-in-depth: even when an allowlist is supplied, the audio
- *     service runs the same default scheme allowlist the preloader
- *     uses by default — so a no-op or weak preloader cannot let
- *     `file:` / `//host` URLs through. Threading the preloader's exact
- *     `baseUrl` / `allowedSchemes` policy into the audio service is a
- *     documented follow-up; for now the service is at least as
- *     restrictive as `DEFAULT_ALLOWED_SCHEMES`.
+ *  2. The URL resolves under the supplied asset policy, or under
+ *     {@link DEFAULT_ALLOWED_SCHEMES} when no policy was supplied.
+ *     This is the same `baseUrl` / `allowedSchemes` rule the
+ *     validation pass and asset preloader use, so hardened
+ *     deployments do not get a looser audio-bed URL path when
+ *     validation is skipped.
  *  3. When `allowedForSource` is non-null, the URL is a member of it.
  *     PUL-F030 / ADR-029: `scene.audio` is the audio-source allowlist
  *     for scene sounds; for the composition bed it is the bed's own
@@ -978,16 +983,22 @@ const assertSpriteMap = (soundId: string, sprite: unknown): void => {
  * `normalizeSources` stays within Sonar's / Biome's cognitive-
  * complexity budget (the per-URL branching is the bulk of it).
  */
-function assertValidAudioUrl(
+function normalizeAudioUrl(
   soundId: string,
   url: unknown,
   allowedForSource: ReadonlySet<string> | null,
-): asserts url is string {
+  assetPolicy: AssetUrlPolicy | undefined,
+): string {
   if (typeof url !== 'string' || url === '') {
     throw new AudioSourceError(`audio sound "${soundId}" source must be a non-empty URL string`);
   }
+  let resolved: string;
   try {
-    resolveAssetUrl(url, undefined, DEFAULT_ALLOWED_SCHEMES);
+    resolved = resolveAssetUrl(
+      url,
+      assetPolicy?.baseUrl,
+      assetPolicy?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES,
+    );
   } catch (cause) {
     throw new AudioSourceError(
       `audio sound "${soundId}" source "${url}" is invalid: ${describeError(cause)}`,
@@ -999,6 +1010,7 @@ function assertValidAudioUrl(
       `audio sound "${soundId}" source "${url}" is not a declared audio source — list it in scene.audio (and ensure it is also in scene.assets so the preloader warms it) per PUL-F030 / ADR-029`,
     );
   }
+  return resolved;
 }
 
 /** Build the per-navigation {@link AudioService} over `engine`. */
@@ -1119,6 +1131,7 @@ export function createAudioService(
   const muted = outputPolicy !== 'audible';
   const onError = options.onError ?? ((): void => undefined);
   const onCue = options.onCue;
+  const assetPolicy = options.assetPolicy;
   const allowed = options.allowedSources === undefined ? null : new Set(options.allowedSources);
   // PUL-F017 / ADR-020: the dynamic cue-eligibility gate. Absent for
   // every navigation except `mode=scrub`; an absent gate means cues
@@ -1249,10 +1262,7 @@ export function createAudioService(
         `audio sound "${soundId}" has no source — provide at least one URL`,
       );
     }
-    for (const url of list) {
-      assertValidAudioUrl(soundId, url, allowedForSource);
-    }
-    return list;
+    return list.map((url) => normalizeAudioUrl(soundId, url, allowedForSource, assetPolicy));
   };
 
   const unknownSpriteMessage = (
