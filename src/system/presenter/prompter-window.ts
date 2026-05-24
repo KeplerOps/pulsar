@@ -12,10 +12,45 @@
 
 import type { PrompterRenderer, PrompterScript } from '../../runtime/prompter';
 
-const buildPrompterUrl = (baseUrl: string): string => {
-  if (baseUrl.includes('mode=')) return baseUrl.replace(/mode=[^&]*/, 'mode=prompter');
-  if (baseUrl.includes('?')) return `${baseUrl}&mode=prompter`;
-  return `${baseUrl}?mode=prompter`;
+const DEFAULT_PROMPTER_WINDOW_FEATURES = 'width=900,height=700,menubar=no,toolbar=no';
+const POPUP_ISOLATION_FEATURES = ['noopener', 'noreferrer'] as const;
+
+const buildPrompterUrl = (
+  baseUrl: string,
+  location: Pick<Location, 'href' | 'origin'>,
+): string | null => {
+  let url: URL;
+  try {
+    url = new URL(baseUrl, location.href);
+  } catch {
+    return null;
+  }
+
+  if (url.origin !== location.origin) return null;
+  url.searchParams.set('mode', 'prompter');
+  return url.href;
+};
+
+const withPopupIsolationFeatures = (features: string): string => {
+  const tokens = features
+    .split(',')
+    .map((feature) => feature.trim())
+    .filter((feature) => feature.length > 0);
+  const present = new Set(tokens.map((feature) => feature.toLowerCase()));
+  for (const feature of POPUP_ISOLATION_FEATURES) {
+    if (!present.has(feature)) tokens.push(feature);
+  }
+  return tokens.join(',');
+};
+
+const isolateOpenedWindow = (opened: Window | null): Window | null => {
+  if (opened === null) return null;
+  try {
+    opened.opener = null;
+  } catch {
+    // Some browsers return a WindowProxy that rejects opener mutation.
+  }
+  return opened;
 };
 
 /**
@@ -26,10 +61,16 @@ const buildPrompterUrl = (baseUrl: string): string => {
  */
 export const openPrompterWindow = (
   baseUrl: string,
-  features = 'width=900,height=700,menubar=no,toolbar=no',
+  features = DEFAULT_PROMPTER_WINDOW_FEATURES,
 ): Window | null => {
-  const url = buildPrompterUrl(baseUrl);
-  return globalThis.window?.open(url, '_blank', features) ?? null;
+  const win = globalThis.window;
+  if (win === undefined) return null;
+
+  const url = buildPrompterUrl(baseUrl, win.location);
+  if (url === null) return null;
+
+  const opened = win.open(url, '_blank', withPopupIsolationFeatures(features));
+  return isolateOpenedWindow(opened);
 };
 
 /**
