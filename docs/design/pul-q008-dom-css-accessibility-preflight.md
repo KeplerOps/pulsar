@@ -37,10 +37,10 @@ Implementation must build on these incumbents:
   `ctx.stage.ownerDocument.createElement(...)`, scene-local
   `appendChild`, and lifecycle cleanup through `cleanup(ctx)`.
 - Existing DOM bypass policy: PUL-Q004's source scan over
-  `src/scenes/**/*.ts`, especially the bans on ambient `document`
+  source modules under `src/scenes/`, especially the bans on ambient `document`
   attachment roots, global listeners, observers, and DOM prototype
   monkey-patches.
-- Source-policy helpers: `walkTsFiles`, `parseSource`,
+- Source-policy helpers: `walkSourceFiles`, `parseSource`,
   `collectLineExemptions`, `lineText`, access-path helpers, and
   bounded `{ file, line, text, label }` diagnostics from
   `tests/runtime/source-policy.ts`.

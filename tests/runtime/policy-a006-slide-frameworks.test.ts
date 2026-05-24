@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   parseSource,
   scanImportSpecifiers,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A006 — Live runtime is independent of slide frameworks.
@@ -34,7 +34,7 @@ const RULE: ImportBanRule = {
 const SCENES_ROOT = join(SRC_ROOT, 'scenes');
 
 function runtimeCoreFiles(): readonly string[] {
-  return walkTsFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
+  return walkSourceFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
 }
 
 function scanForA006(source: string, file: string): readonly SourceFinding[] {

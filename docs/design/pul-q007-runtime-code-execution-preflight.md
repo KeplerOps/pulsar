@@ -4,8 +4,8 @@ Date: 2026-05-12
 
 PUL-Q007 is a runtime-source security policy: published runtime code
 must not execute code that is not already present in the bundle. The
-right enforcement is a Vitest static-policy suite over `src/**/*.ts`,
-using the TypeScript AST scanner precedent from
+right enforcement is a Vitest static-policy suite that scans source
+modules under `src/`, using the TypeScript AST scanner precedent from
 `tests/runtime/screenshot-determinism-source.test.ts` and the CI-gate
 precedent from `tests/runtime/workbench-graph.test.ts`.
 

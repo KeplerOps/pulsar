@@ -27,7 +27,7 @@ workflow layer.
   `effectiveMode(target)` for each navigation and builds fresh
   per-navigation context.
 - Source-policy enforcement belongs in a Vitest static policy over
-  authored `src/**/*.ts`, using `tests/runtime/source-policy.ts` and
+  authored source modules under `src/`, using `tests/runtime/source-policy.ts` and
   the screenshot-determinism source scan precedent. Do not add a
   browser runtime validator for persisted-state targeting.
 
@@ -76,7 +76,7 @@ Implementation must build on these incumbents:
 | Mode dispatch | Mode is derived with `effectiveMode(target)` for each navigation. Omitted `mode` selects fresh `present`; it must not reuse a previous mode from memory or storage. |
 | Scene context | `ctx.mode` is a derived hint from the current target only. Scenes may branch on `ctx.mode`; they must not parse query strings or read storage/cookies/history to determine target or mode. |
 | Runtime validation | `validateRuntime()` stays graph-shape validation. Q003 enforcement is source-policy plus existing URL/parser/loader tests, not scene metadata validation. |
-| Source policy gate | Add or extend a Vitest policy scan over `src/**/*.ts`. Reuse `source-policy.ts`; do not create regex-only scans or duplicate walkers. Any exemption must be line-scoped and reasoned, e.g. `PUL-Q003-allow: <reason>`, and must not apply to target selection. |
+| Source policy gate | Add or extend a Vitest policy scan across source modules under `src/`. Reuse `source-policy.ts`; do not create regex-only scans or duplicate walkers. Any exemption must be line-scoped and reasoned, e.g. `PUL-Q003-allow: <reason>`, and must not apply to target selection. |
 | Auth, secrets, and env binding | Target selection needs no auth, secrets, env vars, `.env`, or host config. `process.env`, `import.meta.env`, and `process.argv` must not determine scene, beat, composition, or mode. |
 | OS/process exposure | Do not pass target state, secret-bearing URLs, cookies, or env-derived values through shell argv. Tests should run in-process under Vitest and report relative path, line, label, and trimmed line text only. |
 | Error envelope | Navigation failures use existing `navigation grammar is invalid:`, `scene navigation failed:`, `composition resolution failed:`, and `data-pulsar-navigation-error` surfaces. Diagnostics may name ids, modes, indexes, and bounded messages; never dump cookies, headers, env, argv, raw scene objects, or full credential-bearing URLs. |

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { REPO_ROOT, walkTsFiles } from './source-policy';
+import { REPO_ROOT, walkSourceFiles } from './source-policy';
 
 // Issue 90 — per-function cognitive-complexity hard gate.
 //
@@ -172,7 +172,7 @@ describe('issue 90 — Biome cognitive-complexity hard gate', () => {
     const scanRoots = [join(REPO_ROOT, 'src'), join(REPO_ROOT, 'tests')];
     const bareSuppressions: string[] = [];
     for (const root of scanRoots) {
-      for (const filePath of walkTsFiles(root)) {
+      for (const filePath of walkSourceFiles(root)) {
         const text = readFileSync(filePath, 'utf8');
         const lines = text.split('\n');
         lines.forEach((line, idx) => {

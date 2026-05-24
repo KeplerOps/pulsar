@@ -14,7 +14,7 @@ import {
   lineText,
   parseSource,
   unwrap,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-Q003 — URL state determinism source scan.
@@ -34,7 +34,7 @@ import {
 // happens to overlap on the host-state subset but is logically
 // scope-separable.
 //
-// Enforcement: a Vitest source scan over `src/**/*.ts`. The scanner
+// Enforcement: a Vitest source scan across source modules under `src/`. The scanner
 // flags every runtime-value read of:
 //   - `localStorage`, `sessionStorage` (Web Storage)
 //   - `document.cookie`
@@ -1384,13 +1384,13 @@ describe('PUL-Q003 — URL state determinism (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scan root `src/` exists and contains at least one .ts file', () => {
+    it('scan root `src/` exists and contains at least one source module file', () => {
       expect(statSync(SRC_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SRC_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SRC_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no Q003 violations across `src/**/*.ts`', () => {
-      const files = walkTsFiles(SRC_ROOT);
+    it('contains no Q003 violations across source modules under `src/`', () => {
+      const files = walkSourceFiles(SRC_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');

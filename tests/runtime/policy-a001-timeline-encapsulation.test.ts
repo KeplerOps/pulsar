@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   parseSource,
   scanImportSpecifiers,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A001 — Timeline library encapsulation.
@@ -19,7 +19,7 @@ import {
 // directly. Scene timelines SHALL be constructed via the timeline
 // utilities exposed on the scene context."
 //
-// Enforcement: a Vitest source scan over `src/scenes/**/*.ts` that
+// Enforcement: a Vitest source scan across source modules under `src/scenes/` that
 // flags every import — static (`import ... from 'gsap'`), dynamic
 // (`import('gsap')`), and type-only (`import type ... from 'gsap'`) —
 // of the `gsap` package and its subpaths. The runtime adapter at
@@ -186,13 +186,13 @@ describe('PUL-A001 — timeline library encapsulation (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scenes root `src/scenes/` exists and contains at least one .ts file', () => {
+    it('scenes root `src/scenes/` exists and contains at least one source module file', () => {
       expect(statSync(SCENES_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SCENES_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SCENES_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no A001 violations across `src/scenes/**/*.ts`', () => {
-      const files = walkTsFiles(SCENES_ROOT);
+    it('contains no A001 violations across source modules under `src/scenes/`', () => {
+      const files = walkSourceFiles(SCENES_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -209,7 +209,7 @@ describe('PUL-A001 — timeline library encapsulation (source scan)', () => {
     });
 
     it('runtime adapter `src/runtime/timeline.ts` is exempt by scope (the boundary)', () => {
-      // The scope is `src/scenes/**/*.ts`, so the adapter never enters
+      // The scope is source modules under `src/scenes/`, so the adapter never enters
       // the scan — it would never be flagged even though it imports
       // `gsap`. This test pins that property explicitly so a future
       // change to the scope cannot silently drag the adapter in.
@@ -217,7 +217,7 @@ describe('PUL-A001 — timeline library encapsulation (source scan)', () => {
       expect(statSync(adapter).isFile()).toBe(true);
       const text = readFileSync(adapter, 'utf-8');
       expect(text).toMatch(/from\s+['"]gsap['"]/);
-      const sceneFiles = walkTsFiles(SCENES_ROOT);
+      const sceneFiles = walkSourceFiles(SCENES_ROOT);
       expect(sceneFiles).not.toContain(adapter);
     });
   });

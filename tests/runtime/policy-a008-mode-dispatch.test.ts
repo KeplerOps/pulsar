@@ -14,7 +14,7 @@ import {
   lineText,
   parseSource,
   unwrap,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A008 — Workbench mode dispatch in the runtime core.
@@ -24,7 +24,7 @@ import {
 // branches except where they must respond to mode hints (e.g.,
 // suppressing audio in `mode=screenshot`)."
 //
-// Enforcement: a Vitest source scan over `src/scenes/**/*.ts`. The
+// Enforcement: a Vitest source scan across source modules under `src/scenes/`. The
 // scanner flags three AST shapes — all variants of "this code branches
 // on a workbench mode literal":
 //
@@ -65,7 +65,7 @@ import {
 // The runtime core (`src/runtime/`) IS the mode-dispatch boundary and
 // intentionally contains exactly the constructions this gate forbids
 // in scenes — scanning it would be a category error. The scope is
-// therefore `src/scenes/**/*.ts` only.
+// therefore source modules under `src/scenes/` only.
 //
 // Exemption: a line-scoped `// PUL-A008-allow: <reason>` comment
 // excludes a single line. Empty / whitespace-only rationales are
@@ -950,13 +950,13 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scenes root `src/scenes/` exists and contains at least one .ts file', () => {
+    it('scenes root `src/scenes/` exists and contains at least one source module file', () => {
       expect(statSync(SCENES_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SCENES_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SCENES_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no A008 violations across `src/scenes/**/*.ts`', () => {
-      const files = walkTsFiles(SCENES_ROOT);
+    it('contains no A008 violations across source modules under `src/scenes/`', () => {
+      const files = walkSourceFiles(SCENES_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -971,7 +971,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
     });
 
     it('runtime core `src/runtime/` is exempt by scope (the dispatch boundary)', () => {
-      // The scope is `src/scenes/**/*.ts`, so `src/runtime/navigation.ts`
+      // The scope is source modules under `src/scenes/`, so `src/runtime/navigation.ts`
       // and `src/runtime/scene-loader.ts` — which deliberately contain
       // the mode-literal comparisons this gate forbids in scenes —
       // never enter the scan. This test pins that property so a
@@ -981,7 +981,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       const loader = join(SRC_ROOT, 'runtime', 'scene-loader.ts');
       expect(statSync(navigation).isFile()).toBe(true);
       expect(statSync(loader).isFile()).toBe(true);
-      const sceneFiles = walkTsFiles(SCENES_ROOT);
+      const sceneFiles = walkSourceFiles(SCENES_ROOT);
       expect(sceneFiles).not.toContain(navigation);
       expect(sceneFiles).not.toContain(loader);
     });

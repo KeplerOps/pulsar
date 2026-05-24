@@ -16,7 +16,7 @@ import {
   parseSource,
   pathResolvesTo,
   scanImportSpecifiers,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A002 — Audio library encapsulation.
@@ -27,7 +27,7 @@ import {
 // where a scene drops down to raw Web Audio with a documented
 // justification and registers cleanup with the runtime."
 //
-// Enforcement: a Vitest source scan over `src/scenes/**/*.ts` with
+// Enforcement: a Vitest source scan across source modules under `src/scenes/` with
 // two checks:
 //
 //   1. Direct imports of `howler` (or any `howler/*` subpath) are
@@ -371,13 +371,13 @@ describe('PUL-A002 — audio library encapsulation (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scenes root `src/scenes/` exists and contains at least one .ts file', () => {
+    it('scenes root `src/scenes/` exists and contains at least one source module file', () => {
       expect(statSync(SCENES_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SCENES_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SCENES_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no A002 violations across `src/scenes/**/*.ts`', () => {
-      const files = walkTsFiles(SCENES_ROOT);
+    it('contains no A002 violations across source modules under `src/scenes/`', () => {
+      const files = walkSourceFiles(SCENES_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -401,7 +401,7 @@ describe('PUL-A002 — audio library encapsulation (source scan)', () => {
       expect(statSync(adapter).isFile()).toBe(true);
       const text = readFileSync(adapter, 'utf-8');
       expect(text).toMatch(/from\s+['"]howler['"]/);
-      const sceneFiles = walkTsFiles(SCENES_ROOT);
+      const sceneFiles = walkSourceFiles(SCENES_ROOT);
       expect(sceneFiles).not.toContain(adapter);
     });
   });

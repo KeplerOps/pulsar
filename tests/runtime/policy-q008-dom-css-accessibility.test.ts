@@ -11,7 +11,7 @@ import {
   lineText,
   parseSource,
   unwrap,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-Q008 — Accessibility of DOM/CSS scenes (source-policy gate).
@@ -34,7 +34,7 @@ import {
 // Surface families enforced here, parameterised by tables so future
 // rules add a row without rewriting the walker:
 //
-//   1. Scene-authored attribute writes (`src/scenes/**/*.ts`) —
+//   1. Scene-authored attribute writes (source modules under `src/scenes/`) —
 //      `setAttribute(name, value)` calls whose `(name, value)` pair
 //      hits a forbidden row in `FORBIDDEN_SCENE_ATTRS`:
 //        - `tabindex` with a string-literal positive integer
@@ -64,7 +64,7 @@ import {
 //        - `el.style.setProperty('user-select', 'none')` and the
 //          vendor-prefixed property names.
 //
-//   3. Scene-authored CSS strings (`src/scenes/**/*.ts`) —
+//   3. Scene-authored CSS strings (source modules under `src/scenes/`) —
 //      `FORBIDDEN_SCENE_CSS_DECLARATIONS` matched against a
 //      *normalised* form of every string literal AND every
 //      template-literal head/span. Normalisation collapses runs of
@@ -81,7 +81,7 @@ import {
 //      uses the same scanner discipline.
 //
 //   4. Runtime-authored attribute removals
-//      (`src/runtime/**/*.ts` + `src/main.ts`) —
+//      (source modules under `src/runtime/` + `src/main.ts`) —
 //      `removeAttribute(name)` calls whose `name` is a string-literal
 //      matching `FORBIDDEN_RUNTIME_REMOVAL_NAMES` (per ARIA tree
 //      preservation, clause C3). The runtime owns the stage and may
@@ -1197,22 +1197,22 @@ describe('PUL-Q008 — DOM/CSS accessibility (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scenes root `src/scenes/` exists and contains at least one .ts file', () => {
+    it('scenes root `src/scenes/` exists and contains at least one source module file', () => {
       expect(statSync(SCENES_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SCENES_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SCENES_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('runtime root `src/runtime/` exists and contains at least one .ts file', () => {
+    it('runtime root `src/runtime/` exists and contains at least one source module file', () => {
       expect(statSync(RUNTIME_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(RUNTIME_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(RUNTIME_ROOT).length).toBeGreaterThan(0);
     });
 
     it('`src/main.ts` exists', () => {
       expect(statSync(MAIN_TS).isFile()).toBe(true);
     });
 
-    it('contains no Q008 violations across `src/scenes/**/*.ts`', () => {
-      const files = walkTsFiles(SCENES_ROOT);
+    it('contains no Q008 violations across source modules under `src/scenes/`', () => {
+      const files = walkSourceFiles(SCENES_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -1227,8 +1227,8 @@ describe('PUL-Q008 — DOM/CSS accessibility (source scan)', () => {
       expect(findings, message).toEqual([]);
     });
 
-    it('contains no Q008 violations across `src/runtime/**/*.ts`', () => {
-      const files = walkTsFiles(RUNTIME_ROOT);
+    it('contains no Q008 violations across source modules under `src/runtime/`', () => {
+      const files = walkSourceFiles(RUNTIME_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -1249,7 +1249,7 @@ describe('PUL-Q008 — DOM/CSS accessibility (source scan)', () => {
       const sf = parseSource(text, rel);
       const findings = scanRuntimeFile(sf);
       const header =
-        'PUL-Q008 forbids `src/main.ts` from removing accessibility attributes — the workbench bootstrap participates in the same ARIA-preservation contract as `src/runtime/**/*.ts`.';
+        'PUL-Q008 forbids `src/main.ts` from removing accessibility attributes — the workbench bootstrap participates in the same ARIA-preservation contract as source modules under `src/runtime/`.';
       const detail = findings.map((f) => `  ${f.file}:${f.line}  ${f.label}  ${f.text}`).join('\n');
       const message = findings.length === 0 ? '' : `${header}\n${detail}`;
       expect(findings, message).toEqual([]);

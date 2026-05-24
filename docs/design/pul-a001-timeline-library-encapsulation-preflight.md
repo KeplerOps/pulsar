@@ -14,7 +14,7 @@ runtime validator, loader hook, or bundle audit.
 
 ## Boundary
 
-- Scan authored scene source under `src/scenes/**/*.ts` for direct
+- Scan authored scene source modules under `src/scenes/` for direct
   imports or dynamic imports of `gsap` and GSAP subpaths.
 - Treat `src/runtime/timeline.ts` as the canonical GSAP boundary. It may
   import `gsap`, exposes `createTimelineEngine()`, validates returned
@@ -76,7 +76,7 @@ Implementation must build on these incumbents:
 The seam is a parameterized forbidden-import policy table in the shared
 source scanner. A001 contributes a rule shaped like:
 
-- scope: `src/scenes/**/*.ts`;
+- scope: source modules under `src/scenes/`;
 - forbidden module specifiers: `gsap` and `gsap/*`;
 - allowed production boundary: `src/runtime/timeline.ts`;
 - exemption tag: `PUL-A001-allow`.
