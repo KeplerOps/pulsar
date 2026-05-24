@@ -19,6 +19,7 @@ import { addAdvanceGate } from '../helpers/timing';
 // ---------- ctx narrowing (shared with the scene authoring contract) ----
 
 export interface TemplateDomElement {
+  className?: string;
   setAttribute(name: string, value: string): void;
   appendChild?(node: unknown): unknown;
   textContent?: string;

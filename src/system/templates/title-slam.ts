@@ -6,7 +6,6 @@
 // Optional subtitle.
 
 import type { SceneModule } from '../../runtime/scene';
-import { markedTextHtml } from '../helpers';
 import { buildTemplateScene, buildTemplateTimeline, mountTemplateRoot } from './_shared';
 
 export interface TitleSlamContent {
@@ -28,14 +27,14 @@ export const titleSlam = (id: string, content: TitleSlamContent): SceneModule =>
         templateKind: 'title-slam',
         buildChildren: (root, ownerDoc) => {
           const h1 = ownerDoc.createElement('h1');
-          h1.setAttribute('class', 'pulsar-title__h');
-          const html = words
-            .map((w) => {
-              const cls = content.glitch === true ? 'word pulsar-glitch' : 'word';
-              return `<span class="${cls}" data-text="${w}">${markedTextHtml(w)}</span>`;
-            })
-            .join('');
-          h1.innerHTML = html;
+          h1.className = 'pulsar-title__h';
+          for (const w of words) {
+            const span = ownerDoc.createElement('span');
+            span.className = content.glitch === true ? 'word pulsar-glitch' : 'word';
+            span.textContent = w;
+            span.dataset.text = w;
+            h1.appendChild?.(span);
+          }
           root.appendChild?.(h1);
           if (content.subtitle !== undefined) {
             const sub = ownerDoc.createElement('p');
