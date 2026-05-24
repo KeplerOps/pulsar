@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   parseSource,
   scanImportSpecifiers,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A004 — Live runtime is independent of the export pipeline.
@@ -37,7 +37,7 @@ const RULE: ImportBanRule = {
 const SCENES_ROOT = join(SRC_ROOT, 'scenes');
 
 function runtimeCoreFiles(): readonly string[] {
-  return walkTsFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
+  return walkSourceFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
 }
 
 function scanForA004(source: string, file: string): readonly SourceFinding[] {

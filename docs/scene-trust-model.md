@@ -138,7 +138,7 @@ one.
   [`tests/runtime/policy-q007-remote-code-execution.test.ts`](../tests/runtime/policy-q007-remote-code-execution.test.ts)
   bans `eval`, `new Function(...)`, `Function(...)`, and dynamic
   `import(specifier)` whose specifier is a remote URL or non-static
-  expression in authored runtime source (`src/**/*.ts`). It catches
+  expression in authored runtime source (source modules under `src/`). It catches
   attempts to execute code that is not present in the published
   bundle. It does not transform a bundled scene module into
   untrusted-safe code, and it does not restrict what bundled scene

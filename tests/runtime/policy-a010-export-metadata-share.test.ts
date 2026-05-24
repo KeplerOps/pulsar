@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   lineText,
   parseSource,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A010 — Live and export share scene metadata.
@@ -70,8 +70,8 @@ import {
 //      imports from any other path are flagged.
 //
 //   3. **Forbidden export-side authoring fields on scene-module and
-//      composition-entry OBJECT LITERALS** under `src/scenes/**/*.ts`
-//      and `src/compositions/**/*.ts`. `assertSceneModule()` accepts
+//      composition-entry OBJECT LITERALS** in source modules under `src/scenes/`
+//      and `src/compositions/`. `assertSceneModule()` accepts
 //      unknown keys at the value level (the preflight rules out a
 //      runtime implementation change), so a scene module can carry a
 //      forbidden export-shaped sibling field today and pass the
@@ -462,8 +462,8 @@ function scanForbiddenSchemas(sourceFile: ts.SourceFile): readonly SourceFinding
 //
 // Rule 1 inspects the TypeScript `SceneModule` /
 // `CompositionEntryOverride` INTERFACE declarations. The actual
-// authoring data lives in object literals under `src/scenes/**/*.ts`
-// (and per-composition overrides under `src/compositions/**/*.ts`).
+// authoring data lives in object literals in source modules under `src/scenes/`
+// (and per-composition overrides under `src/compositions/`).
 // Because `assertSceneModule()` does NOT reject unknown keys, a scene
 // module export can carry a forbidden export-shaped sibling field
 // today and pass both the schema gate AND rule 1. Rule 3 closes the
@@ -2140,8 +2140,8 @@ describe('PUL-A010 — live and export share scene metadata (source scan)', () =
       expect(findings, message).toEqual([]);
     });
 
-    it('rule 2: zero forbidden parallel scene/composition declarations across `src/**/*.ts`', () => {
-      const files = walkTsFiles(SRC_ROOT);
+    it('rule 2: zero forbidden parallel scene/composition declarations across source modules under `src/`', () => {
+      const files = walkSourceFiles(SRC_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -2160,7 +2160,7 @@ describe('PUL-A010 — live and export share scene metadata (source scan)', () =
       for (const root of SCENE_MODULE_AUTHORING_ROOTS) {
         const dir = join(SRC_ROOT, root);
         expect(statSync(dir).isDirectory()).toBe(true);
-        for (const file of walkTsFiles(dir)) {
+        for (const file of walkSourceFiles(dir)) {
           const text = readFileSync(file, 'utf-8');
           const rel = relative(REPO_ROOT, file);
           findings.push(...scanUnannotatedAuthoringDeclarations(parseSource(text, rel)));
@@ -2178,7 +2178,7 @@ describe('PUL-A010 — live and export share scene metadata (source scan)', () =
       for (const root of SCENE_MODULE_AUTHORING_ROOTS) {
         const dir = join(SRC_ROOT, root);
         expect(statSync(dir).isDirectory()).toBe(true);
-        for (const file of walkTsFiles(dir)) {
+        for (const file of walkSourceFiles(dir)) {
           const text = readFileSync(file, 'utf-8');
           const rel = relative(REPO_ROOT, file);
           findings.push(...scanForbiddenSceneObjectFields(parseSource(text, rel)));

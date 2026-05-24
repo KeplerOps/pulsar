@@ -14,7 +14,7 @@ import {
   lineText,
   parseSource,
   unwrap,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-Q004 — Resource cleanup completeness (source scan).
@@ -112,8 +112,8 @@ import {
 //      seam scenes use for DOM allocation
 //      (`src/scenes/browser-support-fixture.ts`).
 //
-// Scope: `src/scenes/**/*.ts`. The runtime itself
-// (`src/runtime/**/*.ts`) uses signal-bound `addEventListener`
+// Scope: source modules under `src/scenes/`. The runtime itself
+// (source modules under `src/runtime/`) uses signal-bound `addEventListener`
 // extensively; that is the canonical activation-scope ownership
 // pattern PUL-Q004 wants scenes to adopt by going through `ctx`.
 // The runtime is intentionally OUT of scope so its signal-bound
@@ -1183,37 +1183,60 @@ describe('PUL-Q004 — resource cleanup completeness (source scan)', () => {
   describe('scanner self-tests', () => {
     describe('global listener attach / detach', () => {
       it.each([
-        ['document.addEventListener("click", () => undefined);'],
-        ['document.removeEventListener("click", handler);'],
-        ['window.addEventListener("resize", () => undefined);'],
-        ['window.removeEventListener("resize", handler);'],
-      ])('flags %s', (source) => {
+        [
+          'document.addEventListener("click", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+        [
+          'window.addEventListener("resize", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+      ])('flags %s with label %s', (source, expectedLabel) => {
         const findings = findingsOf(`declare const handler: () => void; ${source}`);
-        expect(findings.length).toBeGreaterThan(0);
-        const labels = findings.map((f) => f.label);
-        expect(
-          labels.some(
-            (l) =>
-              l.startsWith('global addEventListener') || l.startsWith('global removeEventListener'),
-          ),
-        ).toBe(true);
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.label).toBe(expectedLabel);
       });
 
       it.each([
-        ['globalThis.addEventListener("click", () => undefined);', 'global addEventListener'],
-        ['window.addEventListener("click", () => undefined);', 'global addEventListener'],
-        ['self.addEventListener("click", () => undefined);', 'global addEventListener'],
-        ['global.addEventListener("click", () => undefined);', 'global addEventListener'],
-        ['globalThis.removeEventListener("click", handler);', 'global removeEventListener'],
-      ])('flags wrapper-rooted listener `%s` with label `%s`', (source, expectedLabel) => {
-        // Label assertion (test-quality review): a regression that
-        // routed wrapper-rooted listener access through the wrong
-        // matcher would still flag the line but emit the wrong
-        // remediation hint; pin the exact prefix per source/label
-        // pair so the diagnostic contract is structurally enforced.
+        [
+          'document.removeEventListener("click", handler);',
+          'global removeEventListener (scene removes listener outside activation scope)',
+        ],
+        [
+          'window.removeEventListener("resize", handler);',
+          'global removeEventListener (scene removes listener outside activation scope)',
+        ],
+      ])('flags %s with label %s', (source, expectedLabel) => {
         const findings = findingsOf(`declare const handler: () => void; ${source}`);
-        const labels = findings.map((f) => f.label);
-        expect(labels.some((l) => l.startsWith(expectedLabel))).toBe(true);
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.label).toBe(expectedLabel);
+      });
+
+      it.each([
+        [
+          'globalThis.addEventListener("click", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+        [
+          'window.addEventListener("click", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+        [
+          'self.addEventListener("click", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+        [
+          'global.addEventListener("click", () => undefined);',
+          'global addEventListener (scene attaches listener outside activation scope)',
+        ],
+        [
+          'globalThis.removeEventListener("click", handler);',
+          'global removeEventListener (scene removes listener outside activation scope)',
+        ],
+      ])('flags wrapper-rooted listener `%s` with label `%s`', (source, expectedLabel) => {
+        const findings = findingsOf(`declare const handler: () => void; ${source}`);
+        expect(findings).toHaveLength(1);
+        expect(findings[0]?.label).toBe(expectedLabel);
       });
 
       it('flags `document["addEventListener"](...)` (string-literal subscript) with the listener label', () => {
@@ -2103,13 +2126,13 @@ describe('PUL-Q004 — resource cleanup completeness (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('scenes root `src/scenes/` exists and contains at least one .ts file', () => {
+    it('scenes root `src/scenes/` exists and contains at least one source module file', () => {
       expect(statSync(SCENES_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(SCENES_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(SCENES_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no Q004 violations across `src/scenes/**/*.ts`', () => {
-      const files = walkTsFiles(SCENES_ROOT);
+    it('contains no Q004 violations across source modules under `src/scenes/`', () => {
+      const files = walkSourceFiles(SCENES_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -2123,7 +2146,7 @@ describe('PUL-Q004 — resource cleanup completeness (source scan)', () => {
       expect(findings, message).toEqual([]);
     });
 
-    it('runtime tree `src/runtime/**/*.ts` is OUT of scope by design (signal-bound listeners live there)', () => {
+    it('runtime source modules under `src/runtime/` are OUT of scope by design (signal-bound listeners live there)', () => {
       // The runtime owns signal-bound `addEventListener` use across
       // `audio.ts`, `presenter.ts`, `navigation.ts`,
       // `scene-loader.ts`, `timeline.ts`, and `audio-unlock-dom.ts`.
@@ -2132,7 +2155,7 @@ describe('PUL-Q004 — resource cleanup completeness (source scan)', () => {
       // require per-line exemptions.
       const runtimeRoot = join(SRC_ROOT, 'runtime');
       expect(statSync(runtimeRoot).isDirectory()).toBe(true);
-      const sceneFiles = walkTsFiles(SCENES_ROOT);
+      const sceneFiles = walkSourceFiles(SCENES_ROOT);
       for (const file of sceneFiles) {
         expect(file.startsWith(runtimeRoot)).toBe(false);
       }

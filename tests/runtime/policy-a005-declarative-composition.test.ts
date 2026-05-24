@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   lineText,
   parseSource,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A005 — Composition is declarative.
@@ -20,7 +20,7 @@ import {
 // (e.g., `if/else` branching or position-based dispatch in a control
 // script) as the source of truth for composition order."
 //
-// Enforcement: a Vitest source scan over `src/compositions/**/*.ts`
+// Enforcement: a Vitest source scan across source modules under `src/compositions/`
 // with two checks:
 //
 //   1. Every exported `const X: CompositionManifest = <init>` must
@@ -147,7 +147,7 @@ function scanForA005(source: string, file: string): readonly SourceFinding[] {
   //         A composition module's default export is implicitly the
   //         composition manifest. Without a type assertion there's no
   //         declared annotation to read, but the file is still under
-  //         `src/compositions/**/*.ts` and the export still becomes
+  //         source modules under `src/compositions/` and the export still becomes
   //         the registered manifest. We enforce the same static-array
   //         rule so `export default buildManifest();` is caught.
   //      f) `export const m = <init>` (untyped, no assertion) AND
@@ -798,13 +798,13 @@ describe('PUL-A005 — composition is declarative (source scan)', () => {
   });
 
   describe('runtime tree (current code revision)', () => {
-    it('compositions root `src/compositions/` exists and contains at least one .ts file', () => {
+    it('compositions root `src/compositions/` exists and contains at least one source module file', () => {
       expect(statSync(COMPOSITIONS_ROOT).isDirectory()).toBe(true);
-      expect(walkTsFiles(COMPOSITIONS_ROOT).length).toBeGreaterThan(0);
+      expect(walkSourceFiles(COMPOSITIONS_ROOT).length).toBeGreaterThan(0);
     });
 
-    it('contains no A005 violations across `src/compositions/**/*.ts`', () => {
-      const files = walkTsFiles(COMPOSITIONS_ROOT);
+    it('contains no A005 violations across source modules under `src/compositions/`', () => {
+      const files = walkSourceFiles(COMPOSITIONS_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');

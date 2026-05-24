@@ -856,7 +856,7 @@ describe('PUL-Q003 — persisted browser state never determines the target', () 
   // navigation event matches `parseNavigationSearch(location.search)`
   // exactly and that `effectiveMode(...)` ignores the seeded state.
   //
-  // The structural ban on these surfaces in `src/**/*.ts` is enforced
+  // The structural ban on these surfaces in source modules under `src/` is enforced
   // separately by `policy-q003-url-state-determinism.test.ts`. This
   // block adds black-box coverage: if a future refactor of
   // `subscribeNavigation` / `bootstrapNavigation` / `effectiveMode`

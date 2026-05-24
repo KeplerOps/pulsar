@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   parseSource,
   scanImportSpecifiers,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A003 — Optional rendering libraries are scene-local.
@@ -21,7 +21,7 @@ import {
 // Enforcement: a Vitest source scan over the runtime-core file set
 // (everything under `src/` EXCEPT `src/scenes/**`) that flags any
 // import of `pixi.js`, `three`, or `phaser` (each with subpath
-// wildcards). Scene files under `src/scenes/**/*.ts` may adopt these
+// wildcards). Scene source modules under `src/scenes/` may adopt these
 // libraries locally; they are out of scope by construction.
 //
 // The runtime-core boundary covers `src/runtime/**`, `src/compositions/**`,
@@ -39,13 +39,13 @@ const RULE: ImportBanRule = {
 const SCENES_ROOT = join(SRC_ROOT, 'scenes');
 
 /**
- * Runtime-core file set: every `.ts` under `src/` that is NOT under
+ * Runtime-core file set: every source module under `src/` that is NOT under
  * `src/scenes/`. Computed at scan time so any future top-level file
  * under `src/` (e.g., a new `src/feature-flags.ts`) is automatically
  * included without editing the test.
  */
 function runtimeCoreFiles(): readonly string[] {
-  return walkTsFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
+  return walkSourceFiles(SRC_ROOT).filter((file) => !file.startsWith(`${SCENES_ROOT}/`));
 }
 
 function scanForA003(source: string, file: string): readonly SourceFinding[] {

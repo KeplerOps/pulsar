@@ -1,12 +1,12 @@
 // Shared helpers for the PUL-Q007 / PUL-A001..A006 source-policy gates.
 //
 // The seven runtime-policy bans (#46 + #50..#55) share one enforcement
-// shape: a Vitest source scan over `src/**/*.ts` that flags forbidden
-// constructions (Q007 — `eval`, `new Function`, remote dynamic
-// `import()`) or forbidden module specifiers in a given file-scope
-// (A001..A004, A006). PUL-A005 is the composition-declarativeness
-// check; it reuses the AST helpers below for top-level-statement
-// classification but supplies its own decision.
+// shape: a Vitest scan over executable source modules under `src/`
+// that flags forbidden constructions (Q007 — `eval`, `new Function`,
+// remote dynamic `import()`) or forbidden module specifiers in a given
+// file scope (A001..A004, A006). PUL-A005 is the
+// composition-declarativeness check; it reuses the AST helpers below
+// for top-level-statement classification but supplies its own decision.
 //
 // This file is the shared seam the preflights authorized:
 // `docs/design/pul-q007-runtime-code-execution-preflight.md`:
@@ -37,14 +37,37 @@ export interface SourceFinding {
 
 export const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 export const SRC_ROOT = join(REPO_ROOT, 'src');
+export const SOURCE_POLICY_EXTENSIONS = Object.freeze([
+  '.cjs',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.mts',
+  '.ts',
+  '.tsx',
+] as const);
 
 /**
- * Walk a directory recursively, returning every `.ts` file found.
- * Skips dotfiles (e.g., `.DS_Store`, `.gitignore`). Generated trees
- * (`coverage/`, `dist/`) live OUTSIDE the scanned root, so they are
- * out of scope by construction.
+ * True when a file is executable source that Vite/esbuild can bundle
+ * from `src/`. Type declaration files are excluded even though their
+ * suffixes end in `.ts` / `.mts` / `.cts`; they are not runtime code.
  */
-export function walkTsFiles(root: string, excludes: readonly string[] = []): string[] {
+export function isSourcePolicyFile(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith('.d.ts') || lower.endsWith('.d.mts') || lower.endsWith('.d.cts')) {
+    return false;
+  }
+  return SOURCE_POLICY_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/**
+ * Walk a directory recursively, returning every executable source
+ * module file found. Skips dotfiles (e.g., `.DS_Store`, `.gitignore`).
+ * Generated trees (`coverage/`, `dist/`) live OUTSIDE the scanned
+ * root, so they are out of scope by construction.
+ */
+export function walkSourceFiles(root: string, excludes: readonly string[] = []): string[] {
   const isExcluded = (absolutePath: string): boolean => {
     const rel = relative(REPO_ROOT, absolutePath);
     return excludes.some((ex) => rel === ex || rel.startsWith(`${ex}/`));
@@ -55,8 +78,8 @@ export function walkTsFiles(root: string, excludes: readonly string[] = []): str
     const full = join(root, entry);
     const st = statSync(full);
     if (st.isDirectory()) {
-      out.push(...walkTsFiles(full, excludes));
-    } else if (st.isFile() && entry.endsWith('.ts')) {
+      out.push(...walkSourceFiles(full, excludes));
+    } else if (st.isFile() && isSourcePolicyFile(full)) {
       if (!isExcluded(full)) out.push(full);
     }
   }
@@ -129,7 +152,23 @@ export function lineText(sourceFile: ts.SourceFile, lineIndex0: number): string 
  * position and parent-shape predicates work.
  */
 export function parseSource(text: string, file: string): ts.SourceFile {
-  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, /*setParentNodes=*/ true);
+  return ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    /*setParentNodes=*/ true,
+    scriptKindForFile(file),
+  );
+}
+
+function scriptKindForFile(file: string): ts.ScriptKind {
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.jsx')) return ts.ScriptKind.JSX;
+  if (lower.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
 }
 
 // --- Line-scoped exemption parser -------------------------------------

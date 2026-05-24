@@ -10,7 +10,7 @@ import {
   collectLineExemptions,
   lineText,
   parseSource,
-  walkTsFiles,
+  walkSourceFiles,
 } from './source-policy';
 
 // PUL-A009 — Captions / prompter single source.
@@ -73,8 +73,8 @@ import {
 //      and composition-entry OBJECT LITERALS** (codex review cycle 1
 //      class finding). The interface-level scan (rule 1) does not
 //      cover the actual authoring surface where scene module values
-//      are written — `src/scenes/**/*.ts` and
-//      `src/compositions/**/*.ts`. Because `assertSceneModule()`
+//      are written — source modules under `src/scenes/` and
+//      source modules under `src/compositions/`. Because `assertSceneModule()`
 //      accepts unknown keys (the preflight rules out a runtime
 //      implementation change for this requirement), an authored scene
 //      can carry a forbidden caption-shaped sibling field at the
@@ -527,8 +527,8 @@ function scanPrompterCaptionImports(sourceFile: ts.SourceFile): readonly SourceF
 // TypeScript `SceneModule` / `CompositionEntryOverride` INTERFACE
 // declarations in `src/runtime/{scene,composition}.ts`. The actual
 // authoring data lives in object literals under
-// `src/scenes/**/*.ts` (and per-composition overrides under
-// `src/compositions/**/*.ts`). Because `assertSceneModule()` does
+// source modules under `src/scenes/` (and per-composition overrides under
+// source modules under `src/compositions/`). Because `assertSceneModule()` does
 // NOT reject unknown keys (preflight: no runtime implementation
 // change for this requirement), a scene module export can carry a
 // forbidden caption-shaped sibling field today and pass both the
@@ -1645,7 +1645,7 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
     it('flags `const { CaptionSchema } = source` (destructured local binding)', () => {
       // Codex review cycle 2 (class finding): destructuring
       // introduces a LOCAL binding with the forbidden name; the
-      // underlying source may live outside `src/**/*.ts` (external
+      // underlying source may live outside source modules under `src/` (external
       // module, generated code, inline factory), so the underlying
       // declaration is not reachable from the scanner. The local
       // binding is the parallel-surface vector the gate must close.
@@ -1808,8 +1808,8 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
 
   describe('rule 4 — forbidden authoring fields on scene-module object literals', () => {
     // Codex review cycle 1 (class finding): the interface-level scan
-    // (rule 1) leaves the AUTHORING side — `src/scenes/**/*.ts`,
-    // `src/compositions/**/*.ts` — unguarded because
+    // (rule 1) leaves the AUTHORING side — source modules under `src/scenes/`,
+    // source modules under `src/compositions/` — unguarded because
     // `assertSceneModule()` does not reject unknown keys. Rule 4
     // scans every object literal annotated/asserted/satisfies-bound
     // as `SceneModule` or `CompositionEntryOverride` and flags
@@ -2500,8 +2500,8 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
       expect(findings, message).toEqual([]);
     });
 
-    it('rule 2: zero forbidden parallel caption-schema declarations across `src/**/*.ts`', () => {
-      const files = walkTsFiles(SRC_ROOT);
+    it('rule 2: zero forbidden parallel caption-schema declarations across source modules under `src/`', () => {
+      const files = walkSourceFiles(SRC_ROOT);
       const findings: SourceFinding[] = [];
       for (const file of files) {
         const text = readFileSync(file, 'utf-8');
@@ -2532,7 +2532,7 @@ describe('PUL-A009 — captions / prompter single source (source scan)', () => {
       for (const root of SCENE_MODULE_AUTHORING_ROOTS) {
         const dir = join(SRC_ROOT, root);
         expect(statSync(dir).isDirectory()).toBe(true);
-        for (const file of walkTsFiles(dir)) {
+        for (const file of walkSourceFiles(dir)) {
           const text = readFileSync(file, 'utf-8');
           const rel = relative(REPO_ROOT, file);
           findings.push(...scanForbiddenSceneObjectFields(parseSource(text, rel)));

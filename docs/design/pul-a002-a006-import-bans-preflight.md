@@ -23,14 +23,14 @@ The PUL-A001 preflight authorises this inheritance explicitly:
 
 | Req | Scope (file set) | Forbidden specifiers | Allowed boundary | Exemption tag |
 |-----|------------------|----------------------|------------------|---------------|
-| PUL-A002 | `src/scenes/**/*.ts` | `howler`, `howler/*` (+ `new Audio()` / `new HTMLAudioElement()` value-position) | `src/runtime/audio.ts` (out of scope) | `PUL-A002-allow` |
-| PUL-A003 | `src/**/*.ts` minus `src/scenes/**` (runtime-core file set) | `pixi.js`, `pixi.js/*`, `three`, `three/*`, `phaser`, `phaser/*` | scene-local imports under `src/scenes/**` | `PUL-A003-allow` |
-| PUL-A004 | `src/**/*.ts` minus `src/scenes/**` (runtime-core file set) | `remotion`, `remotion/*`, `@remotion/*` | export pipeline (separate codebase, ADR-006) | `PUL-A004-allow` |
-| PUL-A005 | `src/compositions/**/*.ts` | (special: declarative-manifest shape; see below) | n/a | `PUL-A005-allow` |
-| PUL-A006 | `src/**/*.ts` minus `src/scenes/**` (runtime-core file set) | `reveal.js`, `reveal.js/*`, `spectacle`, `spectacle/*`, `@spectacle/*` | companion projects (separate, ADR-001) | `PUL-A006-allow` |
+| PUL-A002 | source modules under `src/scenes/` | `howler`, `howler/*` (+ `new Audio()` / `new HTMLAudioElement()` value-position) | `src/runtime/audio.ts` (out of scope) | `PUL-A002-allow` |
+| PUL-A003 | source modules under `src/` minus `src/scenes/**` (runtime-core file set) | `pixi.js`, `pixi.js/*`, `three`, `three/*`, `phaser`, `phaser/*` | scene-local imports under `src/scenes/**` | `PUL-A003-allow` |
+| PUL-A004 | source modules under `src/` minus `src/scenes/**` (runtime-core file set) | `remotion`, `remotion/*`, `@remotion/*` | export pipeline (separate codebase, ADR-006) | `PUL-A004-allow` |
+| PUL-A005 | source modules under `src/compositions/` | (special: declarative-manifest shape; see below) | n/a | `PUL-A005-allow` |
+| PUL-A006 | source modules under `src/` minus `src/scenes/**` (runtime-core file set) | `reveal.js`, `reveal.js/*`, `spectacle`, `spectacle/*`, `@spectacle/*` | companion projects (separate, ADR-001) | `PUL-A006-allow` |
 
 The "runtime-core file set" is computed at scan time as
-`walkTsFiles(SRC_ROOT)` filtered to exclude `src/scenes/`. This makes
+`walkSourceFiles(SRC_ROOT)` filtered to exclude `src/scenes/`. This makes
 the scope self-extending: a new top-level runtime module (e.g.,
 `src/feature-flags.ts`) is picked up automatically.
 
@@ -39,7 +39,7 @@ the scope self-extending: a new top-level runtime module (e.g.,
 Each test file MUST build on these incumbents (defined in
 `tests/runtime/source-policy.ts`):
 
-- `walkTsFiles(root, excludes?)` — the file walker.
+- `walkSourceFiles(root, excludes?)` — the file walker.
 - `parseSource(text, file)` — TypeScript `SourceFile` factory with
   parent pointers populated.
 - `collectLineExemptions(sourceFile, allowTag)` — line-scoped
@@ -73,7 +73,7 @@ Each policy MUST:
 
 PUL-A005 is not an import ban; it is a structural-shape requirement
 on every exported `CompositionManifest`-typed binding under
-`src/compositions/**/*.ts`. The detection rule is two-phase:
+source modules under `src/compositions/`. The detection rule is two-phase:
 
 1. **Top-level statement shape.** A composition module's top-level
    statements MUST be import declarations, export declarations, type
