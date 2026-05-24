@@ -61,6 +61,7 @@ import {
   createKeyboardPresenterSource,
   createPracticeRenderer,
   createPresenterBridge,
+  getPresenterSessionId,
 } from './system/presenter';
 import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
@@ -372,13 +373,17 @@ const presenterKeyboard = createKeyboardPresenterSource({
   },
 });
 
-// Cross-window bridge: same-origin pulsar windows (present + popped-
-// out prompter) share `BroadcastChannel('pulsar-presenter')` so a
-// keystroke in either window drives the same controller. Every local
-// keyboard command is broadcast outbound; inbound commands fan into
-// the loader alongside the local keyboard source via
+// Cross-window bridge: same-origin pulsar windows in this workbench
+// session (present + popped-out prompter) share a scoped presenter
+// BroadcastChannel so a keystroke in either window drives the same
+// controller without leaking to another local presentation. Every
+// local keyboard command is broadcast outbound; inbound commands fan
+// into the loader alongside the local keyboard source via
 // `combinePresenterSources`.
-const presenterBridge: PresenterBridgeHandle = createPresenterBridge();
+const presenterSessionId = getPresenterSessionId();
+const presenterBridge: PresenterBridgeHandle = createPresenterBridge({
+  sessionId: presenterSessionId,
+});
 presenterKeyboard.source.subscribe((cmd) => presenterBridge.send(cmd));
 const combinedPresenterSource = combinePresenterSources(
   presenterKeyboard.source,

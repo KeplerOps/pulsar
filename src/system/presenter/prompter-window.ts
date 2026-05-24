@@ -11,13 +11,23 @@
 // prompter window just needs to open the same URL with mode=prompter.
 
 import type { PrompterRenderer, PrompterScript } from '../../runtime/prompter';
+import {
+  PRESENTER_SESSION_QUERY_PARAM,
+  getPresenterSessionId,
+  isPresenterSessionId,
+} from './bridge';
 
 const DEFAULT_PROMPTER_WINDOW_FEATURES = 'width=900,height=700,menubar=no,toolbar=no';
 const POPUP_ISOLATION_FEATURES = ['noopener', 'noreferrer'] as const;
 
+export interface PrompterWindowOptions {
+  readonly presenterSessionId?: string;
+}
+
 const buildPrompterUrl = (
   baseUrl: string,
   location: Pick<Location, 'href' | 'origin'>,
+  presenterSessionId: string,
 ): string | null => {
   let url: URL;
   try {
@@ -28,6 +38,7 @@ const buildPrompterUrl = (
 
   if (url.origin !== location.origin) return null;
   url.searchParams.set('mode', 'prompter');
+  url.searchParams.set(PRESENTER_SESSION_QUERY_PARAM, presenterSessionId);
   return url.href;
 };
 
@@ -62,11 +73,15 @@ const isolateOpenedWindow = (opened: Window | null): Window | null => {
 export const openPrompterWindow = (
   baseUrl: string,
   features = DEFAULT_PROMPTER_WINDOW_FEATURES,
+  options: PrompterWindowOptions = {},
 ): Window | null => {
   const win = globalThis.window;
   if (win === undefined) return null;
 
-  const url = buildPrompterUrl(baseUrl, win.location);
+  const presenterSessionId = options.presenterSessionId ?? getPresenterSessionId();
+  if (!isPresenterSessionId(presenterSessionId)) return null;
+
+  const url = buildPrompterUrl(baseUrl, win.location, presenterSessionId);
   if (url === null) return null;
 
   const opened = win.open(url, '_blank', withPopupIsolationFeatures(features));
