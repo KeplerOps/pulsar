@@ -1,11 +1,11 @@
 // Pulsar L2 presenter — cross-window command bridge.
 //
-// Same-origin windows (the present window + a popped-out prompter
-// window) share a `BroadcastChannel('pulsar-presenter')` so a keystroke
-// in either drives the same `PresenterController`. The bridge is
-// symmetric: each window subscribes for inbound commands AND emits
-// local keyboard events outbound, but a window does NOT re-broadcast
-// commands it received over the channel (no echo loop).
+// Same-origin windows in one workbench session (the present window + a
+// popped-out prompter window) share a scoped presenter BroadcastChannel
+// so a keystroke in either drives the same `PresenterController`. The
+// bridge is symmetric: each window subscribes for inbound commands AND
+// emits local keyboard events outbound, but a window does NOT re-
+// broadcast commands it received over the channel (no echo loop).
 //
 // Use `combinePresenterSources` to merge multiple sources (keyboard +
 // bridge.source) into one source the loader can subscribe to.
@@ -16,12 +16,55 @@ import {
   isPresenterCommand,
 } from '../../runtime/presenter';
 
-/** Default channel name used by every pulsar workbench. */
+/** Base channel prefix; runtime bridges append a per-session scope. */
 export const DEFAULT_PRESENTER_CHANNEL = 'pulsar-presenter';
+export const PRESENTER_SESSION_QUERY_PARAM = 'pulsar-presenter-session';
+
+const PRESENTER_SESSION_ID_FORM = /^[A-Za-z0-9_-]{8,128}$/;
+let resolvedPresenterSessionId: string | null = null;
+
+export const isPresenterSessionId = (value: string): boolean =>
+  PRESENTER_SESSION_ID_FORM.test(value);
+
+export const presenterChannelName = (sessionId: string): string => {
+  if (!isPresenterSessionId(sessionId)) {
+    throw new Error('presenter session id must be 8-128 URL-safe characters');
+  }
+  return `${DEFAULT_PRESENTER_CHANNEL}:${sessionId}`;
+};
+
+const presenterSessionIdFromLocation = (location: Pick<Location, 'href'>): string | null => {
+  let url: URL;
+  try {
+    url = new URL(location.href);
+  } catch {
+    return null;
+  }
+  const value = url.searchParams.get(PRESENTER_SESSION_QUERY_PARAM);
+  if (value === null || !isPresenterSessionId(value)) return null;
+  return value;
+};
+
+const createPresenterSessionId = (): string => {
+  const crypto = globalThis.crypto;
+  if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
+  throw new Error('secure random presenter session id source is unavailable');
+};
+
+export const getPresenterSessionId = (
+  location: Pick<Location, 'href'> | undefined = globalThis.window?.location,
+): string => {
+  if (resolvedPresenterSessionId !== null) return resolvedPresenterSessionId;
+  const fromLocation = location === undefined ? null : presenterSessionIdFromLocation(location);
+  resolvedPresenterSessionId = fromLocation ?? createPresenterSessionId();
+  return resolvedPresenterSessionId;
+};
 
 export interface PresenterBridgeOptions {
-  /** Channel name. Defaults to {@link DEFAULT_PRESENTER_CHANNEL}. */
+  /** Exact channel name override. Supplying this bypasses session scoping. */
   readonly channelName?: string;
+  /** Per-workbench session id used to scope the default presenter channel. */
+  readonly sessionId?: string;
   /** Optional sink for non-fatal errors (bad message, channel close). */
   readonly onError?: (err: unknown) => void;
 }
@@ -48,12 +91,16 @@ export interface PresenterBridgeHandle {
 export const createPresenterBridge = (
   options: PresenterBridgeOptions = {},
 ): PresenterBridgeHandle => {
-  const channelName = options.channelName ?? DEFAULT_PRESENTER_CHANNEL;
   const handlers = new Set<(cmd: PresenterCommand) => void>();
   let disposed = false;
   // Guard for older runtimes / SSR / Node tests.
   const BC = (globalThis as { BroadcastChannel?: typeof BroadcastChannel }).BroadcastChannel;
-  const ch = typeof BC === 'function' ? new BC(channelName) : null;
+  const ch =
+    typeof BC === 'function'
+      ? new BC(
+          options.channelName ?? presenterChannelName(options.sessionId ?? getPresenterSessionId()),
+        )
+      : null;
   if (ch !== null) {
     ch.onmessage = (event) => {
       const data = (event as MessageEvent<unknown>).data;

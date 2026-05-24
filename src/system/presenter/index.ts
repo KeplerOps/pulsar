@@ -14,10 +14,15 @@ export { createPracticeRenderer, splitCaptionText } from './practice-renderer';
 export type { PracticeRendererHandle, PracticeRendererHost } from './practice-renderer';
 
 export { createChromePrompterRenderer, openPrompterWindow } from './prompter-window';
+export type { PrompterWindowOptions } from './prompter-window';
 
 export {
   combinePresenterSources,
   createPresenterBridge,
   DEFAULT_PRESENTER_CHANNEL,
+  getPresenterSessionId,
+  isPresenterSessionId,
+  PRESENTER_SESSION_QUERY_PARAM,
+  presenterChannelName,
 } from './bridge';
 export type { PresenterBridgeHandle, PresenterBridgeOptions } from './bridge';

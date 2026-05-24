@@ -11,12 +11,17 @@ import {
   DEFAULT_PRESENTER_CHANNEL,
   combinePresenterSources,
   createPresenterBridge,
+  presenterChannelName,
 } from '../../src/system/presenter/bridge';
 
 // BroadcastChannel delivers messages on a macrotask; wait one out.
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
 
 const advance: PresenterCommand = { kind: 'advance' };
+const importFreshBridge = async (): Promise<typeof import('../../src/system/presenter/bridge')> => {
+  vi.resetModules();
+  return import('../../src/system/presenter/bridge');
+};
 
 describe('createPresenterBridge', () => {
   const bridges: { dispose(): void }[] = [];
@@ -27,10 +32,51 @@ describe('createPresenterBridge', () => {
   afterEach(() => {
     for (const b of bridges) b.dispose();
     bridges.length = 0;
+    vi.unstubAllGlobals();
   });
 
   it('exposes the default channel name', () => {
     expect(DEFAULT_PRESENTER_CHANNEL).toBe('pulsar-presenter');
+  });
+
+  it('derives scoped channel names from the presenter session id', () => {
+    expect(presenterChannelName('session-a-123456')).toBe('pulsar-presenter:session-a-123456');
+  });
+
+  it('rejects invalid presenter session ids before deriving channel names', () => {
+    expect(() => presenterChannelName('short')).toThrow(
+      'presenter session id must be 8-128 URL-safe characters',
+    );
+  });
+
+  it('generates one ephemeral session id when no URL scope exists', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-session-123456' });
+    const { getPresenterSessionId } = await importFreshBridge();
+    expect(getPresenterSessionId({ href: 'https://pulsar.test/?composition=demo' })).toBe(
+      'generated-session-123456',
+    );
+    expect(getPresenterSessionId({ href: 'https://pulsar.test/?composition=other' })).toBe(
+      'generated-session-123456',
+    );
+  });
+
+  it('falls back to a generated session id when the bootstrap URL is unreadable', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'generated-session-abcdef' });
+    const { getPresenterSessionId } = await importFreshBridge();
+    const location = {
+      get href(): string {
+        throw new Error('bad href');
+      },
+    };
+    expect(getPresenterSessionId(location)).toBe('generated-session-abcdef');
+  });
+
+  it('reports missing secure random support when no URL scope exists', async () => {
+    vi.stubGlobal('crypto', {});
+    const { getPresenterSessionId } = await importFreshBridge();
+    expect(() => getPresenterSessionId({ href: 'https://pulsar.test/?composition=demo' })).toThrow(
+      'secure random presenter session id source is unavailable',
+    );
   });
 
   it('delivers a command sent from one window to another', async () => {
@@ -40,6 +86,33 @@ describe('createPresenterBridge', () => {
     const received: PresenterCommand[] = [];
     receiver.source.subscribe((cmd) => received.push(cmd));
     sender.send(advance);
+    await flush();
+    expect(received).toEqual([advance]);
+  });
+
+  it('delivers commands within a session scope but not across different scopes', async () => {
+    const inSessionSender = track(createPresenterBridge({ sessionId: 'session-a-123456' }));
+    const inSessionReceiver = track(createPresenterBridge({ sessionId: 'session-a-123456' }));
+    const otherSessionReceiver = track(createPresenterBridge({ sessionId: 'session-b-123456' }));
+    const inSessionReceived: PresenterCommand[] = [];
+    const otherSessionReceived: PresenterCommand[] = [];
+    inSessionReceiver.source.subscribe((cmd) => inSessionReceived.push(cmd));
+    otherSessionReceiver.source.subscribe((cmd) => otherSessionReceived.push(cmd));
+    inSessionSender.send(advance);
+    await flush();
+    expect(inSessionReceived).toEqual([advance]);
+    expect(otherSessionReceived).toEqual([]);
+  });
+
+  it('keeps presenter-command validation on scoped channels', async () => {
+    const sessionId = 'session-a-123456';
+    const scopedChannel = presenterChannelName(sessionId);
+    const receiver = track(createPresenterBridge({ sessionId }));
+    const received: PresenterCommand[] = [];
+    receiver.source.subscribe((cmd) => received.push(cmd));
+    new BroadcastChannel(scopedChannel).postMessage({ kind: 'not-a-command' });
+    new BroadcastChannel(scopedChannel).postMessage({ sessionId, command: advance });
+    new BroadcastChannel(scopedChannel).postMessage(advance);
     await flush();
     expect(received).toEqual([advance]);
   });
