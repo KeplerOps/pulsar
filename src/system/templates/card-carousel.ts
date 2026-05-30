@@ -10,7 +10,6 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
 
@@ -45,12 +44,12 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
             const eb = ownerDoc.createElement('p');
             eb.setAttribute('class', 'cc__eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const stage = ownerDoc.createElement('div');
           stage.setAttribute('class', 'cc__stage');
           stage.dataset.ccStage = '';
-          root.appendChild?.(stage);
+          root.appendChild(stage);
         },
       });
     },
@@ -63,9 +62,7 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
           innerTl.addLabel('cc-in', 0);
           // Gate carousel playback so the cards don't auto-advance
           // while the scene is still inactive in the composition.
-          innerTl.call(() => {
-            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-          });
+          innerTl.call(() => play(id, ctx, content));
           const totalMs = content.cards.reduce(
             (sum, c) => sum + (c.dwellMs ?? content.dwellMs ?? 5000),
             0,
@@ -86,19 +83,16 @@ export const cardCarousel = (id: string, content: CardCarouselContent): SceneMod
         s.abortedFlag.aborted = true;
         sessions.delete(id);
       }
-      const root = findTemplateRoot(ctx, id);
-      if (root !== null && typeof root.remove === 'function') root.remove();
+      findTemplateRoot(ctx, id)?.remove();
     },
   });
 
 const play = (id: string, ctx: unknown, content: CardCarouselContent): void => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return;
-  const root = findTemplateRoot(ctx, id) as { querySelector?: (s: string) => unknown } | null;
-  if (root === null || typeof root.querySelector !== 'function') return;
-  const stage = root.querySelector('[data-cc-stage]') as HTMLElement | null;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return;
+  const stage = root.querySelector<HTMLElement>('[data-cc-stage]');
   if (stage === null) return;
   const ownerDoc = stage.ownerDocument;
-  if (ownerDoc === null) return;
   const session = { abortedFlag: { aborted: false } };
   sessions.set(id, session);
   void (async (): Promise<void> => {

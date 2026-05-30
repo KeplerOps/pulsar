@@ -39,20 +39,11 @@ export type { DefinitionRow, DefinitionTableContent } from './definition-table';
 export { dropList } from './drop-list';
 export type { DropItem, DropListContent } from './drop-list';
 
-export { haulCitations } from './haul-citations';
-export type { CitationRow, HaulCitationsContent, HaulRow } from './haul-citations';
-
-export { incidentPlate } from './incident-plate';
-export type { IncidentPlateContent } from './incident-plate';
-
 export { introGrid } from './intro-grid';
 export type { IntroGridContent, IntroRole } from './intro-grid';
 
 export { metricTicker } from './metric-ticker';
 export type { MetricSpec, MetricTickerContent } from './metric-ticker';
-
-export { operatorDossier } from './operator-dossier';
-export type { DossierRow, OperatorDossierContent } from './operator-dossier';
 
 export { outlineTitle } from './outline-title';
 export type { OutlineTitleContent } from './outline-title';
@@ -106,11 +97,11 @@ export type { TitleSlamContent } from './title-slam';
 
 // Shared envelope re-exports (templates use these; decks rarely do).
 export {
+  asTemplateCtx,
   buildTemplateScene,
   buildTemplateTimeline,
   cleanupTemplateRoot,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
   setTemplateActive,
   TEMPLATE_ROOT_ATTR,
@@ -120,7 +111,4 @@ export type {
   BuildTemplateTimelineHost,
   MountTemplateRootHost,
   TemplateCtx,
-  TemplateDomElement,
-  TemplateDomFactory,
-  TemplateStageElement,
 } from './_shared';

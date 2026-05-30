@@ -8,12 +8,9 @@
 import type { SceneModule } from '../../runtime/scene';
 import { aSleep, markedTextHtml, typeNode } from '../helpers';
 import {
-  type TemplateDomElement,
-  type TemplateDomFactory,
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
 
@@ -64,9 +61,9 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
           const dialogue = ownerDoc.createElement('ol');
           dialogue.setAttribute('class', 'sde__dialogue');
           dialogue.dataset.sdeDialogue = '';
-          grid.appendChild?.(dialogue);
-          grid.appendChild?.(buildEmail(ownerDoc, content.email));
-          root.appendChild?.(grid);
+          grid.appendChild(dialogue);
+          grid.appendChild(buildEmail(ownerDoc, content.email));
+          root.appendChild(grid);
         },
       });
     },
@@ -77,9 +74,7 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
         suffixDurationSeconds: 1.6,
         buildSegments: (innerTl) => {
           innerTl.addLabel('sde-in', 0);
-          innerTl.call(() => {
-            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-          });
+          innerTl.call(() => play(id, ctx, content));
           innerTl.to({}, { duration: 1 });
         },
         onDeactivate: () => {
@@ -93,14 +88,13 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
         s.abortedFlag.aborted = true;
         sessions.delete(id);
       }
-      const root = findTemplateRoot(ctx, id);
-      if (root !== null && typeof root.remove === 'function') root.remove();
+      findTemplateRoot(ctx, id)?.remove();
     },
   });
 
 const appendHeader = (
-  root: TemplateDomElement,
-  ownerDoc: TemplateDomFactory,
+  root: HTMLElement,
+  ownerDoc: Document,
   content: SplitDialogueEmailContent,
 ): void => {
   if (content.eyebrow === undefined && content.headline === undefined) return;
@@ -110,34 +104,34 @@ const appendHeader = (
     const eb = ownerDoc.createElement('p');
     eb.setAttribute('class', 'sde__eyebrow');
     eb.textContent = content.eyebrow;
-    head.appendChild?.(eb);
+    head.appendChild(eb);
   }
   if (content.headline !== undefined) {
     const h = ownerDoc.createElement('h2');
     h.setAttribute('class', 'sde__headline');
     h.textContent = content.headline;
-    head.appendChild?.(h);
+    head.appendChild(h);
   }
-  root.appendChild?.(head);
+  root.appendChild(head);
 };
 
-const buildEmail = (ownerDoc: TemplateDomFactory, email: EmailSpec): TemplateDomElement => {
+const buildEmail = (ownerDoc: Document, email: EmailSpec): HTMLElement => {
   const article = ownerDoc.createElement('article');
   article.setAttribute('class', 'sde__email');
   article.dataset.sdeEmail = '';
   article.setAttribute('style', 'opacity:0');
-  article.appendChild?.(buildEmailMeta(ownerDoc, email));
-  article.appendChild?.(buildEmailBody(ownerDoc, email));
+  article.appendChild(buildEmailMeta(ownerDoc, email));
+  article.appendChild(buildEmailBody(ownerDoc, email));
   if (email.footer !== undefined) {
     const ft = ownerDoc.createElement('footer');
     ft.setAttribute('class', 'sde__email-footer');
     ft.textContent = email.footer;
-    article.appendChild?.(ft);
+    article.appendChild(ft);
   }
   return article;
 };
 
-const buildEmailMeta = (ownerDoc: TemplateDomFactory, email: EmailSpec): TemplateDomElement => {
+const buildEmailMeta = (ownerDoc: Document, email: EmailSpec): HTMLElement => {
   const meta = ownerDoc.createElement('header');
   meta.setAttribute('class', 'sde__email-meta');
   const rows: ReadonlyArray<readonly [string, string]> = [
@@ -154,39 +148,37 @@ const buildEmailMeta = (ownerDoc: TemplateDomFactory, email: EmailSpec): Templat
     const v = ownerDoc.createElement('span');
     v.setAttribute('class', 'sde__email-v');
     v.textContent = value;
-    row.appendChild?.(k);
-    row.appendChild?.(v);
-    meta.appendChild?.(row);
+    row.appendChild(k);
+    row.appendChild(v);
+    meta.appendChild(row);
   }
   return meta;
 };
 
-const buildEmailBody = (ownerDoc: TemplateDomFactory, email: EmailSpec): TemplateDomElement => {
+const buildEmailBody = (ownerDoc: Document, email: EmailSpec): HTMLElement => {
   const body = ownerDoc.createElement('div');
   body.setAttribute('class', 'sde__email-body');
   for (const para of email.bodyParagraphs) {
     const p = ownerDoc.createElement('p');
     p.innerHTML = markedTextHtml(para);
-    body.appendChild?.(p);
+    body.appendChild(p);
   }
   if (email.signoff !== undefined) {
     const so = ownerDoc.createElement('p');
     so.setAttribute('class', 'sde__email-signoff');
     so.innerHTML = markedTextHtml(email.signoff);
-    body.appendChild?.(so);
+    body.appendChild(so);
   }
   return body;
 };
 
 const play = (id: string, ctx: unknown, content: SplitDialogueEmailContent): void => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return;
-  const root = findTemplateRoot(ctx, id) as { querySelector?: (s: string) => unknown } | null;
-  if (root === null || typeof root.querySelector !== 'function') return;
-  const dialogue = root.querySelector('[data-sde-dialogue]') as HTMLElement | null;
-  const email = root.querySelector('[data-sde-email]') as HTMLElement | null;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return;
+  const dialogue = root.querySelector<HTMLElement>('[data-sde-dialogue]');
+  const email = root.querySelector<HTMLElement>('[data-sde-email]');
   if (dialogue === null || email === null) return;
   const ownerDoc = dialogue.ownerDocument;
-  if (ownerDoc === null) return;
   const baseDefault = content.typeBaseMs ?? 22;
   const session = { abortedFlag: { aborted: false } };
   sessions.set(id, session);

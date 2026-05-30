@@ -1,9 +1,10 @@
+/** @vitest-environment happy-dom */
 // Pulsar L2 — template factory shape + smoke tests.
 //
 // Table-driven: every template factory is instantiated with a minimal
 // content payload and verified to produce a valid SceneModule whose
-// lifecycle hooks run without throwing against a jsdom-free stage
-// fake. The reference deck and Playwright specs cover the actual
+// lifecycle hooks run without throwing against a real (happy-dom)
+// stage. The reference deck and Playwright specs cover the actual
 // visual behavior; this suite catches structural regressions.
 
 import { gsap } from 'gsap';
@@ -20,11 +21,8 @@ import {
   compare,
   definitionTable,
   dropList,
-  haulCitations,
-  incidentPlate,
   introGrid,
   metricTicker,
-  operatorDossier,
   outlineTitle,
   outro,
   placard,
@@ -40,148 +38,14 @@ import {
   titleSlam,
 } from '../../src/system/templates';
 
-// ---------- jsdom-free stage fake ----------
+// ---------- real-DOM stage ----------
 
-interface FakeNode {
-  className: string;
-  textContent: string;
-  innerHTML: string;
-  childNodes: FakeNode[];
-  attrs: Map<string, string>;
-  dataset: Record<string, string>;
-  parentElement: FakeNode | null;
-  ownerDocument: FakeDoc;
-  setAttribute(name: string, value: string): void;
-  getAttribute(name: string): string | null;
-  appendChild(child: FakeNode): FakeNode;
-  remove(): void;
-  querySelector(selector: string): FakeNode | null;
-  querySelectorAll(selector: string): FakeNode[];
-}
-
-interface FakeDoc {
-  createElement(tag: string): FakeNode;
-}
-
-// Kebab-cases a `dataset` key the way the DOM does (`fooBar` →
-// `foo-bar`) so the proxy below mirrors `el.dataset.fooBar` onto the
-// `data-foo-bar` attribute.
-const datasetKebab = (key: string): string => key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-
-// A `dataset` surface that writes through to the attribute map, so a
-// template's `el.dataset.fooBar = ''` is observable via
-// `querySelector('[data-foo-bar]')` exactly as in a real browser.
-const makeDataset = (attrs: Map<string, string>): Record<string, string> =>
-  new Proxy({} as Record<string, string>, {
-    get: (_t, p) => (typeof p === 'string' ? attrs.get(`data-${datasetKebab(p)}`) : undefined),
-    set: (_t, p, v) => {
-      if (typeof p === 'string') attrs.set(`data-${datasetKebab(p)}`, String(v));
-      return true;
-    },
-    has: (_t, p) => typeof p === 'string' && attrs.has(`data-${datasetKebab(p)}`),
-    deleteProperty: (_t, p) => {
-      if (typeof p === 'string') attrs.delete(`data-${datasetKebab(p)}`);
-      return true;
-    },
-  });
-
-const makeNode = (doc: FakeDoc): FakeNode => {
-  const attrs = new Map<string, string>();
-  const node: FakeNode = {
-    className: '',
-    textContent: '',
-    innerHTML: '',
-    childNodes: [],
-    attrs,
-    dataset: makeDataset(attrs),
-    parentElement: null,
-    ownerDocument: doc,
-    setAttribute: (n, v) => {
-      node.attrs.set(n, v);
-      if (n === 'class') node.className = v;
-    },
-    getAttribute: (n) => node.attrs.get(n) ?? null,
-    appendChild: (child) => {
-      child.parentElement = node;
-      node.childNodes.push(child);
-      return child;
-    },
-    remove: () => {
-      if (node.parentElement !== null) {
-        const i = node.parentElement.childNodes.indexOf(node);
-        if (i >= 0) node.parentElement.childNodes.splice(i, 1);
-        node.parentElement = null;
-      }
-    },
-    querySelector: (selector) => {
-      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
-      if (match === null) {
-        // simple class selector .pulsar-template--<x>
-        const cm = selector.match(/^\.([\w-]+)$/);
-        if (cm === null) return null;
-        const cls = cm[1] ?? '';
-        const search = (n: FakeNode): FakeNode | null => {
-          if (n.className.split(' ').includes(cls)) return n;
-          for (const c of n.childNodes) {
-            const f = search(c);
-            if (f !== null) return f;
-          }
-          return null;
-        };
-        return search(node);
-      }
-      const attr = match[1] ?? '';
-      const wanted = match[3];
-      const search = (n: FakeNode): FakeNode | null => {
-        const v = n.attrs.get(attr);
-        if (v !== undefined && (wanted === undefined || v === wanted)) return n;
-        for (const c of n.childNodes) {
-          const f = search(c);
-          if (f !== null) return f;
-        }
-        return null;
-      };
-      return search(node);
-    },
-    querySelectorAll: (selector) => {
-      const out: FakeNode[] = [];
-      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
-      if (match === null) return out;
-      const attr = match[1] ?? '';
-      const wanted = match[3];
-      const search = (n: FakeNode): void => {
-        const v = n.attrs.get(attr);
-        if (v !== undefined && (wanted === undefined || v === wanted)) out.push(n);
-        for (const c of n.childNodes) search(c);
-      };
-      search(node);
-      return out;
-    },
-  };
-  return node;
-};
-
-const makeDoc = (): FakeDoc => {
-  const doc: FakeDoc = {
-    createElement: (_tag) => makeNode(doc),
-  };
-  return doc;
-};
-
-const makeStage = (): FakeNode => {
-  const doc = makeDoc();
-  const stage = makeNode(doc);
-  return stage;
-};
+const makeStage = (): HTMLElement => document.createElement('div');
 
 const makeCtx = (
-  stage: FakeNode,
+  stage: HTMLElement,
   mode: 'present' | 'paused' | 'standalone' = 'present',
-): unknown => ({
-  stage,
-  mode,
-  gsap,
-});
+): unknown => ({ stage, mode, gsap });
 
 // ---------- table-driven smoke test ----------
 
@@ -288,21 +152,6 @@ const CASES: readonly TemplateCase[] = [
   { id: 'placard-smoke', build: (id) => placard(id, { line1: 'PLACARD', line2: 'subtitle' }) },
   { id: 'outline-title-smoke', build: (id) => outlineTitle(id, { index: 3, title: 'Detection' }) },
   {
-    id: 'incident-plate-smoke',
-    build: (id) => incidentPlate(id, { time: '14:32 MDT', headline: 'INCIDENT' }),
-  },
-  {
-    id: 'operator-dossier-smoke',
-    build: (id) =>
-      operatorDossier(id, {
-        handle: '@operator',
-        rows: [
-          { k: 'origin', v: 'unknown' },
-          { k: 'first seen', v: '2025-04-01' },
-        ],
-      }),
-  },
-  {
     id: 'split-pane-terminal-doc-smoke',
     build: (id) =>
       splitPaneTerminalDoc(id, {
@@ -316,14 +165,6 @@ const CASES: readonly TemplateCase[] = [
       activityFeedPayoff(id, {
         feed: [{ type: 'search', text: 'who is X' }],
         payoff: { rows: [{ label: 'name', value: 'X' }] },
-      }),
-  },
-  {
-    id: 'haul-citations-smoke',
-    build: (id) =>
-      haulCitations(id, {
-        haul: [{ count: '12k', label: 'records' }],
-        citations: { rows: [{ source: 'src', quote: 'q' }] },
       }),
   },
   {
@@ -383,12 +224,16 @@ describe('L2 templates — shape + smoke (Batch E)', () => {
     const stage = makeStage();
     const ctx = makeCtx(stage);
     expect(() => scene.create(ctx)).not.toThrow();
+    // create() mounts the scene root with the public template marker.
+    expect(stage.querySelector(`[data-pulsar-template="${testCase.id}"]`)).not.toBeNull();
     const tl = scene.timeline(ctx);
     if (tl !== null && tl !== undefined) {
       expect(typeof (tl as gsap.core.Timeline).addLabel).toBe('function');
       (tl as gsap.core.Timeline).kill();
     }
     expect(() => scene.cleanup(ctx)).not.toThrow();
+    // cleanup() removes the scene root from the stage.
+    expect(stage.querySelector(`[data-pulsar-template="${testCase.id}"]`)).toBeNull();
   });
 
   it('every template id is unique', () => {
@@ -396,7 +241,7 @@ describe('L2 templates — shape + smoke (Batch E)', () => {
     expect(ids.size).toBe(CASES.length);
   });
 
-  it('covers all 28 shipped templates', () => {
-    expect(CASES.length).toBe(28);
+  it('covers all 25 shared shipped templates', () => {
+    expect(CASES.length).toBe(25);
   });
 });

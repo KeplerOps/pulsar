@@ -22,11 +22,11 @@ export const statBig = (id: string, content: StatBigContent): SceneModule =>
           const v = ownerDoc.createElement('div');
           v.setAttribute('class', 'stat__value');
           v.textContent = content.value;
-          root.appendChild?.(v);
+          root.appendChild(v);
           const l = ownerDoc.createElement('div');
           l.setAttribute('class', 'stat__label');
           l.textContent = content.label;
-          root.appendChild?.(l);
+          root.appendChild(l);
         },
       });
     },

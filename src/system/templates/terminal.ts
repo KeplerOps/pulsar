@@ -37,7 +37,6 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
 
@@ -156,7 +155,7 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
         buildChildren: (root, ownerDoc) => {
           const pre = ownerDoc.createElement('pre');
           pre.setAttribute('class', 'term');
-          root.appendChild?.(pre);
+          root.appendChild(pre);
         },
       });
     },
@@ -170,11 +169,7 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
           // Gate playback behind master entry — otherwise every
           // terminal scene in the composition kicks off its clock
           // + typing at mount time.
-          innerTl.call(() => {
-            if (isTemplateCtx(ctx) && ctx.stage !== null) {
-              playScript(id, ctx, content);
-            }
-          });
+          innerTl.call(() => playScript(id, ctx, content));
           innerTl.to({}, { duration: 1 });
         },
         // Strip chrome side-effects (clock / srcMark / FF overlay)
@@ -188,8 +183,7 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
       // scene root.remove() handled by cleanupTemplateRoot covers the
       // rest of the DOM).
       sessionTeardown(id);
-      const root = findTemplateRoot(ctx, id);
-      if (root !== null && typeof root.remove === 'function') root.remove();
+      findTemplateRoot(ctx, id)?.remove();
     },
   });
 };
@@ -250,15 +244,11 @@ interface TerminalDomRefs {
 }
 
 const resolveTerminalDom = (id: string, ctx: unknown): TerminalDomRefs | null => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return null;
-  const root = findTemplateRoot(ctx, id) as HTMLElement | null;
-  if (root === null || typeof root.querySelector !== 'function') return null;
-  if (typeof root.appendChild !== 'function') return null;
-  const term = root.querySelector('.term') as HTMLElement | null;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return null;
+  const term = root.querySelector<HTMLElement>('.term');
   if (term === null) return null;
-  const ownerDoc = term.ownerDocument;
-  if (ownerDoc === null) return null;
-  return { root, term, ownerDoc };
+  return { root, term, ownerDoc: term.ownerDocument };
 };
 
 // ---------- step handlers ----------------------------------------------

@@ -9,6 +9,7 @@
 
 import type { SceneModule } from '../../runtime/scene';
 import {
+  type TemplateTimeline,
   buildTemplateScene,
   buildTemplateTimeline,
   cleanupTemplateRoot,
@@ -17,14 +18,6 @@ import {
 
 type SurfaceKind = 'ink' | 'paper';
 
-interface BeatTimeline {
-  addLabel(name: string, time?: number): unknown;
-  fromTo(target: unknown, from: object, to: object, position?: number | string): unknown;
-  to(target: unknown, vars: object, position?: number | string): unknown;
-  set(target: unknown, vars: object, position?: number | string): unknown;
-  call(fn: () => void, params?: unknown[], position?: number | string): unknown;
-}
-
 interface SceneSpec {
   readonly id: string;
   readonly title: string;
@@ -32,7 +25,7 @@ interface SceneSpec {
   readonly surface: SurfaceKind;
   readonly section?: string;
   readonly build: (root: HTMLElement, ownerDoc: Document) => void;
-  readonly beats: (tl: BeatTimeline, rootValue: string) => void;
+  readonly beats: (tl: TemplateTimeline, rootValue: string) => void;
   /**
    * When true, the L2 envelope's trailing tween is extended to an
    * effectively-indefinite duration. The composition master never
@@ -62,8 +55,8 @@ const buildScene = (spec: SceneSpec): SceneModule =>
         templateKind: spec.id,
         extraClasses: ['pulsar-intro', `pi-surface--${spec.surface}`],
         buildChildren: (root, ownerDoc) => {
-          spec.build(root as unknown as HTMLElement, ownerDoc as unknown as Document);
-          appendFolio(root as unknown as HTMLElement, ownerDoc as unknown as Document, spec);
+          spec.build(root, ownerDoc);
+          appendFolio(root, ownerDoc, spec);
         },
       });
     },
@@ -77,7 +70,7 @@ const buildScene = (spec: SceneSpec): SceneModule =>
         // an indefinite trailing tween keeps the master alive.
         suffixDurationSeconds: spec.holdForever === true ? 3600 : 0.8,
         buildSegments: (tl) => {
-          spec.beats(tl as unknown as BeatTimeline, spec.id);
+          spec.beats(tl, spec.id);
         },
       }),
     cleanup: cleanupTemplateRoot(spec.id),

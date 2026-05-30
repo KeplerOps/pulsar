@@ -29,12 +29,12 @@ export const statPairGrid = (id: string, content: StatPairGridContent): SceneMod
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const grid = ownerDoc.createElement('div');
           grid.setAttribute('class', 'pair-grid');
           content.pairs.forEach(([a, b], i) => {
@@ -43,14 +43,14 @@ export const statPairGrid = (id: string, content: StatPairGridContent): SceneMod
             const av = ownerDoc.createElement('span');
             av.setAttribute('class', 'stat-pair__a');
             av.textContent = a;
-            art.appendChild?.(av);
+            art.appendChild(av);
             const bv = ownerDoc.createElement('span');
             bv.setAttribute('class', 'stat-pair__b');
             bv.textContent = b;
-            art.appendChild?.(bv);
-            grid.appendChild?.(art);
+            art.appendChild(bv);
+            grid.appendChild(art);
           });
-          root.appendChild?.(grid);
+          root.appendChild(grid);
         },
       });
     },

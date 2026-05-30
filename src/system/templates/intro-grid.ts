@@ -33,7 +33,7 @@ export const introGrid = (id: string, content: IntroGridContent): SceneModule =>
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const grid = ownerDoc.createElement('div');
           grid.setAttribute('class', 'grid');
           content.roles.forEach((role, i) => {
@@ -44,14 +44,14 @@ export const introGrid = (id: string, content: IntroGridContent): SceneModule =>
               const img = ownerDoc.createElement('img');
               img.setAttribute('src', role.logoSrc);
               img.setAttribute('alt', role.logoAlt ?? '');
-              art.appendChild?.(img);
+              art.appendChild(img);
             }
             const p = ownerDoc.createElement('p');
             p.textContent = role.role;
-            art.appendChild?.(p);
-            grid.appendChild?.(art);
+            art.appendChild(p);
+            grid.appendChild(art);
           });
-          root.appendChild?.(grid);
+          root.appendChild(grid);
         },
       });
     },

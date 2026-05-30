@@ -5,13 +5,7 @@
 // Optional companion document image to the right of the transcript.
 
 import type { SceneModule } from '../../runtime/scene';
-import {
-  type TemplateDomElement,
-  type TemplateDomFactory,
-  buildTemplateScene,
-  buildTemplateTimeline,
-  mountTemplateRoot,
-} from './_shared';
+import { buildTemplateScene, buildTemplateTimeline, mountTemplateRoot } from './_shared';
 
 export interface ChatMessage {
   readonly handle: string;
@@ -53,11 +47,11 @@ export const chatTranscript = (id: string, content: ChatTranscriptContent): Scen
             'class',
             content.doc === undefined ? 'ct__grid' : 'ct__grid ct__grid--with-doc',
           );
-          wrap.appendChild?.(buildFrame(ownerDoc, content));
+          wrap.appendChild(buildFrame(ownerDoc, content));
           if (content.doc !== undefined) {
-            wrap.appendChild?.(buildDoc(ownerDoc, content.doc));
+            wrap.appendChild(buildDoc(ownerDoc, content.doc));
           }
-          root.appendChild?.(wrap);
+          root.appendChild(wrap);
         },
       });
     },
@@ -74,47 +68,44 @@ export const chatTranscript = (id: string, content: ChatTranscriptContent): Scen
       }),
   });
 
-const buildFrame = (
-  ownerDoc: TemplateDomFactory,
-  content: ChatTranscriptContent,
-): TemplateDomElement => {
+const buildFrame = (ownerDoc: Document, content: ChatTranscriptContent): HTMLElement => {
   const frame = ownerDoc.createElement('div');
   frame.setAttribute('class', 'ct__frame');
   if (content.title !== undefined) {
     const t = ownerDoc.createElement('p');
     t.setAttribute('class', 'ct__title');
     t.textContent = content.title;
-    frame.appendChild?.(t);
+    frame.appendChild(t);
   }
   const list = ownerDoc.createElement('ol');
   list.setAttribute('class', 'ct__list');
   const stagger = content.perBeatMs ?? 650;
-  content.messages.forEach((msg, i) => list.appendChild?.(buildMsg(ownerDoc, msg, i, stagger)));
-  frame.appendChild?.(list);
+  content.messages.forEach((msg, i) => list.appendChild(buildMsg(ownerDoc, msg, i, stagger)));
+  frame.appendChild(list);
   return frame;
 };
 
 const buildMsg = (
-  ownerDoc: TemplateDomFactory,
+  ownerDoc: Document,
   msg: ChatMessage,
   i: number,
   stagger: number,
-): TemplateDomElement => {
+): HTMLElement => {
   const li = ownerDoc.createElement('li');
   li.setAttribute('class', `ct__msg${msg.alert === true ? ' ct__msg--alert' : ''}`);
   li.setAttribute('style', `--msg-delay: ${i * stagger}ms`);
   const handle = ownerDoc.createElement('span');
   handle.setAttribute('class', 'ct__handle');
   handle.textContent = msg.handle;
-  li.appendChild?.(handle);
+  li.appendChild(handle);
   const text = ownerDoc.createElement('span');
   text.setAttribute('class', 'ct__text');
   text.textContent = msg.text;
-  li.appendChild?.(text);
+  li.appendChild(text);
   return li;
 };
 
-const buildDoc = (ownerDoc: TemplateDomFactory, doc: ChatDoc): TemplateDomElement => {
+const buildDoc = (ownerDoc: Document, doc: ChatDoc): HTMLElement => {
   const fig = ownerDoc.createElement('figure');
   fig.setAttribute('class', 'ct__doc');
   if (doc.cantDegrees !== undefined) {
@@ -123,11 +114,11 @@ const buildDoc = (ownerDoc: TemplateDomFactory, doc: ChatDoc): TemplateDomElemen
   const img = ownerDoc.createElement('img');
   img.setAttribute('src', doc.imgSrc);
   if (doc.imgAlt !== undefined) img.setAttribute('alt', doc.imgAlt);
-  fig.appendChild?.(img);
+  fig.appendChild(img);
   if (doc.caption !== undefined) {
     const cap = ownerDoc.createElement('figcaption');
     cap.textContent = doc.caption;
-    fig.appendChild?.(cap);
+    fig.appendChild(cap);
   }
   return fig;
 };

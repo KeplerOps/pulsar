@@ -28,12 +28,12 @@ export const statRow = (id: string, content: StatRowContent): SceneModule =>
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const grid = ownerDoc.createElement('div');
           grid.setAttribute('class', 'row-grid');
           content.rows.forEach(([metric, text], i) => {
@@ -41,14 +41,14 @@ export const statRow = (id: string, content: StatRowContent): SceneModule =>
             m.setAttribute('class', 'metric');
             m.setAttribute('style', `--row-delay: ${400 + i * 160}ms`);
             m.textContent = metric;
-            grid.appendChild?.(m);
+            grid.appendChild(m);
             const t = ownerDoc.createElement('span');
             t.setAttribute('class', 'text');
             t.setAttribute('style', `--row-delay: ${480 + i * 160}ms`);
             t.textContent = text;
-            grid.appendChild?.(t);
+            grid.appendChild(t);
           });
-          root.appendChild?.(grid);
+          root.appendChild(grid);
         },
       });
     },

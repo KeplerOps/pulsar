@@ -11,7 +11,7 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   cleanupTemplateRoot,
-  isTemplateCtx,
+  findTemplateRoot,
   mountTemplateRoot,
 } from './_shared';
 
@@ -48,18 +48,12 @@ const applyTickerFrame = (
   metrics: readonly MetricSpec[],
   tick: number,
 ): void => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return;
-  const rootEl = ctx.stage.querySelector?.(`[data-pulsar-template="${id}"]`);
-  if (rootEl === null) return;
-  const r = rootEl as { querySelectorAll?: (s: string) => unknown };
-  if (typeof r.querySelectorAll !== 'function') return;
-  const nodes = r.querySelectorAll('[data-metric]') as Iterable<{
-    textContent: string | null;
-    getAttribute?: (n: string) => string | null;
-  }>;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return;
+  const nodes = root.querySelectorAll<HTMLElement>('[data-metric]');
   let i = 0;
   for (const node of nodes) {
-    const idx = node.getAttribute?.('data-metric');
+    const idx = node.getAttribute('data-metric');
     const m = metrics[Number(idx ?? i)];
     if (m === undefined) {
       i++;
@@ -89,12 +83,12 @@ export const metricTicker = (id: string, content: MetricTickerContent): SceneMod
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            rootEl.appendChild?.(eb);
+            rootEl.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          rootEl.appendChild?.(h);
+          rootEl.appendChild(h);
           const ticker = ownerDoc.createElement('div');
           ticker.setAttribute('class', 'ticker');
           content.metrics.forEach((m, i) => {
@@ -104,19 +98,19 @@ export const metricTicker = (id: string, content: MetricTickerContent): SceneMod
             const lab = ownerDoc.createElement('div');
             lab.setAttribute('class', 'label');
             lab.textContent = m.label;
-            art.appendChild?.(lab);
+            art.appendChild(lab);
             const val = ownerDoc.createElement('span');
             val.setAttribute('class', 'value');
-            if (val.dataset !== undefined) val.dataset.metric = String(i);
+            val.dataset.metric = String(i);
             val.textContent = format(m, m.start);
-            art.appendChild?.(val);
+            art.appendChild(val);
             const dir = ownerDoc.createElement('span');
             dir.setAttribute('class', 'direction');
             dir.textContent = m.direction === 'up' ? 'Increasing' : 'Decreasing';
-            art.appendChild?.(dir);
-            ticker.appendChild?.(art);
+            art.appendChild(dir);
+            ticker.appendChild(art);
           });
-          rootEl.appendChild?.(ticker);
+          rootEl.appendChild(ticker);
         },
       });
       if (root === null) return;
