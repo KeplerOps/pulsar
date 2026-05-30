@@ -3,8 +3,8 @@
 // The runtime's `WorkbenchChromeController` already mounts a single
 // `<div data-pulsar-chrome="surface">` into the workbench before
 // navigation begins (PUL-F031). This module POPULATES that surface
-// with the L2 chrome slot DOM (atmospheric overlays, title slot,
-// brand slot, centerpiece slot, lower-third, tag, act-frame, flash)
+// with the L2 chrome slot DOM (optional atmospheric overlays, title
+// slot, brand slot, centerpiece slot, lower-third, tag, act-frame, flash)
 // and returns refs scenes can mount into.
 //
 // The slot refs are stable for the lifetime of the workbench — the
@@ -111,8 +111,8 @@ export const mountChromeSlots = (host: MountChromeSlotsHost): ChromeSlots => {
   act.appendChild(actFrame);
 
   // Mount order matches the z-stack documented in tokens.css:
-  // atmospherics first (vignette, scanlines, grain), then bars,
-  // then slots and flash on top.
+  // optional atmospherics first (vignette, scanlines, grain), then
+  // bars, then slots and flash on top.
   surface.appendChild(vignette);
   surface.appendChild(scanlines);
   surface.appendChild(grain);

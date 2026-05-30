@@ -181,10 +181,24 @@ document.body.appendChild(transitionOverlay);
 let scrubControls: ScrubControlsHandle | undefined;
 let scrubMode = false;
 
+let activeMode: NavigationMode = 'present';
+
+const applyActiveSegment = (segment: import('./runtime/timeline').MasterSegment): void => {
+  if (stage === null) return;
+  stage.setAttribute('data-pulsar-scene-target', segment.id);
+  if (activeMode !== 'present') return;
+  const roots = stage.querySelectorAll('[data-pulsar-template]');
+  for (const root of Array.from(roots)) {
+    const shouldActive = root.getAttribute('data-pulsar-template') === segment.id;
+    root.setAttribute('data-pulsar-template-active', shouldActive ? 'true' : 'false');
+  }
+};
+
 const timeline = createGsapCompositionTimeline({
   engine: timelineEngine,
   transitions: defaultTransitions(),
   transitionOverlay,
+  onSegmentChange: applyActiveSegment,
   // The composition timeline adapter reports the live master once per
   // activation. Under `mode=scrub` the master is held live for the
   // scrub controls to drive (PUL-F017 / ADR-020); every other mode
@@ -281,7 +295,7 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
     // Center the gate on screen at the highest z-index. Without
     // these inline styles the bare button sits at the top-left of
     // #stage, defaults the browser-native styling, and is occluded
-    // by the chrome surface (the dancing atmospheric overlays).
+    // by the chrome surface.
     button.setAttribute(
       'style',
       [
@@ -331,10 +345,10 @@ const chrome = createDomWorkbenchChrome({
   },
 });
 
-// Populate the chrome surface with the L2 slot DOM (vignette,
-// scanlines, grain, letterbox bars, title/brand/centerpiece/
-// lower-third/tag/act-frame/flash slots). Scenes built from the L2
-// template library read these refs via `ctx.chrome`.
+// Populate the chrome surface with the L2 slot DOM (optional
+// atmosphere, title/brand/centerpiece/lower-third/tag/act-frame/flash
+// slots). Scenes built from the L2 template library read these refs
+// via `ctx.chrome`.
 const chromeSurfaceEl = document.querySelector(
   '[data-pulsar-chrome="surface"]',
 ) as HTMLElement | null;
@@ -444,11 +458,13 @@ const onNavigate = (event: Event): void => {
   // master. A successful `mode=scrub` activation re-attaches via the
   // timeline adapter's `onMaster` hook; every other navigation leaves
   // the controls hidden.
-  scrubMode = effectiveMode(target) === 'scrub';
+  activeMode = effectiveMode(target);
+  scrubMode = activeMode === 'scrub';
   scrubControls?.detach();
   void loader.handle(target);
 };
 const onNavigateError = (event: Event): void => {
+  activeMode = 'present';
   scrubMode = false;
   scrubControls?.detach();
   loader.handleError((event as CustomEvent<Error>).detail);

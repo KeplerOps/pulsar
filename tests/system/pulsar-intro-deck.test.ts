@@ -1,10 +1,10 @@
 // Pulsar L2 — pulsar-intro reference deck shape tests.
 //
-// Asserts the deck exports a non-empty scene array, a registered
-// composition entry whose manifest references only registered scenes,
-// and uses every shipped transition kind at least once. Catches drift
-// between content.ts, composition.ts, and the shipped transition
-// registry.
+// Asserts the deck exports a non-empty scene array, every scene
+// satisfies the SceneModule contract, every composition entry id
+// references a registered scene, every scene declares at least one
+// caption (so `?mode=prompter` produces a speaker view), and the
+// composition uses more than one transition kind.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,7 +14,6 @@ import {
   pulsarIntroCompositionEntry,
 } from '../../src/decks/pulsar-intro';
 import { assertSceneModule } from '../../src/runtime/scene';
-import { ALL_TRANSITIONS } from '../../src/system/transitions';
 
 describe('pulsar-intro reference deck', () => {
   it('exports a non-empty scene array', () => {
@@ -32,6 +31,12 @@ describe('pulsar-intro reference deck', () => {
     expect(ids.size).toBe(PULSAR_INTRO_SCENES.length);
   });
 
+  it('every scene declares at least one caption', () => {
+    for (const scene of PULSAR_INTRO_SCENES) {
+      expect(scene.captions.length, `${scene.id} captions`).toBeGreaterThan(0);
+    }
+  });
+
   it('exports the canonical composition id', () => {
     expect(PULSAR_INTRO_COMPOSITION_ID).toBe('pulsar-intro');
     expect(pulsarIntroCompositionEntry.id).toBe(PULSAR_INTRO_COMPOSITION_ID);
@@ -45,7 +50,7 @@ describe('pulsar-intro reference deck', () => {
     }
   });
 
-  it('every shipped transition kind is used at least once', () => {
+  it('the composition uses more than one transition kind', () => {
     const used = new Set<string>();
     for (const entry of pulsarIntroComposition) {
       if (typeof entry === 'string') continue;
@@ -53,9 +58,7 @@ describe('pulsar-intro reference deck', () => {
         ?.transition;
       if (transition !== undefined) used.add(transition.name);
     }
-    for (const t of ALL_TRANSITIONS) {
-      expect(used.has(t.name), `${t.name} transition must appear in the deck`).toBe(true);
-    }
+    expect(used.size, 'composition transition kinds').toBeGreaterThan(1);
   });
 
   it('first composition entry resolves to a registered scene', () => {

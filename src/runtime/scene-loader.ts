@@ -419,13 +419,13 @@ export interface SceneLoaderOptions {
   readonly audioUnlockAdapter?: AudioUnlockAdapter;
   /**
    * PUL-F031 / ADR-031: workbench-supplied chrome controller. The
-   * loader calls `chrome.applyMode(effectiveMode(target))` once per
-   * navigation, immediately after mode-grammar validation passes and
-   * BEFORE scene resolution / lifecycle work, so chrome visibility
-   * tracks the addressed workbench mode (`present` → visible;
-   * `standalone` / `screenshot` → hidden; other modes → visible per
-   * preflight policy) and a present-mode composition does not flash
-   * an un-chromed frame.
+   * loader applies the composition-scoped chrome policy and then calls
+   * `chrome.applyMode(effectiveMode(target))` once per navigation,
+   * immediately after mode-grammar validation passes and BEFORE
+   * lifecycle work, so chrome visibility tracks the addressed workbench
+   * mode (`present` → visible; `standalone` / `screenshot` → hidden;
+   * other modes → visible per preflight policy) and a present-mode
+   * composition does not flash an un-chromed frame.
    *
    * Chrome is workbench-owned and built at bootstrap by
    * `src/runtime/workbench-chrome.ts`. The loader's seam is
@@ -441,8 +441,8 @@ export interface SceneLoaderOptions {
    * {@link audioUnlockAdapter} follow.
    *
    * The chrome surface persists across scene navigations within a
-   * composition because the loader's single call site is upstream of
-   * the resolver's per-scene loop — a multi-scene composition under
+   * composition because the loader's single dispatch call is upstream
+   * of the resolver's per-scene loop — a multi-scene composition under
    * `mode=present` produces exactly one `applyMode('present')` call.
    * Per ADR-007 / ADR-016 / PUL-A008, chrome state is workbench-owned
    * and scenes never see a chrome handle.
@@ -469,6 +469,12 @@ export interface WorkbenchChromeAdapter {
    * compatible — the loader only calls it when defined.
    */
   setForcedVisibility?(visibility: 'hidden' | null): void;
+  /**
+   * Optional composition-scoped atmospheric layer switch. The global
+   * workbench default is no animated atmospheric background; decks that
+   * were designed for it opt in from the composition manifest.
+   */
+  setAtmosphere?(atmosphere: 'cinematic' | null): void;
 }
 
 /**
@@ -1197,25 +1203,53 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     return buildUnlockGate(options.audioUnlockAdapter, composition);
   };
 
-  /**
-   * Composition-level chrome opt-out: when the head manifest entry's
-   * `behavior.chrome === 'hidden'`, the deck owns its own atmospherics
-   * and pulsar's chrome surface is hidden for the whole composition.
-   * Clears any prior override when the deck doesn't declare it, so a
-   * back-nav from a chrome-hidden deck to a chrome-on deck restores
-   * the surface. Hoisted out of `buildLoad` to keep that function
-   * within Sonar's cognitive-complexity budget (S3776).
-   */
-  const applyChromeOverride = (resolved: SceneNavigationTarget, mode: NavigationMode): void => {
-    const chrome = options.chrome;
-    if (chrome === undefined || chrome.setForcedVisibility === undefined) return;
-    const head = resolved.composition?.manifestSlice[0];
-    const headBehavior =
-      head === null || typeof head !== 'object'
-        ? undefined
-        : (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior;
-    chrome.setForcedVisibility(headBehavior?.chrome === 'hidden' ? 'hidden' : null);
+  const chromeBehaviorFromResolved = (resolved: SceneNavigationTarget | null): unknown => {
+    const head = resolved?.composition?.manifestSlice[0];
+    if (head === null || typeof head !== 'object') return undefined;
+    return (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior?.chrome;
+  };
+
+  const chromeBehaviorForTarget = (target: NavigationTarget): unknown => {
+    try {
+      return chromeBehaviorFromResolved(
+        resolveSceneNavigation(target, {
+          scenes: options.scenes,
+          compositions: options.compositions,
+        }),
+      );
+    } catch {
+      return undefined;
+    }
+  };
+
+  const applyChromeDispatchPolicy = (
+    chrome: WorkbenchChromeAdapter,
+    mode: NavigationMode,
+    chromeBehavior: unknown,
+  ): void => {
+    const forcedVisibility = chromeBehavior === 'hidden' ? 'hidden' : null;
+    const atmosphere =
+      typeof chromeBehavior === 'object' &&
+      chromeBehavior !== null &&
+      (chromeBehavior as { readonly atmosphere?: unknown }).atmosphere === 'cinematic'
+        ? 'cinematic'
+        : null;
+    chrome.setForcedVisibility?.(forcedVisibility);
+    chrome.setAtmosphere?.(atmosphere);
     chrome.applyMode(mode);
+  };
+
+  /**
+   * Composition-level chrome policy: the head manifest entry's
+   * `behavior.chrome` can hide chrome or opt into cinematic atmosphere.
+   * The default is explicit reset (`forcedVisibility=null`,
+   * `atmosphere=null`) so a navigation away from an atmospheric deck
+   * clears that state immediately, before serialized scene cleanup.
+   */
+  const applyChromeForTarget = (target: NavigationTarget): void => {
+    const chrome = options.chrome;
+    if (chrome === undefined) return;
+    applyChromeDispatchPolicy(chrome, effectiveMode(target), chromeBehaviorForTarget(target));
   };
 
   const buildLoad = (
@@ -1239,7 +1273,6 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // combined per occurrence in `buildSceneCtx` so every scene
     // occurrence gets its own seeded `ctx.rng`.
     const navigationSeed = deriveNavigationSeed(target);
-    applyChromeOverride(resolved, mode);
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);
@@ -1810,7 +1843,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     if (options.chrome === undefined) return null;
     if (validateModeGrammar(target) !== null) return null;
     try {
-      options.chrome.applyMode(effectiveMode(target));
+      applyChromeForTarget(target);
       return null;
     } catch (err) {
       return err instanceof Error ? err : new Error(String(err));

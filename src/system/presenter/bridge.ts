@@ -48,7 +48,19 @@ const presenterSessionIdFromLocation = (location: Pick<Location, 'href'>): strin
 const createPresenterSessionId = (): string => {
   const crypto = globalThis.crypto;
   if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
-  throw new Error('secure random presenter session id source is unavailable');
+  // `randomUUID()` is secure-context-only in Chromium. `getRandomValues()`
+  // remains available on HTTP origins and is the correct Web Crypto source
+  // for same-origin presenter channel isolation. This value never feeds
+  // scene rendering or screenshot capture.
+  const getRandomValues = crypto?.getRandomValues; // PUL-Q001-allow: presenter-session entropy, not scene rendering.
+  if (typeof getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    getRandomValues.call(crypto, bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  throw new Error(
+    'secure random presenter session id source is unavailable: requires crypto.randomUUID or crypto.getRandomValues',
+  );
 };
 
 export const getPresenterSessionId = (

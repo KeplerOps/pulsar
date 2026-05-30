@@ -99,6 +99,12 @@ export interface WorkbenchChromeController {
    */
   setForcedVisibility(visibility: 'hidden' | null): void;
   /**
+   * Enable or disable composition-scoped atmospheric chrome. Atmospherics
+   * are opt-in because they are part of a specific deck's visual design,
+   * not the default workbench background.
+   */
+  setAtmosphere(atmosphere: 'cinematic' | null): void;
+  /**
    * Tear down the chrome surface. Removes the element from the
    * workbench and makes subsequent `applyMode` calls no-ops.
    * Idempotent: a second `dispose()` does not re-remove or throw.
@@ -140,6 +146,7 @@ export function chromeVisibilityFor(mode: NavigationMode): 'visible' | 'hidden' 
 }
 
 const VISIBILITY_ATTR = 'data-pulsar-chrome-visibility';
+const ATMOSPHERE_ATTR = 'data-pulsar-chrome-atmosphere';
 
 /**
  * Build a {@link WorkbenchChromeController} backed by a DOM-shaped
@@ -180,6 +187,14 @@ export function createDomWorkbenchChrome(host: WorkbenchChromeHost): WorkbenchCh
     setForcedVisibility(visibility: 'hidden' | null): void {
       if (disposed) return;
       forced = visibility;
+    },
+    setAtmosphere(atmosphere: 'cinematic' | null): void {
+      if (disposed) return;
+      if (atmosphere === null) {
+        element.removeAttribute(ATMOSPHERE_ATTR);
+        return;
+      }
+      element.setAttribute(ATMOSPHERE_ATTR, atmosphere);
     },
     dispose(): void {
       if (disposed) return;

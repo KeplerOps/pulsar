@@ -1,9 +1,11 @@
 /* Pulsar L2 chrome — atmospheric layer stack.
  *
- * Full-bleed fixed overlays providing the cinematic-thriller register
- * across every deck: letterbox bars, vignette, scanlines, grain,
- * screen flash, camera shake, glitch text. Z-layer stack is defined
- * in `register/tokens.css` (vignette 47 → scanlines 48 → grain 49 →
+ * Full-bleed fixed overlays for the cinematic-thriller register:
+ * letterbox bars, vignette, scanlines, grain, screen flash, camera
+ * shake, glitch text. The animated atmosphere is opt-in per
+ * composition via `behavior.chrome: { atmosphere: "cinematic" }`; the
+ * workbench default is a clean stage. Z-layer stack is defined in
+ * `register/tokens.css` (vignette 47 → scanlines 48 → grain 49 →
  * bars 50 → flash 51) so per-deck CSS overrides can compose without
  * fighting the runtime.
  *
@@ -26,6 +28,20 @@
   isolation: isolate;
   pointer-events: none;
   overflow: hidden;
+}
+
+.pulsar-vignette,
+.pulsar-scanlines,
+.pulsar-grain,
+.pulsar-bars {
+  display: none;
+}
+
+.pulsar-stage[data-pulsar-chrome-atmosphere="cinematic"] .pulsar-vignette,
+.pulsar-stage[data-pulsar-chrome-atmosphere="cinematic"] .pulsar-scanlines,
+.pulsar-stage[data-pulsar-chrome-atmosphere="cinematic"] .pulsar-grain,
+.pulsar-stage[data-pulsar-chrome-atmosphere="cinematic"] .pulsar-bars {
+  display: block;
 }
 
 /* Page-level backdrop: deck content reads on the body's dark color

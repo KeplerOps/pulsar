@@ -1041,6 +1041,7 @@ describe('createGsapCompositionTimeline — presenter command transport (PUL-F02
   /** Run the adapter with a live presenter controller wired to the runner. */
   const runWithPresenter = (
     segments: readonly SceneTimelineSegment[],
+    onSegmentChange?: (segment: { readonly id: string; readonly index: number }) => void,
   ): {
     emit: (cmd: PresenterCommand) => void;
     master: () => MasterTimeline;
@@ -1053,6 +1054,7 @@ describe('createGsapCompositionTimeline — presenter command transport (PUL-F02
     let captured: MasterTimeline | null = null;
     const adapter = createGsapCompositionTimeline({
       engine,
+      ...(onSegmentChange === undefined ? {} : { onSegmentChange }),
       onMaster: (m) => {
         captured = m;
       },
@@ -1142,6 +1144,45 @@ describe('createGsapCompositionTimeline — presenter command transport (PUL-F02
     expect(r.master().time()).toBeCloseTo(20, 0);
     r.emit({ kind: 'skip-backward' });
     expect(r.master().time()).toBeCloseTo(0, 0);
+    r.abort();
+    await r.settled;
+  });
+
+  it('skip-backward uses the scene cursor, not a fuzzy label search inside the current scene', async () => {
+    const seen: string[] = [];
+    const r = runWithPresenter(
+      [segment('a', sceneTl(20)), segment('b', sceneTl(20)), segment('c', sceneTl(20))],
+      (s) => seen.push(`${s.index}:${s.id}`),
+    );
+    await flush();
+    r.emit({ kind: 'skip-forward' });
+    expect(r.master().time()).toBeCloseTo(20, 0);
+    r.master().seek(20.5);
+    r.emit({ kind: 'skip-backward' });
+    expect(r.master().time()).toBeCloseTo(0, 0);
+    expect(seen).toEqual(['0:a', '1:b', '0:a']);
+    r.abort();
+    await r.settled;
+  });
+
+  it('repeated scene skips report exactly one active segment per command target', async () => {
+    const seen: string[] = [];
+    const r = runWithPresenter(
+      [segment('a', sceneTl(20)), segment('b', sceneTl(20)), segment('c', sceneTl(20))],
+      (s) => seen.push(`${s.index}:${s.id}`),
+    );
+    await flush();
+    for (const kind of [
+      'skip-forward',
+      'skip-forward',
+      'skip-backward',
+      'skip-forward',
+      'skip-backward',
+      'skip-backward',
+    ] as const) {
+      r.emit({ kind });
+    }
+    expect(seen).toEqual(['0:a', '1:b', '2:c', '1:b', '2:c', '1:b', '0:a']);
     r.abort();
     await r.settled;
   });

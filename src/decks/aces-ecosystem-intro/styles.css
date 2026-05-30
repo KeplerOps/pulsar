@@ -1,0 +1,433 @@
+/* ACES ecosystem intro — bespoke per-deck styles.
+ *
+ * Standards-body briefing register. Warm off-white paper, ink type,
+ * Source Serif 4 for body, Inter for headings and structural labels,
+ * JetBrains Mono for identifiers (spec ids, file paths, F1 problem
+ * codes). Single accent: instrument-amber. Numbered sections, single
+ * column, ragged-right body, citations rendered inline as
+ * [Author Year]. Tables and labeled rows are the primary visual unit;
+ * no decorative icons, no gradients, no shadows.
+ *
+ * Every selector is scoped to `.aces-intro` (set as an extra class on
+ * each scene root) so this CSS cannot leak into other decks.
+ */
+
+.aces-intro {
+  --ax-paper: #f7f5f0;
+  --ax-paper-warm: #efeadd;
+  --ax-ink: #111418;
+  --ax-ink-2: #2a2d33;
+  --ax-mute: #5c6168;
+  --ax-mute-2: #888c92;
+  --ax-rule: #c8c4b8;
+  --ax-rule-soft: #d8d4c6;
+  --ax-accent: #b8860b;
+  --ax-accent-tint: rgba(184, 134, 11, 0.12);
+
+  --ax-serif: "Source Serif 4 Variable", "Source Serif 4", "Source Serif Pro", Georgia, serif;
+  --ax-sans: "Inter Variable", "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --ax-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+
+  --ax-rail: clamp(56px, 7.5vw, 132px);
+  --ax-rule-w: 1px solid var(--ax-rule);
+  --ax-rule-soft-w: 1px solid var(--ax-rule-soft);
+}
+
+.pulsar-template.aces-intro {
+  inset: 0;
+  background: var(--ax-paper);
+  color: var(--ax-ink);
+  font-family: var(--ax-serif);
+  font-feature-settings: "kern", "liga", "ss01";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+
+/* Single-column page frame with reserved header/footer rails. */
+.aces-intro .ax-page {
+  position: absolute;
+  inset: 0;
+  padding: clamp(44px, 6vh, 80px) var(--ax-rail) clamp(56px, 7vh, 96px);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  row-gap: clamp(24px, 3vh, 44px);
+  max-width: 1640px;
+  margin: 0 auto;
+}
+
+.aces-intro .ax-head,
+.aces-intro .ax-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--ax-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ax-mute);
+}
+
+.aces-intro .ax-head__mark {
+  font-weight: 600;
+  color: var(--ax-ink);
+}
+
+.aces-intro .ax-foot__cite {
+  font-family: var(--ax-mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ax-mute);
+}
+
+.aces-intro .ax-foot__num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.aces-intro .ax-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+}
+
+/* ---------- Cover ---------- */
+
+.aces-intro .ax-cover {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  max-width: 1100px;
+}
+
+.aces-intro .ax-cover__title {
+  font-family: var(--ax-sans);
+  font-weight: 500;
+  font-size: clamp(120px, 16vw, 280px);
+  line-height: 0.9;
+  letter-spacing: -0.034em;
+  margin: 0;
+  opacity: 0;
+}
+
+.aces-intro .ax-cover__expand {
+  margin: clamp(18px, 2vh, 28px) 0 0;
+  font-family: var(--ax-sans);
+  font-size: clamp(26px, 2.4vw, 40px);
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.012em;
+  color: var(--ax-ink-2);
+  opacity: 0;
+}
+
+.aces-intro .ax-cover__rule {
+  margin: clamp(28px, 3.5vh, 48px) 0 clamp(20px, 2.4vh, 32px);
+  height: 1px;
+  background: var(--ax-rule);
+  width: clamp(120px, 14vw, 200px);
+  opacity: 0;
+}
+
+.aces-intro .ax-cover__abstract {
+  margin: 0;
+  font-family: var(--ax-serif);
+  font-size: clamp(17px, 1.4vw, 22px);
+  line-height: 1.55;
+  color: var(--ax-ink);
+  max-width: 62ch;
+  opacity: 0;
+}
+
+.aces-intro .ax-cover__abstract cite {
+  font-style: normal;
+  font-family: var(--ax-mono);
+  font-size: 0.7em;
+  color: var(--ax-mute);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* ---------- Section title (§N. ...) ---------- */
+
+.aces-intro .ax-section {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  row-gap: clamp(20px, 2.5vh, 36px);
+  height: 100%;
+}
+
+.aces-intro .ax-section__num {
+  font-family: var(--ax-mono);
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ax-mute);
+  opacity: 0;
+}
+
+.aces-intro .ax-section__title {
+  font-family: var(--ax-sans);
+  font-weight: 500;
+  font-size: clamp(56px, 7.5vw, 128px);
+  line-height: 1;
+  letter-spacing: -0.024em;
+  margin: 0;
+  max-width: 22ch;
+  text-wrap: balance;
+  opacity: 0;
+}
+
+.aces-intro .ax-section__lede {
+  font-family: var(--ax-serif);
+  font-size: clamp(20px, 1.7vw, 28px);
+  line-height: 1.45;
+  color: var(--ax-ink-2);
+  max-width: 48ch;
+  margin: 0;
+  opacity: 0;
+}
+
+/* ---------- Standard content scene ---------- */
+
+.aces-intro .ax-content {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(16px, 1.8vh, 28px);
+  height: 100%;
+}
+
+.aces-intro .ax-eyebrow {
+  font-family: var(--ax-mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ax-mute);
+  opacity: 0;
+}
+
+.aces-intro .ax-heading {
+  font-family: var(--ax-sans);
+  font-weight: 500;
+  font-size: clamp(36px, 4.6vw, 72px);
+  line-height: 1.1;
+  letter-spacing: -0.018em;
+  margin: 0;
+  max-width: 32ch;
+  text-wrap: balance;
+  opacity: 0;
+}
+
+.aces-intro .ax-prose {
+  font-family: var(--ax-serif);
+  font-size: clamp(18px, 1.5vw, 24px);
+  line-height: 1.55;
+  color: var(--ax-ink);
+  max-width: 64ch;
+  margin: 0;
+  opacity: 0;
+}
+
+.aces-intro .ax-prose .ax-cite,
+.aces-intro .ax-cite {
+  font-family: var(--ax-mono);
+  font-size: 0.7em;
+  color: var(--ax-mute);
+  margin-left: 4px;
+  font-feature-settings: "tnum";
+  word-break: keep-all;
+}
+
+.aces-intro .ax-pull {
+  font-family: var(--ax-serif);
+  font-style: italic;
+  font-size: clamp(24px, 2.4vw, 38px);
+  line-height: 1.35;
+  color: var(--ax-ink);
+  border-left: 3px solid var(--ax-accent);
+  padding: clamp(8px, 1vh, 14px) 0 clamp(8px, 1vh, 14px) clamp(20px, 2vw, 32px);
+  margin: 0;
+  max-width: 56ch;
+  opacity: 0;
+}
+
+.aces-intro .ax-pull cite {
+  display: block;
+  margin-top: clamp(10px, 1.2vh, 16px);
+  font-family: var(--ax-mono);
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ax-mute);
+  letter-spacing: 0;
+}
+
+/* ---------- Tables ---------- */
+
+.aces-intro .ax-table {
+  margin: 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--ax-serif);
+  font-size: clamp(15px, 1.2vw, 19px);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+  opacity: 0;
+}
+
+.aces-intro .ax-table th,
+.aces-intro .ax-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: clamp(10px, 1.4vh, 16px) clamp(14px, 1.5vw, 22px);
+  border-bottom: var(--ax-rule-soft-w);
+}
+
+.aces-intro .ax-table th {
+  font-family: var(--ax-sans);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ax-mute);
+  border-bottom: var(--ax-rule-w);
+  padding-top: 0;
+}
+
+.aces-intro .ax-table td:first-child,
+.aces-intro .ax-table th:first-child {
+  padding-left: 0;
+}
+
+.aces-intro .ax-table td:last-child,
+.aces-intro .ax-table th:last-child {
+  padding-right: 0;
+}
+
+.aces-intro .ax-table .ax-id {
+  font-family: var(--ax-mono);
+  font-size: 0.92em;
+  color: var(--ax-ink);
+  white-space: nowrap;
+}
+
+.aces-intro .ax-table .ax-path {
+  font-family: var(--ax-mono);
+  font-size: 0.88em;
+  color: var(--ax-accent);
+  white-space: nowrap;
+}
+
+.aces-intro .ax-table--narrow td:first-child,
+.aces-intro .ax-table--narrow th:first-child {
+  width: 22%;
+}
+
+.aces-intro .ax-table--codes td:first-child,
+.aces-intro .ax-table--codes th:first-child {
+  width: 12ch;
+}
+
+/* ---------- Definition rows ---------- */
+
+.aces-intro .ax-defs {
+  display: grid;
+  grid-template-columns: minmax(0, 14ch) 1fr;
+  column-gap: clamp(24px, 2.4vw, 44px);
+  row-gap: clamp(12px, 1.4vh, 20px);
+  font-family: var(--ax-serif);
+  font-size: clamp(16px, 1.3vw, 21px);
+  line-height: 1.5;
+}
+
+.aces-intro .ax-defs dt {
+  font-family: var(--ax-mono);
+  font-size: 0.92em;
+  color: var(--ax-ink);
+  padding-top: 2px;
+  opacity: 0;
+}
+
+.aces-intro .ax-defs dd {
+  margin: 0;
+  color: var(--ax-ink);
+  opacity: 0;
+}
+
+/* ---------- Numbered list (section map, reads) ---------- */
+
+.aces-intro .ax-toc {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 6ch) 1fr;
+  row-gap: clamp(14px, 1.8vh, 26px);
+  column-gap: clamp(24px, 2.5vw, 44px);
+  font-family: var(--ax-serif);
+  font-size: clamp(19px, 1.6vw, 26px);
+  line-height: 1.4;
+}
+
+.aces-intro .ax-toc__num {
+  font-family: var(--ax-mono);
+  font-size: 0.8em;
+  color: var(--ax-mute);
+  padding-top: 0.4em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0;
+}
+
+.aces-intro .ax-toc__row {
+  display: contents;
+}
+
+.aces-intro .ax-toc__text {
+  color: var(--ax-ink);
+  opacity: 0;
+}
+
+.aces-intro .ax-toc__text small {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--ax-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ax-mute);
+}
+
+/* ---------- Bibliography ---------- */
+
+.aces-intro .ax-refs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--ax-serif);
+  font-size: clamp(13px, 1vw, 16px);
+  line-height: 1.5;
+  columns: 2;
+  column-gap: clamp(28px, 3vw, 56px);
+}
+
+.aces-intro .ax-refs li {
+  break-inside: avoid;
+  padding-left: clamp(16px, 1.5vw, 24px);
+  text-indent: calc(clamp(16px, 1.5vw, 24px) * -1);
+  margin-bottom: clamp(10px, 1.2vh, 16px);
+  color: var(--ax-ink);
+  opacity: 0;
+}
+
+.aces-intro .ax-refs__id {
+  font-family: var(--ax-mono);
+  font-size: 0.85em;
+  color: var(--ax-accent);
+  margin-right: 6px;
+}
+
+.aces-intro .ax-refs__path {
+  font-family: var(--ax-mono);
+  font-size: 0.82em;
+  color: var(--ax-mute);
+}

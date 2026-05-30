@@ -3,9 +3,9 @@
 // Translates keyboard events on the document into PresenterCommands.
 // The default mapping covers the documented presenter UX:
 //
-//   ArrowRight, Space  → advance (next beat)
-//   PageDown           → skip-forward (next scene)
-//   ArrowLeft, PageUp  → skip-backward (previous scene)
+//   ArrowRight, PageDown → skip-forward (next scene)
+//   ArrowLeft, PageUp   → skip-backward (previous scene)
+//   Space               → advance (next beat / release hold)
 //   KeyP               → hold (hold the current beat)
 //   KeyK               → pause (freeze the active timeline — PUL-F021)
 //   KeyL               → resume (resume from the same point — PUL-F021)
@@ -37,7 +37,7 @@ export interface KeyboardPresenterBindings {
 }
 
 export const DEFAULT_KEYBOARD_BINDINGS: KeyboardPresenterBindings = {
-  ArrowRight: 'advance',
+  ArrowRight: 'skip-forward',
   Space: 'advance',
   PageDown: 'skip-forward',
   ArrowLeft: 'skip-backward',

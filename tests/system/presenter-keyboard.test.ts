@@ -35,14 +35,14 @@ const fakeKey = (code: string, target: EventTarget | null = null): Event => {
 };
 
 describe('keyboard presenter source', () => {
-  it('emits advance on ArrowRight and Space', () => {
+  it('emits skip-forward on ArrowRight and advance on Space', () => {
     const target = makeTarget();
     const { source, dispose } = createKeyboardPresenterSource({ target });
     const cmds: PresenterCommand[] = [];
     source.subscribe((c) => cmds.push(c));
     target.dispatchEvent(fakeKey('ArrowRight'));
     target.dispatchEvent(fakeKey('Space'));
-    expect(cmds.map((c) => c.kind)).toEqual(['advance', 'advance']);
+    expect(cmds.map((c) => c.kind)).toEqual(['skip-forward', 'advance']);
     dispose();
   });
 
@@ -155,7 +155,7 @@ describe('keyboard presenter source', () => {
 // GSAP runner → master timeline. Pins that the wired surface actually
 // moves beat state, not just that the keyboard source emits a command.
 describe('presenter keyboard → GSAP runner (PUL-F020 end-to-end dispatch)', () => {
-  it('a real PageDown keydown drives the master timeline to the next scene segment', async () => {
+  it('a real ArrowRight keydown drives the master timeline to the next scene segment', async () => {
     const engine = createTimelineEngine();
     const sceneTl = (seconds: number): InstanceType<typeof engine.gsap.core.Timeline> => {
       const tl = engine.gsap.timeline({ paused: true });
@@ -186,7 +186,7 @@ describe('presenter keyboard → GSAP runner (PUL-F020 end-to-end dispatch)', ()
       return captured;
     })();
     // Real DOM keydown → keyboard source → controller → runner → master.
-    target.dispatchEvent(fakeKey('PageDown'));
+    target.dispatchEvent(fakeKey('ArrowRight'));
     expect(master.time()).toBeCloseTo(20, 0);
     ctrl.abort();
     keyboard.dispose();

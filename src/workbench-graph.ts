@@ -13,6 +13,10 @@
 // names the scenes and compositions this specific application ships.
 
 import { DEFAULT_COMPOSITION_ID, defaultComposition } from './compositions/default';
+import {
+  ACES_ECOSYSTEM_INTRO_SCENES,
+  acesEcosystemIntroCompositionEntry,
+} from './decks/aces-ecosystem-intro';
 import { PULSAR_INTRO_SCENES, pulsarIntroCompositionEntry } from './decks/pulsar-intro';
 import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
@@ -77,11 +81,12 @@ const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
 // that is byte-identical between two loads of the same URL).
 //
 // Pulsar L2: the pulsar-intro reference deck (`?composition=pulsar-intro`)
-// is the self-referential proof of the L2 system layer. Its 15 scenes
-// collectively exercise every shipped template, every transition, every
-// chrome treatment, and every presenter key. Authoring a new scene in
-// the deck is a single template-factory call in
-// `src/decks/pulsar-intro/content.ts`.
+// is the self-referential proof of the L2 system layer. Its scenes
+// exercise the shipped template factories, transition kinds, chrome
+// slots, metadata contracts, and presenter-driven scene shape.
+//
+// The ACES ecosystem intro (`?composition=aces-ecosystem-intro`) is a
+// one-hour content deck built from the same public template surface.
 export const WORKBENCH_SCENES: readonly SceneModule[] = [
   placeholderScene,
   browserSupportFixtureScene,
@@ -91,11 +96,13 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   scrubFixtureScene,
   screenshotRngFixtureScene,
   ...PULSAR_INTRO_SCENES,
+  ...ACES_ECOSYSTEM_INTRO_SCENES,
   ...LOCAL_SCENES,
 ];
 
 export const WORKBENCH_COMPOSITIONS: readonly CompositionRegistryEntry[] = [
   { id: DEFAULT_COMPOSITION_ID, manifest: defaultComposition },
   pulsarIntroCompositionEntry,
+  acesEcosystemIntroCompositionEntry,
   ...LOCAL_COMPOSITIONS,
 ];

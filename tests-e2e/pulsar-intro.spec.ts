@@ -20,9 +20,9 @@ import { expect, test } from '@playwright/test';
 //   5. Head-scene activation: the head template's
 //      data-pulsar-template-active flips to "true" once the master
 //      starts playing (present mode default).
-//   6. Keyboard advance: ArrowRight fires an advance command (the
-//      key reaches the keyboard source). We don't assert what the
-//      master does in response — that's a per-template concern
+//   6. Keyboard scene navigation: ArrowRight fires a skip-forward
+//      command (the key reaches the keyboard source). We don't assert
+//      what the master does in response — that's a per-template concern
 //      tested separately — only that the key reaches the runtime
 //      without throwing.
 
@@ -86,10 +86,10 @@ test.describe('Pulsar L2 reference deck — pulsar-intro', () => {
 
     // Mount-then-play: every template root mounts as a descendant of
     // #stage before the master runs. Sample a representative subset
-    // (asserting all 17 here would couple the test to manifest order
+    // (asserting every entry here would couple the test to manifest order
     // changes; the existence of a few representative templates proves
     // the resolver mounted the slice).
-    for (const sceneId of ['pi-title', 'pi-stat-bespoke', 'pi-quote-thesis', 'pi-outro']) {
+    for (const sceneId of ['pi-title', 'pi-thesis', 'pi-composition', 'pi-outro']) {
       await expect(
         stage.locator(`[data-pulsar-template="${sceneId}"]`),
         `${sceneId} template root must mount as a descendant of #stage`,
@@ -104,7 +104,7 @@ test.describe('Pulsar L2 reference deck — pulsar-intro', () => {
       'head scene must become active under present-mode playback',
     ).toHaveAttribute('data-pulsar-template-active', 'true', { timeout: 10_000 });
 
-    // Keyboard advance lands on the runtime without crashing.
+    // Keyboard scene navigation lands on the runtime without crashing.
     await page.keyboard.press('ArrowRight');
 
     expect(errors, 'no uncaught exceptions or console errors during boot').toEqual([]);

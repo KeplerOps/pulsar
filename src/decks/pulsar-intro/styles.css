@@ -1,0 +1,468 @@
+/* Pulsar reference deck — bespoke per-deck styles.
+ *
+ * Scoped to scene roots that carry both `.pulsar-template` (mounted by
+ * the runtime scene envelope) and `.pulsar-intro` (extra class set by
+ * this deck's scenes). Every selector below is keyed on `.pulsar-intro`
+ * so this CSS cannot leak into other decks.
+ */
+
+.pulsar-intro {
+  --pi-ink: #0a0a0a;
+  --pi-ink-soft: #1c1c1c;
+  --pi-paper: #f4efe3;
+  --pi-paper-soft: #e6e1d2;
+  --pi-text-on-ink: #ededea;
+  --pi-text-on-ink-dim: rgba(237, 237, 234, 0.62);
+  --pi-text-on-ink-faint: rgba(237, 237, 234, 0.34);
+  --pi-text-on-paper: #1a1816;
+  --pi-text-on-paper-dim: rgba(26, 24, 22, 0.62);
+  --pi-text-on-paper-faint: rgba(26, 24, 22, 0.34);
+  --pi-accent: #e2a24c;
+  --pi-accent-soft: rgba(226, 162, 76, 0.18);
+
+  --pi-rule: 1px solid currentColor;
+  --pi-rule-soft: 1px solid rgba(237, 237, 234, 0.14);
+  --pi-rule-soft-paper: 1px solid rgba(26, 24, 22, 0.12);
+
+  --pi-sans: "Geist Variable", "Geist", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --pi-mono: "Geist Mono Variable", "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+  --pi-serif: "Source Serif 4 Variable", "Source Serif 4", "Source Serif Pro", Georgia, serif;
+
+  --pi-rail: clamp(48px, 8vw, 160px);
+  --pi-stack: clamp(20px, 2vw, 36px);
+}
+
+/* Override the L2 template envelope so the deck owns its surface.
+ * The L2 base rule sets inset to the letterbox (5.5vh top/bottom);
+ * this deck reads cleaner full-bleed. */
+.pulsar-template.pulsar-intro {
+  inset: 0;
+  color: var(--pi-text-on-ink);
+  font-family: var(--pi-sans);
+  font-feature-settings: "ss01", "cv01", "cv11";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Two surfaces. The deck switches between them by adding
+ * .pi-surface--ink or .pi-surface--paper to the scene root. */
+.pulsar-intro.pi-surface--ink {
+  background: var(--pi-ink);
+  color: var(--pi-text-on-ink);
+}
+
+.pulsar-intro.pi-surface--paper {
+  background: var(--pi-paper);
+  color: var(--pi-text-on-paper);
+}
+
+/* Canonical content frame. */
+.pulsar-intro .pi-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(32px, 5vh, 96px) var(--pi-rail);
+  max-width: 1640px;
+  margin: 0 auto;
+}
+
+.pulsar-intro .pi-frame--top {
+  justify-content: flex-start;
+  padding-top: clamp(48px, 8vh, 140px);
+}
+
+.pulsar-intro .pi-frame--center {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+/* Folio line at the bottom of every scene — small mono cue identifying
+ * the deck + composition without intruding. */
+.pulsar-intro .pi-folio {
+  position: absolute;
+  left: var(--pi-rail);
+  right: var(--pi-rail);
+  bottom: clamp(20px, 3vh, 40px);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--pi-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pulsar-intro.pi-surface--ink .pi-folio {
+  color: var(--pi-text-on-ink-faint);
+}
+
+.pulsar-intro.pi-surface--paper .pi-folio {
+  color: var(--pi-text-on-paper-faint);
+}
+
+.pulsar-intro .pi-folio__mark {
+  font-weight: 600;
+}
+
+/* ---------- Title scene ---------- */
+
+.pulsar-intro .pi-title {
+  font-family: var(--pi-sans);
+  font-weight: 600;
+  font-size: clamp(96px, 14vw, 248px);
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+  margin: 0;
+}
+
+.pulsar-intro .pi-title__a {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(0.08em);
+}
+
+.pulsar-intro .pi-title__dot {
+  color: var(--pi-accent);
+  display: inline-block;
+  opacity: 0;
+}
+
+.pulsar-intro .pi-subtitle {
+  margin-top: clamp(24px, 3vh, 48px);
+  max-width: 36ch;
+  font-family: var(--pi-sans);
+  font-weight: 400;
+  font-size: clamp(20px, 1.8vw, 28px);
+  line-height: 1.4;
+  color: var(--pi-text-on-ink-dim);
+  letter-spacing: -0.005em;
+  opacity: 0;
+}
+
+/* ---------- Display thesis ---------- */
+
+.pulsar-intro .pi-display {
+  font-family: var(--pi-serif);
+  font-weight: 400;
+  font-size: clamp(48px, 7.5vw, 132px);
+  line-height: 1.02;
+  letter-spacing: -0.022em;
+  max-width: 22ch;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.pulsar-intro .pi-display__w {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(0.12em);
+  margin-right: 0.28em;
+}
+
+.pulsar-intro .pi-display__w:last-child {
+  margin-right: 0;
+}
+
+.pulsar-intro .pi-display__em {
+  font-style: italic;
+}
+
+/* ---------- Section heading ---------- */
+
+.pulsar-intro .pi-eyebrow {
+  font-family: var(--pi-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin: 0 0 clamp(16px, 2vh, 28px) 0;
+  opacity: 0;
+}
+
+.pulsar-intro.pi-surface--ink .pi-eyebrow {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro.pi-surface--paper .pi-eyebrow {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro .pi-heading {
+  font-family: var(--pi-sans);
+  font-weight: 500;
+  font-size: clamp(38px, 5vw, 84px);
+  line-height: 1.04;
+  letter-spacing: -0.022em;
+  margin: 0 0 clamp(24px, 3vh, 48px) 0;
+  max-width: 22ch;
+  opacity: 0;
+}
+
+.pulsar-intro .pi-body {
+  font-family: var(--pi-sans);
+  font-size: clamp(18px, 1.5vw, 24px);
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  max-width: 50ch;
+  margin: 0;
+  opacity: 0;
+}
+
+.pulsar-intro.pi-surface--ink .pi-body {
+  color: var(--pi-text-on-ink-dim);
+}
+
+.pulsar-intro.pi-surface--paper .pi-body {
+  color: var(--pi-text-on-paper-dim);
+}
+
+/* ---------- Code shape ---------- */
+
+.pulsar-intro .pi-code {
+  font-family: var(--pi-mono);
+  font-size: clamp(15px, 1.15vw, 19px);
+  line-height: 1.7;
+  letter-spacing: 0;
+  margin: clamp(28px, 3vh, 56px) 0 0 0;
+  padding: clamp(22px, 2.4vw, 36px) clamp(24px, 2.6vw, 40px);
+  border: var(--pi-rule-soft);
+  border-radius: 2px;
+  max-width: 64ch;
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0;
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
+.pulsar-intro.pi-surface--paper .pi-code {
+  border: var(--pi-rule-soft-paper);
+  background: rgba(26, 24, 22, 0.03);
+}
+
+.pulsar-intro .pi-code__k {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro.pi-surface--ink .pi-code {
+  color: var(--pi-text-on-ink);
+}
+
+.pulsar-intro.pi-surface--paper .pi-code {
+  color: var(--pi-text-on-paper);
+}
+
+.pulsar-intro .pi-code__c {
+  color: var(--pi-text-on-ink-faint);
+  font-style: italic;
+}
+
+.pulsar-intro.pi-surface--paper .pi-code__c {
+  color: var(--pi-text-on-paper-faint);
+}
+
+/* ---------- Recomposition triptych ---------- */
+
+.pulsar-intro .pi-tri {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(24px, 2.4vw, 44px);
+  margin-top: clamp(32px, 3vh, 56px);
+}
+
+.pulsar-intro .pi-tri__col {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 1.4vw, 20px);
+  opacity: 0;
+}
+
+.pulsar-intro .pi-tri__name {
+  font-family: var(--pi-sans);
+  font-weight: 500;
+  font-size: clamp(20px, 1.6vw, 26px);
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.pulsar-intro .pi-tri__rule {
+  height: 1px;
+  background: currentColor;
+  opacity: 0.18;
+  width: 100%;
+}
+
+.pulsar-intro .pi-tri__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--pi-mono);
+  font-size: clamp(13px, 1vw, 16px);
+  line-height: 1.85;
+  letter-spacing: 0;
+}
+
+.pulsar-intro .pi-tri__item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.pulsar-intro .pi-tri__num {
+  color: var(--pi-text-on-paper-faint);
+  width: 16px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pulsar-intro.pi-surface--ink .pi-tri__num {
+  color: var(--pi-text-on-ink-faint);
+}
+
+.pulsar-intro .pi-tri__item--shared .pi-tri__id {
+  color: var(--pi-accent);
+}
+
+/* ---------- Mode list ---------- */
+
+.pulsar-intro .pi-modes {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  gap: clamp(10px, 1.2vh, 18px) clamp(24px, 2.4vw, 44px);
+  margin-top: clamp(28px, 3vh, 48px);
+  align-items: baseline;
+}
+
+.pulsar-intro .pi-modes__url {
+  font-family: var(--pi-mono);
+  font-size: clamp(15px, 1.2vw, 20px);
+  font-weight: 500;
+  opacity: 0;
+}
+
+.pulsar-intro .pi-modes__url .pi-modes__k {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro .pi-modes__desc {
+  font-family: var(--pi-sans);
+  font-size: clamp(15px, 1.2vw, 19px);
+  line-height: 1.5;
+  opacity: 0;
+}
+
+.pulsar-intro.pi-surface--ink .pi-modes__desc {
+  color: var(--pi-text-on-ink-dim);
+}
+
+.pulsar-intro.pi-surface--paper .pi-modes__desc {
+  color: var(--pi-text-on-paper-dim);
+}
+
+/* ---------- Layers ---------- */
+
+.pulsar-intro .pi-layers {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: clamp(20px, 2vw, 36px);
+  margin-top: clamp(32px, 3vh, 56px);
+}
+
+.pulsar-intro .pi-layer {
+  padding: clamp(24px, 2.4vw, 36px);
+  border: var(--pi-rule-soft-paper);
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 1.2vh, 18px);
+  opacity: 0;
+}
+
+.pulsar-intro.pi-surface--ink .pi-layer {
+  border: var(--pi-rule-soft);
+}
+
+.pulsar-intro .pi-layer__tag {
+  font-family: var(--pi-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--pi-accent);
+}
+
+.pulsar-intro .pi-layer__name {
+  font-family: var(--pi-sans);
+  font-weight: 500;
+  font-size: clamp(24px, 2vw, 32px);
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.pulsar-intro .pi-layer__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--pi-mono);
+  font-size: clamp(13px, 1vw, 16px);
+  line-height: 1.7;
+}
+
+.pulsar-intro.pi-surface--ink .pi-layer__list {
+  color: var(--pi-text-on-ink-dim);
+}
+
+.pulsar-intro.pi-surface--paper .pi-layer__list {
+  color: var(--pi-text-on-paper-dim);
+}
+
+/* ---------- Outro try-list ---------- */
+
+.pulsar-intro .pi-tries {
+  display: grid;
+  gap: clamp(14px, 1.6vh, 22px);
+  margin-top: clamp(32px, 3vh, 48px);
+}
+
+.pulsar-intro .pi-try {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) 1fr;
+  gap: clamp(20px, 2vw, 36px);
+  align-items: baseline;
+  font-family: var(--pi-mono);
+  font-size: clamp(14px, 1.15vw, 18px);
+  opacity: 0;
+}
+
+.pulsar-intro .pi-try__url {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro .pi-try__desc {
+  font-family: var(--pi-sans);
+  font-size: clamp(15px, 1.2vw, 18px);
+}
+
+.pulsar-intro.pi-surface--ink .pi-try__desc {
+  color: var(--pi-text-on-ink-dim);
+}
+
+.pulsar-intro.pi-surface--paper .pi-try__desc {
+  color: var(--pi-text-on-paper-dim);
+}
+
+/* ---------- Misc emphasis ---------- */
+
+.pulsar-intro .pi-mark {
+  color: var(--pi-accent);
+}
+
+.pulsar-intro .pi-rule {
+  width: clamp(28px, 4vw, 56px);
+  height: 1px;
+  background: var(--pi-accent);
+  margin-bottom: clamp(20px, 2.5vh, 36px);
+  opacity: 0;
+}

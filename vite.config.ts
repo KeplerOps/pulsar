@@ -6,6 +6,7 @@ export default defineConfig({
   // other devices, not just localhost.
   server: {
     host: '0.0.0.0',
+    allowedHosts: ['red-dragon', '.tail18b785.ts.net'],
     port: 5173,
   },
   preview: {

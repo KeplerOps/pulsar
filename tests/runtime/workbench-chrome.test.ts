@@ -157,6 +157,36 @@ describe('createDomWorkbenchChrome (PUL-F031 / ADR-031)', () => {
     expect(element.removeCount()).toBe(0);
   });
 
+  it('forced visibility overrides mode mapping until cleared', () => {
+    const element = buildFakeElement();
+    const chrome = createDomWorkbenchChrome({
+      mount: () => undefined,
+      createSurface: () => element,
+    });
+    chrome.setForcedVisibility('hidden');
+    chrome.applyMode('present');
+    expect(element.attrs.get('data-pulsar-chrome-visibility')).toBe('hidden');
+    expect(element.isHidden()).toBe(true);
+
+    chrome.setForcedVisibility(null);
+    chrome.applyMode('present');
+    expect(element.attrs.get('data-pulsar-chrome-visibility')).toBe('visible');
+    expect(element.isHidden()).toBe(false);
+  });
+
+  it('sets and clears the composition-scoped atmosphere attribute', () => {
+    const element = buildFakeElement();
+    const chrome = createDomWorkbenchChrome({
+      mount: () => undefined,
+      createSurface: () => element,
+    });
+    chrome.setAtmosphere('cinematic');
+    expect(element.attrs.get('data-pulsar-chrome-atmosphere')).toBe('cinematic');
+
+    chrome.setAtmosphere(null);
+    expect(element.attrs.has('data-pulsar-chrome-atmosphere')).toBe(false);
+  });
+
   it('dispose removes the element from the workbench and silences subsequent applyMode calls', () => {
     const element = buildFakeElement();
     const chrome = createDomWorkbenchChrome({
@@ -173,6 +203,8 @@ describe('createDomWorkbenchChrome (PUL-F031 / ADR-031)', () => {
     const snapshot = new Map(element.attrs);
     const hiddenSnapshot = element.isHidden();
     chrome.applyMode('screenshot');
+    chrome.setForcedVisibility('hidden');
+    chrome.setAtmosphere('cinematic');
     expect(new Map(element.attrs)).toEqual(snapshot);
     expect(element.isHidden()).toBe(hiddenSnapshot);
   });

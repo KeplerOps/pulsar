@@ -55,8 +55,8 @@ import { describe, expect, it } from 'vitest';
 // line comment (with at least one non-whitespace character after the
 // colon) is intentionally excluded from the scan. The exemption is
 // line-scoped to keep approval narrow and visible in code review.
-// Exempted lines are determined by tokenizing the source through TS's
-// scanner so a marker hidden inside a string literal is NOT honored.
+// Exempted lines are determined from TS comment ranges attached to
+// AST nodes, so a marker hidden inside a string literal is NOT honored.
 
 interface SourceFinding {
   readonly file: string;
@@ -330,24 +330,27 @@ function isInTypePosition(node: ts.Node): boolean {
 function collectExemptedLines(sourceFile: ts.SourceFile): Set<number> {
   const exempted = new Set<number>();
   const text = sourceFile.text;
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    /*skipTrivia=*/ false,
-    ts.LanguageVariant.Standard,
-    text,
-  );
-  let token = scanner.scan();
-  while (token !== ts.SyntaxKind.EndOfFileToken) {
-    if (token === ts.SyntaxKind.SingleLineCommentTrivia) {
-      const tokenText = scanner.getTokenText();
+  const seen = new Set<number>();
+  const addRanges = (ranges: readonly ts.CommentRange[] | undefined): void => {
+    if (ranges === undefined) return;
+    for (const range of ranges) {
+      if (range.kind !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+      if (seen.has(range.pos)) continue;
+      seen.add(range.pos);
+      const tokenText = text.slice(range.pos, range.end);
       if (EXEMPT_REGEX.test(tokenText)) {
-        const start = scanner.getTokenStart();
-        const { line } = sourceFile.getLineAndCharacterOfPosition(start);
+        const { line } = sourceFile.getLineAndCharacterOfPosition(range.pos);
         exempted.add(line);
       }
     }
-    token = scanner.scan();
-  }
+  };
+  const visit = (node: ts.Node): void => {
+    addRanges(ts.getLeadingCommentRanges(text, node.pos));
+    addRanges(ts.getTrailingCommentRanges(text, node.end));
+    ts.forEachChild(node, visit);
+  };
+  addRanges(ts.getLeadingCommentRanges(text, 0));
+  visit(sourceFile);
   return exempted;
 }
 
@@ -924,6 +927,18 @@ describe('PUL-Q001 — screenshot determinism source scan', () => {
       it('honors an exemption on a `// PUL-Q001-allow:` marker after the forbidden call on the same line', () => {
         const findings = scanSourceForNonDeterminism(
           'setTimeout(work, 0); // PUL-Q001-allow: navigation idle scheduling, not captured',
+          'fake.ts',
+        );
+        expect(findings).toEqual([]);
+      });
+
+      it('honors a trailing exemption on a later source line', () => {
+        const findings = scanSourceForNonDeterminism(
+          [
+            'const a = 1;',
+            'crypto.getRandomValues(new Uint8Array(4)); // PUL-Q001-allow: non-render entropy',
+            'const b = 2;',
+          ].join('\n'),
           'fake.ts',
         );
         expect(findings).toEqual([]);

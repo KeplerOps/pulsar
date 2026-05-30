@@ -71,11 +71,27 @@ describe('createPresenterBridge', () => {
     expect(getPresenterSessionId(location)).toBe('generated-session-abcdef');
   });
 
+  it('uses getRandomValues when randomUUID is unavailable', async () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.set([
+          0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+          0xff,
+        ]);
+        return bytes;
+      },
+    });
+    const { getPresenterSessionId } = await importFreshBridge();
+    expect(getPresenterSessionId({ href: 'http://red-dragon:5174/?composition=demo' })).toBe(
+      '00112233445566778899aabbccddeeff',
+    );
+  });
+
   it('reports missing secure random support when no URL scope exists', async () => {
     vi.stubGlobal('crypto', {});
     const { getPresenterSessionId } = await importFreshBridge();
     expect(() => getPresenterSessionId({ href: 'https://pulsar.test/?composition=demo' })).toThrow(
-      'secure random presenter session id source is unavailable',
+      'secure random presenter session id source is unavailable: requires crypto.randomUUID or crypto.getRandomValues',
     );
   });
 

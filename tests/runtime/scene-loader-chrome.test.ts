@@ -1,9 +1,10 @@
 // Tests for the loader → chrome dispatch seam — PUL-F031 / ADR-031.
 //
 // The chrome controller is workbench-owned and built by `main.ts`; the
-// loader's only job is to call `chrome.applyMode(effectiveMode(target))`
-// once per navigation, before any lifecycle work, so chrome visibility
-// tracks the addressed workbench mode. These tests pin that seam:
+// loader's job is to apply the composition-scoped chrome policy, then
+// call `chrome.applyMode(effectiveMode(target))` once per navigation,
+// before any lifecycle work, so chrome visibility tracks the addressed
+// workbench mode. These tests pin that seam:
 //
 //   - Called exactly once per navigation with the effective mode.
 //   - Called BEFORE `scene.create(ctx)` so chrome is in place when
@@ -42,17 +43,33 @@ import {
 } from './scene-loader.helpers';
 
 interface RecordingChrome {
-  readonly chrome: { applyMode(mode: NavigationMode): void };
+  readonly chrome: {
+    applyMode(mode: NavigationMode): void;
+    setForcedVisibility(visibility: 'hidden' | null): void;
+    setAtmosphere(atmosphere: 'cinematic' | null): void;
+  };
   readonly calls: readonly NavigationMode[];
+  readonly forcedVisibilityCalls: readonly ('hidden' | null)[];
+  readonly atmosphereCalls: readonly ('cinematic' | null)[];
 }
 
 const recordingChrome = (): RecordingChrome => {
   const calls: NavigationMode[] = [];
+  const forcedVisibilityCalls: ('hidden' | null)[] = [];
+  const atmosphereCalls: ('cinematic' | null)[] = [];
   return {
     calls,
+    forcedVisibilityCalls,
+    atmosphereCalls,
     chrome: {
       applyMode: (mode) => {
         calls.push(mode);
+      },
+      setForcedVisibility: (visibility) => {
+        forcedVisibilityCalls.push(visibility);
+      },
+      setAtmosphere: (atmosphere) => {
+        atmosphereCalls.push(atmosphere);
       },
     },
   };
@@ -73,6 +90,96 @@ describe('createSceneLoader — chrome dispatch (PUL-F031 / ADR-031)', () => {
     });
 
     await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+    expect(rec.calls).toEqual(['present']);
+  });
+
+  it('clears composition-scoped chrome policy on an ordinary navigation before applying mode', async () => {
+    const rec = recordingChrome();
+    const scene = buildScene({ id: 'scene-a' });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      chrome: rec.chrome,
+    });
+
+    await loader.handle({ locator: { kind: 'scene', scene: 'scene-a' }, mode: 'present' });
+    expect(rec.forcedVisibilityCalls).toEqual([null]);
+    expect(rec.atmosphereCalls).toEqual([null]);
+    expect(rec.calls).toEqual(['present']);
+  });
+
+  it('applies head-entry cinematic atmosphere for an opted-in composition', async () => {
+    const rec = recordingChrome();
+    const scene = buildScene({ id: 'scene-a' });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([
+        {
+          id: 'cinematic-deck',
+          manifest: [{ id: 'scene-a', behavior: { chrome: { atmosphere: 'cinematic' } } }],
+        },
+      ]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      chrome: rec.chrome,
+    });
+
+    await loader.handle(compositionTarget('cinematic-deck'));
+    expect(rec.forcedVisibilityCalls).toEqual([null]);
+    expect(rec.atmosphereCalls).toEqual(['cinematic']);
+    expect(rec.calls).toEqual(['present']);
+  });
+
+  it('clears cinematic atmosphere when navigating from an opted-in deck to a normal deck', async () => {
+    const rec = recordingChrome();
+    const sceneA = buildScene({ id: 'scene-a' });
+    const sceneB = buildScene({ id: 'scene-b' });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([sceneA, sceneB]),
+      compositions: createCompositionRegistry([
+        {
+          id: 'cinematic-deck',
+          manifest: [{ id: 'scene-a', behavior: { chrome: { atmosphere: 'cinematic' } } }],
+        },
+        { id: 'normal-deck', manifest: ['scene-b'] },
+      ]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      chrome: rec.chrome,
+    });
+
+    await loader.handle(compositionTarget('cinematic-deck'));
+    await loader.handle(compositionTarget('normal-deck'));
+    expect(rec.atmosphereCalls).toEqual(['cinematic', null]);
+    expect(rec.calls).toEqual(['present', 'present']);
+  });
+
+  it("applies head-entry `chrome: 'hidden'` as a forced visibility override", async () => {
+    const rec = recordingChrome();
+    const scene = buildScene({ id: 'scene-a' });
+    const loader = createSceneLoader({
+      scenes: createSceneRegistry([scene]),
+      compositions: createCompositionRegistry([
+        { id: 'chromeless-deck', manifest: [{ id: 'scene-a', behavior: { chrome: 'hidden' } }] },
+      ]),
+      stage: buildStage().element,
+      buildCtx: stubCtx,
+      createPreloader: () => () => undefined,
+      timeline: noopTimeline,
+      chrome: rec.chrome,
+    });
+
+    await loader.handle(compositionTarget('chromeless-deck'));
+    expect(rec.forcedVisibilityCalls).toEqual(['hidden']);
+    expect(rec.atmosphereCalls).toEqual([null]);
     expect(rec.calls).toEqual(['present']);
   });
 
