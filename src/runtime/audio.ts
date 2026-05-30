@@ -820,10 +820,37 @@ const sameSpriteMap = (a: AudioSpriteMap | undefined, b: AudioSpriteMap | undefi
 };
 
 /**
+ * Validate one sprite-map entry (`name → [startMs, durationMs]` or
+ * `[startMs, durationMs, loop]`). Split per-entry so
+ * {@link assertSoundDefinition}'s sprite loop stays a flat iteration.
+ */
+function assertSpriteEntry(soundId: string, name: string, def: unknown): void {
+  if (name === '') {
+    throw new AudioSoundError(`audio sound "${soundId}" has a sprite with an empty name`);
+  }
+  if (!Array.isArray(def) || (def.length !== 2 && def.length !== 3)) {
+    throw new AudioSoundError(
+      `audio sound "${soundId}" sprite "${name}" must be [startMs, durationMs] or [startMs, durationMs, loop]`,
+    );
+  }
+  if (!isFiniteNumber(def[0]) || def[0] < 0 || !isFiniteNumber(def[1]) || def[1] < 0) {
+    throw new AudioRangeError(
+      `audio sound "${soundId}" sprite "${name}" offset and duration must be finite, non-negative milliseconds; got [${def[0]}, ${def[1]}]`,
+    );
+  }
+  if (def.length === 3 && typeof def[2] !== 'boolean') {
+    throw new AudioSoundError(
+      `audio sound "${soundId}" sprite "${name}" loop flag must be a boolean; got ${typeof def[2]}`,
+    );
+  }
+}
+
+/**
  * Validate the {@link SoundDefinition} payload shape at the runtime
  * boundary — scenes can be plain JS, so the static type does not hold.
- * `src` must be a string or array; `sprite` (if set) is validated by
- * {@link assertSpriteMap}.
+ * `src` must be a string or array; the optional `sprite` map (a field of
+ * the definition) is validated here too, so the whole definition payload
+ * passes through one boundary assert.
  */
 function assertSoundDefinition(
   soundId: string,
@@ -840,6 +867,14 @@ function assertSoundDefinition(
       `audio sound "${soundId}" "src" must be a string or array of strings`,
     );
   }
+  const sprite = (definition as { sprite?: unknown }).sprite;
+  if (sprite === undefined) return;
+  if (!isPlainRecord(sprite)) {
+    throw new AudioSoundError(
+      `audio sound "${soundId}" sprite map must be an object of name → [startMs, durationMs] or [startMs, durationMs, loop]`,
+    );
+  }
+  for (const [name, def] of Object.entries(sprite)) assertSpriteEntry(soundId, name, def);
 }
 
 /**
@@ -917,43 +952,6 @@ function assertPlayOptions(
     );
   }
 }
-
-/**
- * Validate a sprite map at the runtime boundary — scene modules can be
- * plain JS, so the {@link AudioSpriteMap} type guarantee does not hold.
- * Each entry must be `name → [startMs, durationMs]` or
- * `[startMs, durationMs, loop]` with finite, non-negative offsets and a
- * boolean loop flag. Throws {@link AudioSoundError} for a malformed
- * shape or name and {@link AudioRangeError} for an out-of-range offset
- * or duration.
- */
-const assertSpriteMap = (soundId: string, sprite: unknown): void => {
-  if (!isPlainRecord(sprite)) {
-    throw new AudioSoundError(
-      `audio sound "${soundId}" sprite map must be an object of name → [startMs, durationMs] or [startMs, durationMs, loop]`,
-    );
-  }
-  for (const [name, def] of Object.entries(sprite)) {
-    if (name === '') {
-      throw new AudioSoundError(`audio sound "${soundId}" has a sprite with an empty name`);
-    }
-    if (!Array.isArray(def) || (def.length !== 2 && def.length !== 3)) {
-      throw new AudioSoundError(
-        `audio sound "${soundId}" sprite "${name}" must be [startMs, durationMs] or [startMs, durationMs, loop]`,
-      );
-    }
-    if (!isFiniteNumber(def[0]) || def[0] < 0 || !isFiniteNumber(def[1]) || def[1] < 0) {
-      throw new AudioRangeError(
-        `audio sound "${soundId}" sprite "${name}" offset and duration must be finite, non-negative milliseconds; got [${def[0]}, ${def[1]}]`,
-      );
-    }
-    if (def.length === 3 && typeof def[2] !== 'boolean') {
-      throw new AudioSoundError(
-        `audio sound "${soundId}" sprite "${name}" loop flag must be a boolean; got ${typeof def[2]}`,
-      );
-    }
-  }
-};
 
 /**
  * Validate one audio source URL for a registration (a scene sound or
@@ -1326,8 +1324,11 @@ export function createAudioService(
     definition: SoundDefinition,
     allowedForSource: ReadonlySet<string> | null,
   ): AudioSoundHandle | undefined => {
+    // The sprite map is validated up front by `assertSoundDefinition`
+    // (the scene-facing `load` boundary); the composition bed carries no
+    // sprite. Both `registerSound` callers therefore reach here with a
+    // sprite that is either already validated or absent.
     const src = normalizeSources(key, definition.src, allowedForSource);
-    if (definition.sprite !== undefined) assertSpriteMap(key, definition.sprite);
     const existing = sounds.get(key);
     if (existing !== undefined) {
       // Idempotent re-registration of the same sound (e.g. a shared

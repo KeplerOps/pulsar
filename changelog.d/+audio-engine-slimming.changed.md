@@ -19,4 +19,8 @@ teardown; the composition bed is now registered through the same
 duplication is gone) under the reserved, non-kebab `composition audio
 bed` id, keeping it unreachable from `ctx.audio`; and the four
 per-option `assertPlayOption*` helpers were folded into a table-driven
-`assertPlayOptions`.
+`assertPlayOptions`. Sprite-map validation, a field of the sound
+definition, was folded into `assertSoundDefinition` so the whole
+definition payload passes one boundary assert (the standalone
+`assertSpriteMap` is gone); the throws scenes observe for a malformed
+sprite are unchanged.
