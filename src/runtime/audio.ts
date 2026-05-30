@@ -822,7 +822,8 @@ const sameSpriteMap = (a: AudioSpriteMap | undefined, b: AudioSpriteMap | undefi
 /**
  * Validate one sprite-map entry (`name → [startMs, durationMs]` or
  * `[startMs, durationMs, loop]`). Split per-entry so
- * {@link assertSoundDefinition}'s sprite loop stays a flat iteration.
+ * {@link assertSoundDefinition}'s sprite loop stays a flat iteration
+ * under the cognitive-complexity gate.
  */
 function assertSpriteEntry(soundId: string, name: string, def: unknown): void {
   if (name === '') {
@@ -847,10 +848,10 @@ function assertSpriteEntry(soundId: string, name: string, def: unknown): void {
 
 /**
  * Validate the {@link SoundDefinition} payload shape at the runtime
- * boundary — scenes can be plain JS, so the static type does not hold.
- * `src` must be a string or array; the optional `sprite` map (a field of
- * the definition) is validated here too, so the whole definition payload
- * passes through one boundary assert.
+ * boundary — scenes are repo-owned but author-fallible plain JS, so the
+ * static type does not hold. `src` must be a string or array; the
+ * optional `sprite` map (a field of the definition) is validated here
+ * too, so the whole definition passes one boundary assert.
  */
 function assertSoundDefinition(
   soundId: string,
@@ -1061,6 +1062,36 @@ function applyPlayToHandle(handle: AudioSoundHandle, opts: PlayOptions): number 
   return playId;
 }
 
+/**
+ * Register and start the composition audio bed (PUL-F014) through the
+ * shared {@link registerSound} core the scene-facing `load` uses — no
+ * separate engine call, no separate allowlist apparatus. The bed's
+ * source allowlist is its OWN declared `src`, so routing it through the
+ * shared core can never leak the bed URL into the scene-facing
+ * `ctx.audio.load()` allowlist. Hoisted out of `createAudioService` so
+ * that factory stays within the cognitive-complexity budget; the caller
+ * already screened `bedSuppressed` / abort. `register` returns the
+ * handle, or `undefined` for an idempotent re-registration (the bed is
+ * registered once per service, so this only no-ops a duplicate src).
+ */
+function startCompositionBed(
+  bed: AudioBedDeclaration,
+  register: (
+    key: string,
+    definition: SoundDefinition,
+    allowedForSource: ReadonlySet<string> | null,
+  ) => AudioSoundHandle | undefined,
+  assertGain: (value: number, what: string) => void,
+): void {
+  if (bed.volume !== undefined) assertGain(bed.volume, 'bed volume');
+  const allowed = new Set(typeof bed.src === 'string' ? [bed.src] : bed.src);
+  const handle = register(BED_SOUND_KEY, { src: bed.src }, allowed);
+  if (handle === undefined) return;
+  const playId = handle.play();
+  handle.loop(true, playId);
+  if (bed.volume !== undefined) handle.volume(bed.volume, playId);
+}
+
 export function createAudioService(
   engine: AudioEngine,
   options: AudioServiceOptions,
@@ -1135,10 +1166,19 @@ export function createAudioService(
       )}`,
     );
   }
-  // Engine sounds are constructed muted under both 'silent' and
-  // 'log-cues' — they share the no-audible-output structural defense.
-  // 'log-cues' adds an extra logging layer on top.
+  // Collapse the validated `outputPolicy` to its two orthogonal output
+  // axes once, here, so no method re-derives behavior from the string:
+  //
+  //   audible   → { muted: false, emitCues: false }
+  //   silent    → { muted: true,  emitCues: false }
+  //   log-cues  → { muted: true,  emitCues: true  }  (rehearsal)
+  //
+  //  - `muted` constructs every engine sound muted (the structural
+  //    no-audible-output defense `silent` and `log-cues` share).
+  //  - `emitCues` adds the rehearsal logging layer on top, gating the
+  //    `onCue` sink. A sink with `emitCues: false` is inert.
   const muted = outputPolicy !== 'audible';
+  const emitCues = outputPolicy === 'log-cues';
   const onError = options.onError ?? ((): void => undefined);
   const onCue = options.onCue;
   const assetPolicy = options.assetPolicy;
@@ -1187,7 +1227,7 @@ export function createAudioService(
     | Omit<AudioCueLogStop, 'sequence'>
     | Omit<AudioCueLogStopGroup, 'sequence'>;
   const emitCue = (entry: CueInput): void => {
-    if (outputPolicy !== 'log-cues' || onCue === undefined || disposed()) return;
+    if (!emitCues || onCue === undefined || disposed()) return;
     cueSequence += 1;
     // Deep-freeze (codex review, cycle 1): the contract says the cue
     // log is read-only. `Object.freeze` alone would leave nested
@@ -1513,41 +1553,29 @@ export function createAudioService(
     groups.clear();
   };
 
-  // Composition audio bed (PUL-F014): register it as a reserved sound id
-  // through the same `registerSound` core scene sounds use, then start
-  // it looping. The reserved key is deliberately NOT a kebab identifier,
-  // so the scene-facing `load` / `play` / `stop` (which run
-  // `assertSoundId`) can never name, collide with, or reach the bed —
-  // bed playback stays distinct from scene-owned `ctx.audio` playback,
-  // and the shared `sounds` map gives it `stopAll()` / abort teardown
-  // for free. The bed's membership allowlist is its OWN declared `src`
-  // (not the scene-facing `allowedSources`), so it is gated against the
-  // composition's bed declaration exactly as `scene.audio` gates scenes.
-  // Skipped when `bedSuppressed` is set (`mode=standalone` — the scene
-  // runs as if no surrounding composition existed), when no composition
-  // supplied a bed, or when the navigation was already aborted (no point
-  // starting a loop the abort below stops). No cue is emitted — the
-  // rehearsal cue log records scene-requested operations, and the bed is
-  // runtime infrastructure.
-  const startBed = (bed: AudioBedDeclaration): void => {
-    if (bed.volume !== undefined) assertGain(bed.volume, 'bed volume');
-    const bedAllowed: ReadonlySet<string> = new Set(
-      typeof bed.src === 'string' ? [bed.src] : bed.src,
-    );
-    const handle = registerSound(BED_SOUND_KEY, { src: bed.src }, bedAllowed);
-    if (handle === undefined) return;
-    const playId = handle.play();
-    handle.loop(true, playId);
-    if (bed.volume !== undefined) handle.volume(bed.volume, playId);
-  };
-
   // Wire the single teardown to the `lifecycle` gate BEFORE anything can
   // abort it, so both triggers — the per-navigation `options.signal` and
   // the public `stopAll()` — converge on one teardown that runs once.
   lifecycle.signal.addEventListener('abort', teardown, { once: true });
 
+  // Composition audio bed (PUL-F014): one looping source registered like
+  // any other sound — through the same `registerSound` core, into the
+  // same `sounds` map (so it gets `stopAll()` / abort teardown for
+  // free) — under the reserved {@link BED_SOUND_KEY}. That key is
+  // deliberately NOT a kebab identifier, so the scene-facing `load` /
+  // `play` / `stop` (which all run `assertSoundId`) can never name,
+  // collide with, or reach the bed: bed playback stays distinct from
+  // scene-owned `ctx.audio` playback. The bed's source allowlist is its
+  // OWN declared `src` (not the scene-facing `allowedSources`), so it is
+  // gated against the composition's bed declaration exactly as
+  // `scene.audio` gates scene sounds. Skipped when `bedSuppressed` is set
+  // (`mode=standalone` — the scene runs as if no surrounding composition
+  // existed), when no composition supplied a bed, or when the navigation
+  // was already aborted (no point starting a loop the abort below stops).
+  // No cue is emitted — the rehearsal cue log records scene-requested
+  // operations, and the bed is runtime infrastructure.
   if (options.bed !== undefined && options.bedSuppressed !== true && !options.signal.aborted) {
-    startBed(options.bed);
+    startCompositionBed(options.bed, registerSound, assertGain);
   }
 
   // Forward navigation abort into the gate. A pre-aborted navigation

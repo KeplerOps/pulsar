@@ -20,6 +20,19 @@
 // failure-path cleanup — testable against fakes while production
 // `main.ts` supplies real `document.createElement` and the `#stage`
 // element.
+//
+// Layering note: this adapter is deliberately NOT folded into the
+// `audio.ts` engine factory. `audio.ts` is the Howler PORT (a sound
+// factory + master-mute + `engine.unlock()`), the lowest audio layer,
+// with no DOM or navigation dependencies. This module is a
+// workbench-LAYER concern: it speaks `HTMLElement`/click gestures and
+// the loader's `AudioUnlockAdapter` / `AudioUnlockContext` navigation
+// types (defined in `scene-loader-guard.ts`). Folding it into the port
+// would pull DOM-gesture and loader-navigation types down into the
+// Howler boundary and couple `audio.ts` to `scene-loader-guard.ts` — a
+// layering inversion. The engine already exposes the only audio-port
+// primitive the gate needs (`unlock()`); the gesture choreography that
+// drives it belongs at the workbench layer next to the chrome adapter.
 
 import type { AudioUnlockAdapter, AudioUnlockContext } from './scene-loader';
 
