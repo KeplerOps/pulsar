@@ -377,7 +377,7 @@ const quoteId = (id: string): string => `"${id}"`;
  * preflight time so the resolver is immune to caller-owned manifest
  * mutations performed inside lifecycle callbacks.
  */
-interface PlanStep {
+export interface PlanStep {
   readonly scene: SceneModule;
   readonly range: SubRange | undefined;
   readonly behavior: BehaviorOverride | undefined;
@@ -439,7 +439,7 @@ function throwIfAborted(signal: AbortSignal | undefined, detail: string): void {
  * ids into one error before any side effect (friendlier than
  * fail-on-first — a manifest author fixes every typo in one pass).
  */
-function buildPlan(
+export function buildPlan(
   manifest: CompositionManifest,
   registry: SceneRegistry,
   ctxFor: (activation: SceneActivation) => unknown,
@@ -529,7 +529,7 @@ function buildSceneFailure(
  *    `onSceneFailed` was supplied. Without that distinction a workbench
  *    hook bug becomes silently swallowed under PUL-F029.
  */
-interface FailureBucket {
+export interface FailureBucket {
   readonly sceneFailureErrors: Error[];
   readonly hookErrors: Error[];
 }
@@ -551,7 +551,7 @@ interface FailureBucket {
  * final aggregate just like an `onSceneCleaned` hook throw — same
  * "workbench bug, not a scene failure" contract (codex review, cycle 2).
  */
-interface LifecycleContext {
+export interface LifecycleContext {
   readonly signal: AbortSignal | undefined;
   readonly onSceneCleaned: ((activation: SceneActivation) => void) | undefined;
   readonly bucket: FailureBucket;
@@ -564,7 +564,7 @@ const FAILURE_DETAIL: Record<SceneFailurePhase, string> = {
   cleanup: 'cleanup',
 };
 
-function buildLifecycleContext(
+export function buildLifecycleContext(
   signal: AbortSignal | undefined,
   onSceneCleaned: ((activation: SceneActivation) => void) | undefined,
   onSceneFailed: ((event: SceneFailureEvent) => void) | undefined,
@@ -767,7 +767,7 @@ async function cleanupAll(mounted: readonly PlanStep[], lc: LifecycleContext): P
  *    checkpoint / manifest / registry-miss / adapter `run` rejection)
  *    threw; `error` is the already-wrapped value to re-raise.
  */
-type LifecycleOutcome =
+export type LifecycleOutcome =
   | { readonly kind: 'completed' }
   | { readonly kind: 'aborted'; readonly reason: unknown }
   | { readonly kind: 'phase-error'; readonly error: unknown };
@@ -853,22 +853,25 @@ function finalize(outcome: LifecycleOutcome, bucket: FailureBucket, aggregateSce
 }
 
 /**
- * The bare composition lifecycle engine: validate → build the plan →
- * mount-all → compose-master → play → cleanup-all (reverse), per the
- * module header (ADR-025). It is GSAP-free, fans NOTHING out, and makes
- * no aggregate-vs-reraise decision — every per-scene failure it
- * encounters flows through `lc.reportFailure` (which the caller wires)
- * and every composition-wide failure surfaces as a returned
- * {@link LifecycleOutcome}. That keeps the orchestrator testable bare:
- * a test can drive it with a plain collecting `reportFailure` and assert
- * the cleanup-exactly-once-per-activation and lifecycle-order invariants
- * without the `onSceneFailed` / `AggregateError` selection layered on by
- * {@link withFailureIsolation}.
+ * The bare composition lifecycle engine: mount-all → compose-master →
+ * play → cleanup-all (reverse), per the module header (ADR-025). It is
+ * GSAP-free, fans NOTHING out, and makes no aggregate-vs-reraise
+ * decision — every per-scene failure it encounters flows through
+ * `lc.reportFailure` (which the caller wires) and every composition-wide
+ * failure surfaces as a returned {@link LifecycleOutcome}. That keeps the
+ * orchestrator testable bare: a test can drive it with a plain collecting
+ * `reportFailure` and assert the cleanup-exactly-once-per-activation and
+ * lifecycle-order invariants without the `onSceneFailed` / `AggregateError`
+ * selection layered on by {@link withFailureIsolation}.
+ *
+ * Exported (not part of the module's narrow public surface — see
+ * {@link resolveComposition}) so the bare engine can be driven directly
+ * in tests; `withFailureIsolation` is the only production caller.
  *
  * The cleanup phase ALWAYS runs (every failure path included) before the
  * outcome is returned — the caller never has to remember to clean up.
  */
-async function runLifecycle(
+export async function runLifecycle(
   plan: readonly PlanStep[],
   preloadAssets: AssetPreloader,
   timeline: CompositionTimelineAdapter,
@@ -929,15 +932,91 @@ function runOptionsFrom(options: ResolveCompositionOptions): CompositionTimeline
 }
 
 /**
+ * The bare composition orchestrator: validate the boundary contracts,
+ * build the immutable plan, and drive {@link runLifecycle} with the
+ * caller-supplied {@link LifecycleContext}. It returns the raw
+ * {@link LifecycleOutcome} and makes NO aggregate-vs-reraise decision —
+ * that selection is the {@link withFailureIsolation} decorator's job.
+ *
+ * Separated out so the orchestrator is testable bare: a test can wire a
+ * plain collecting `reportFailure` into the `lc` and assert the
+ * lifecycle-order / cleanup-exactly-once invariants without the
+ * `onSceneFailed` fan-out and `AggregateError` selection on top.
+ */
+async function orchestrate(
+  options: ResolveCompositionOptions,
+  lc: LifecycleContext,
+): Promise<LifecycleOutcome> {
+  const { registry, manifest, preloadAssets, timeline, signal } = options;
+
+  // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
+  // silently lose the missing-label diagnostic the adapter is
+  // contracted to surface — fail fast at the boundary, with the
+  // documented `composition resolution failed:` envelope.
+  if (options.headBeat !== undefined && options.onBeatMissing === undefined) {
+    throw fail(
+      '"onBeatMissing" is required when "headBeat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
+      undefined,
+    );
+  }
+
+  assertCompositionManifest(manifest);
+  const plan = buildPlan(manifest, registry, options.ctx);
+
+  // Pre-start abort: nothing was touched, so this needs no cleanup.
+  throwIfAborted(signal, 'aborted before the composition started');
+
+  return runLifecycle(plan, preloadAssets, timeline, runOptionsFrom(options), lc);
+}
+
+/**
+ * Scene-failure-isolation decorator (PUL-F029 / ADR-028, clause d) over
+ * the bare {@link orchestrate} engine. Wrapping the engine — rather than
+ * inlining the isolation in {@link resolveComposition} — keeps the
+ * orchestrator testable bare (drive {@link runLifecycle} / {@link orchestrate}
+ * directly with a plain collecting `reportFailure`) while this layer owns
+ * exactly the isolation concern:
+ *
+ *  - It owns the {@link FailureBucket}: per-scene failures and workbench
+ *    hook throws collect here.
+ *  - It wraps `onSceneFailed` ONCE (in {@link buildLifecycleContext}) — the
+ *    defensive try/catch that keeps a throwing diagnostic sink from
+ *    breaking the cleanup-then-continue invariant — instead of per call.
+ *  - It routes the engine's {@link LifecycleOutcome} through
+ *    {@link finalize}, which makes the single aggregate-vs-reraise
+ *    decision from whether `onSceneFailed` was supplied.
+ *
+ * The returned function has the public resolver signature, so the
+ * decorator IS the resolver entry point (exported as
+ * {@link resolveComposition}).
+ */
+function withFailureIsolation(
+  engine: (options: ResolveCompositionOptions, lc: LifecycleContext) => Promise<LifecycleOutcome>,
+): (options: ResolveCompositionOptions) => Promise<void> {
+  return async (options) => {
+    // PUL-F029 / ADR-028: per-scene failures and hook throws collect into
+    // one bucket. `reportFailure` (built here, ONCE) fans scene failures
+    // out through `onSceneFailed` when wired; the aggregate-vs-reraise
+    // selection in `finalize` keys off whether it was wired.
+    const bucket: FailureBucket = { sceneFailureErrors: [], hookErrors: [] };
+    const lc = buildLifecycleContext(
+      options.signal,
+      options.onSceneCleaned,
+      options.onSceneFailed,
+      bucket,
+    );
+    const outcome = await engine(options, lc);
+    finalize(outcome, bucket, options.onSceneFailed === undefined);
+  };
+}
+
+/**
  * Resolves and plays `manifest` against `registry` using the lifecycle
  * in the module header (mount-all → compose-master → play → cleanup-all,
- * ADR-025).
- *
- * This is the scene-failure-isolation decorator over {@link runLifecycle}:
- * it owns the failure bucket, wraps `onSceneFailed` ONCE (the defensive
- * try/catch that keeps a throwing diagnostic sink from breaking
- * cleanup-then-continue), runs the bare engine, and routes the result
- * through {@link finalize}.
+ * ADR-025). Composed as {@link withFailureIsolation} over the bare
+ * {@link orchestrate} engine: the engine runs the lifecycle and returns a
+ * {@link LifecycleOutcome}; the decorator owns the failure bucket, the
+ * once-wrapped `onSceneFailed`, and the aggregate-vs-reraise routing.
  *
  * Failure semantics (PUL-F029 / ADR-028):
  *  - A failing `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)` is a
@@ -968,33 +1047,5 @@ function runOptionsFrom(options: ResolveCompositionOptions): CompositionTimeline
  *    aggregate. `onSceneCleaned` / `onSceneFailed` hook throws (workbench
  *    bugs — not scene failures) ALWAYS aggregate.
  */
-export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
-  const { registry, manifest, preloadAssets, timeline, signal } = options;
-
-  // PUL-F011 / ADR-015: a `headBeat` without an `onBeatMissing` would
-  // silently lose the missing-label diagnostic the adapter is
-  // contracted to surface — fail fast at the boundary, with the
-  // documented `composition resolution failed:` envelope.
-  if (options.headBeat !== undefined && options.onBeatMissing === undefined) {
-    throw fail(
-      '"onBeatMissing" is required when "headBeat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
-      undefined,
-    );
-  }
-
-  assertCompositionManifest(manifest);
-  const plan = buildPlan(manifest, registry, options.ctx);
-
-  // Pre-start abort: nothing was touched, so this needs no cleanup.
-  throwIfAborted(signal, 'aborted before the composition started');
-
-  // PUL-F029 / ADR-028: per-scene failures and hook throws collect into
-  // one bucket. `reportFailure` (built here, ONCE) fans scene failures
-  // out through `onSceneFailed` when wired; the aggregate-vs-reraise
-  // selection below keys off whether it was wired.
-  const bucket: FailureBucket = { sceneFailureErrors: [], hookErrors: [] };
-  const lc = buildLifecycleContext(signal, options.onSceneCleaned, options.onSceneFailed, bucket);
-
-  const outcome = await runLifecycle(plan, preloadAssets, timeline, runOptionsFrom(options), lc);
-  finalize(outcome, bucket, options.onSceneFailed === undefined);
-}
+export const resolveComposition: (options: ResolveCompositionOptions) => Promise<void> =
+  withFailureIsolation(orchestrate);

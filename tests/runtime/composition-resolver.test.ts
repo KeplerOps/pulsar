@@ -15,10 +15,17 @@ import type { CompositionManifest } from '../../src/runtime/composition';
 import {
   type CompositionTimelineAdapter,
   type CompositionTimelineRunOptions,
+  type FailureBucket,
+  type LifecycleContext,
+  type PlanStep,
   type SceneActivation,
   type SceneFailureEvent,
+  type SceneFailurePhase,
   type SceneTimelineSegment,
+  buildLifecycleContext,
+  buildPlan,
   resolveComposition,
+  runLifecycle,
 } from '../../src/runtime/composition-resolver';
 import { createSceneRegistry } from '../../src/runtime/registry';
 import type { SceneLifecycleFn, SceneModule } from '../../src/runtime/scene';
@@ -1337,5 +1344,133 @@ describe('resolveComposition — cleanup-exactly-once + error routing on every f
       // throw, intro#1 cleaned at the end. Exactly one cleanup per occurrence.
       expect(log.filter((l) => l === 'cleanup:intro')).toHaveLength(2);
     });
+  });
+});
+
+describe('runLifecycle — bare engine (no onSceneFailed / AggregateError layer)', () => {
+  // The bare engine is driven directly here — NOT through resolveComposition
+  // — with a plain collecting `reportFailure`. This proves clause (d)'s
+  // objective: the orchestrator is testable bare, so the lifecycle-order
+  // and cleanup-exactly-once invariants can be asserted without the
+  // scene-failure-isolation decorator's fan-out / aggregate selection.
+
+  /** A bare `LifecycleContext` whose `reportFailure` just collects into an array. */
+  const bareContext = (
+    onSceneCleaned?: (a: SceneActivation) => void,
+  ): {
+    lc: LifecycleContext;
+    reported: { phase: SceneFailurePhase; step: PlanStep; cause: unknown }[];
+    bucket: FailureBucket;
+  } => {
+    const reported: { phase: SceneFailurePhase; step: PlanStep; cause: unknown }[] = [];
+    const bucket: FailureBucket = { sceneFailureErrors: [], hookErrors: [] };
+    const lc: LifecycleContext = {
+      signal: undefined,
+      onSceneCleaned,
+      bucket,
+      reportFailure: (phase, step, cause) => reported.push({ phase, step, cause }),
+    };
+    return { lc, reported, bucket };
+  };
+
+  const plan = (scenes: readonly SceneModule[], ctx: unknown = {}): readonly PlanStep[] =>
+    buildPlan(
+      scenes.map((s) => s.id),
+      createSceneRegistry([...scenes]),
+      () => ctx,
+    );
+
+  it('drives mount → compose → run → reverse cleanup and returns "completed"', async () => {
+    const log: string[] = [];
+    const { adapter } = recordingTimeline({ kind: 'resolve' }, log);
+    const { lc, reported } = bareContext();
+    const outcome = await runLifecycle(
+      plan([recordingScene('a', log), recordingScene('b', log)]),
+      () => undefined,
+      adapter,
+      {},
+      lc,
+    );
+    expect(outcome).toEqual({ kind: 'completed' });
+    expect(log).toEqual([
+      'create:a',
+      'create:b',
+      'timeline:a',
+      'timeline:b',
+      'run',
+      'cleanup:b',
+      'cleanup:a',
+    ]);
+    expect(reported).toEqual([]);
+  });
+
+  it('routes a create throw through the bare reportFailure and still cleans up exactly once', async () => {
+    const log: string[] = [];
+    const a = scene('a', {
+      create: () => {
+        log.push('create:a');
+        throw new Error('a boom');
+      },
+      cleanup: () => log.push('cleanup:a'),
+    });
+    const { lc, reported, bucket } = bareContext();
+    const outcome = await runLifecycle(
+      plan([a, recordingScene('b', log)]),
+      () => undefined,
+      recordingTimeline({ kind: 'resolve' }, log).adapter,
+      {},
+      lc,
+    );
+    expect(outcome).toEqual({ kind: 'completed' });
+    // The bare engine fanned the failure ONLY through `reportFailure`; it
+    // made no aggregate decision and the bucket stays untouched (the
+    // collecting stub did not write to it).
+    expect(reported.map((r) => `${r.step.scene.id}:${r.phase}`)).toEqual(['a:create']);
+    expect(bucket.sceneFailureErrors).toEqual([]);
+    // a eager-cleaned once on its create throw; b ran its full lifecycle.
+    expect(log.filter((l) => l.startsWith('cleanup:'))).toEqual(['cleanup:a', 'cleanup:b']);
+  });
+
+  it('surfaces an adapter run rejection as a "phase-error" outcome after cleanup', async () => {
+    const log: string[] = [];
+    const boom = new Error('adapter boom');
+    const { lc } = bareContext();
+    const outcome = await runLifecycle(
+      plan([recordingScene('a', log)]),
+      () => undefined,
+      recordingTimeline({ kind: 'reject', error: boom }, log).adapter,
+      {},
+      lc,
+    );
+    expect(outcome.kind).toBe('phase-error');
+    if (outcome.kind === 'phase-error') {
+      expect((outcome.error as Error).cause).toBe(boom);
+    }
+    // Cleanup still ran for the mounted scene.
+    expect(log).toContain('cleanup:a');
+  });
+
+  it('reports an "aborted" outcome when the signal aborts during a parked run', async () => {
+    const log: string[] = [];
+    const controller = new AbortController();
+    const reason = new Error('superseded');
+    const { reported } = bareContext();
+    const lc = buildLifecycleContext(controller.signal, undefined, undefined, {
+      sceneFailureErrors: [],
+      hookErrors: [],
+    });
+    const promise = runLifecycle(
+      plan([recordingScene('a', log)]),
+      () => undefined,
+      recordingTimeline({ kind: 'park' }, log).adapter,
+      { signal: controller.signal },
+      lc,
+    );
+    await flushMicrotasks();
+    controller.abort(reason);
+    const outcome = await promise;
+    expect(outcome).toEqual({ kind: 'aborted', reason });
+    expect(log).toContain('cleanup:a');
+    expect(reported).toEqual([]);
   });
 });
