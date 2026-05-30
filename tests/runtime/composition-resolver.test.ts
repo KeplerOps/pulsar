@@ -1173,3 +1173,169 @@ describe('resolveComposition — PUL-F029 scene-level error isolation', () => {
     expect(failed).toEqual([]);
   });
 });
+
+// The two most fragile invariants of the lifecycle, exercised on EVERY
+// failure path with BOTH error-routing wirings (onSceneFailed supplied /
+// omitted):
+//   1. cleanup runs EXACTLY ONCE per scene activation;
+//   2. the AggregateError-vs-onSceneFailed selection — a supplied
+//      callback isolates the failing scene and the resolver resolves;
+//      an omitted callback isolates mid-flight but aggregates at the end.
+// The cases parameterize over the wiring so the symmetry is mechanical
+// and a regression on either path fails loudly.
+describe('resolveComposition — cleanup-exactly-once + error routing on every failure path', () => {
+  /**
+   * A scene whose `create` / `timeline` / `cleanup` push
+   * `<phase>:<id>#<n>` into `log`, where `<n>` is the per-occurrence call
+   * ordinal for that phase. Lets a test assert exactly-once cleanup per
+   * activation by counting `cleanup:<id>#<n>` lines.
+   */
+  const occScene = (id: string, log: string[], throwIn?: 'create' | 'timeline' | 'cleanup') => {
+    const counters = { create: 0, timeline: 0, cleanup: 0 };
+    const step = (phase: 'create' | 'timeline' | 'cleanup'): void => {
+      const n = counters[phase];
+      counters[phase] += 1;
+      log.push(`${phase}:${id}#${n}`);
+      if (throwIn === phase) throw new Error(`${id} ${phase} boom`);
+    };
+    return scene(id, {
+      create: () => step('create'),
+      timeline: () => {
+        step('timeline');
+        return null;
+      },
+      cleanup: () => step('cleanup'),
+    });
+  };
+
+  const cleanupLines = (log: readonly string[]): string[] =>
+    log.filter((l) => l.startsWith('cleanup:'));
+
+  describe.each([
+    { wired: true, label: 'onSceneFailed supplied' },
+    { wired: false, label: 'onSceneFailed omitted' },
+  ])('$label', ({ wired }) => {
+    const sink = (
+      events: SceneFailureEvent[],
+    ): { onSceneFailed?: (e: SceneFailureEvent) => void } =>
+      wired ? { onSceneFailed: (e) => events.push(e) } : {};
+
+    it('create-throw: failing scene cleaned exactly once, sibling runs, routing correct', async () => {
+      const log: string[] = [];
+      const events: SceneFailureEvent[] = [];
+      const promise = run({
+        scenes: [occScene('a', log, 'create'), occScene('b', log)],
+        manifest: ['a', 'b'],
+        ...sink(events),
+      });
+      if (wired) {
+        await promise;
+        expect(events.map((e) => `${e.sceneId}:${e.phase}`)).toEqual(['a:create']);
+      } else {
+        const err = await promise.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AggregateError);
+      }
+      // a: create throws → eager cleanup once. b: full lifecycle, cleaned once.
+      expect(cleanupLines(log)).toEqual(['cleanup:a#0', 'cleanup:b#0']);
+    });
+
+    it('timeline-throw: failing scene cleaned exactly once, sibling runs, routing correct', async () => {
+      const log: string[] = [];
+      const events: SceneFailureEvent[] = [];
+      const promise = run({
+        scenes: [occScene('a', log, 'timeline'), occScene('b', log)],
+        manifest: ['a', 'b'],
+        ...sink(events),
+      });
+      if (wired) {
+        await promise;
+        expect(events.map((e) => `${e.sceneId}:${e.phase}`)).toEqual(['a:timeline']);
+      } else {
+        const err = await promise.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AggregateError);
+      }
+      // a: timeline throws → eager cleanup once (in mount order, before b's
+      // final cleanup). b: cleaned once.
+      expect(cleanupLines(log)).toEqual(['cleanup:a#0', 'cleanup:b#0']);
+    });
+
+    it('cleanup-throw: failing scene still cleaned exactly once, routing correct', async () => {
+      const log: string[] = [];
+      const events: SceneFailureEvent[] = [];
+      const promise = run({
+        scenes: [occScene('a', log, 'cleanup'), occScene('b', log)],
+        manifest: ['a', 'b'],
+        ...sink(events),
+      });
+      if (wired) {
+        await promise;
+        expect(events.map((e) => `${e.sceneId}:${e.phase}`)).toEqual(['a:cleanup']);
+      } else {
+        const err = await promise.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AggregateError);
+      }
+      // Reverse-order final cleanup: b then a. a's throwing cleanup ran once.
+      expect(cleanupLines(log)).toEqual(['cleanup:b#0', 'cleanup:a#0']);
+    });
+
+    it('abort-mid-mount: mounted scene cleaned exactly once, next never touched', async () => {
+      const log: string[] = [];
+      const events: SceneFailureEvent[] = [];
+      const controller = new AbortController();
+      const a = scene('a', {
+        create: async () => {
+          log.push('create:a#0');
+          controller.abort();
+          await flushMicrotasks();
+        },
+        cleanup: () => log.push('cleanup:a#0'),
+      });
+      const err = await run({
+        scenes: [a, occScene('b', log)],
+        manifest: ['a', 'b'],
+        signal: controller.signal,
+        ...sink(events),
+      }).catch((e: unknown) => e);
+      // Abort is a composition-wide failure (NOT a scene failure): routing
+      // is identical on both wirings — the abort wrapper re-raises and
+      // onSceneFailed is never invoked.
+      expect((err as Error).message).toContain('aborted after mounting "a"');
+      expect(events).toEqual([]);
+      // a mounted → cleaned exactly once; b never preloaded/created/cleaned.
+      expect(cleanupLines(log)).toEqual(['cleanup:a#0']);
+      expect(log).toEqual(['create:a#0', 'cleanup:a#0']);
+    });
+
+    it('repeated-id with one occurrence failing: each occurrence cleaned exactly once', async () => {
+      // One scene module, referenced twice; the FIRST occurrence's create
+      // throws. The failing occurrence is isolated (eager cleanup) and the
+      // sibling occurrence runs its full lifecycle — each activation is
+      // cleaned exactly once.
+      const log: string[] = [];
+      const events: SceneFailureEvent[] = [];
+      let createCalls = 0;
+      const intro = scene('intro', {
+        create: () => {
+          const occurrence = createCalls;
+          createCalls += 1;
+          log.push(`create:intro#${occurrence}`);
+          if (occurrence === 0) throw new Error('first intro boom');
+        },
+        timeline: () => null,
+        cleanup: () => log.push('cleanup:intro'),
+      });
+      const promise = run({ scenes: [intro], manifest: ['intro', 'intro'], ...sink(events) });
+      if (wired) {
+        await promise;
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ sceneId: 'intro', occurrence: 0, phase: 'create' });
+      } else {
+        const err = await promise.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(AggregateError);
+      }
+      // Two activations, two cleanups: intro#0 eager-cleaned on its create
+      // throw, intro#1 cleaned at the end. Exactly one cleanup per occurrence.
+      expect(log.filter((l) => l === 'cleanup:intro')).toHaveLength(2);
+    });
+  });
+});

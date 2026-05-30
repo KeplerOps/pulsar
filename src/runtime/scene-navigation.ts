@@ -382,76 +382,89 @@ function buildCompositionContext(
   };
 }
 
-function resolveCompositionFromStart(
-  compositionId: string,
-  scenes: SceneRegistry,
-  compositions: CompositionRegistry,
-): SceneNavigationCompositionContext {
-  const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
-  if (manifest.length === 0) {
-    fail(`composition "${compositionId}" is empty — no scene to navigate to`);
-  }
-  const manifestSlice = sliceManifestFromIndex(manifest, 0);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, 0, scenes, compositionId);
-  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, 0, audioBed);
-}
+/**
+ * Locate the addressed entry's start index in `manifest` for the three
+ * composition locator kinds, applying each kind's own validation
+ * (ADR-013 / ADR-014). The three differ ONLY in how they choose the
+ * slice start; the slice / snapshot / context-build that follows
+ * (`resolveCompositionContext`) is shared.
+ *
+ *  - `from-start` — slice from index 0; an empty manifest has no scene
+ *    to navigate to.
+ *  - `scene` — the single unambiguous occurrence of `scene`. Zero
+ *    occurrences is a non-member error; two or more make
+ *    `composition+scene` ambiguous and require `composition+index`
+ *    (without the count check `findIndex` would silently pick the first
+ *    match, loading a slice that may not match what the URL named —
+ *    especially when occurrences carry different `range` / `behavior`
+ *    overrides).
+ *  - `index` — re-validate the index invariants PUL-F007's parser
+ *    already enforces. `NavigationTarget` is exported, so a non-parser
+ *    caller could supply a negative / non-integer index; without this
+ *    `manifest.slice(-1)` would silently load the last scene when the
+ *    URL claimed `index=-1`.
+ */
+type CompositionLocation =
+  | { readonly kind: 'from-start' }
+  | { readonly kind: 'scene'; readonly scene: string }
+  | { readonly kind: 'index'; readonly index: number };
 
-function resolveCompositionAndScene(
+function findStartIndex(
+  manifest: CompositionManifest,
   compositionId: string,
-  sceneId: string,
-  scenes: SceneRegistry,
-  compositions: CompositionRegistry,
-): SceneNavigationCompositionContext {
-  const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
-  // Walk the whole manifest once: a single occurrence is the
-  // unambiguous slice start; zero occurrences is a non-member error;
-  // two or more occurrences make `composition+scene` ambiguous and
-  // require `composition+index` per ADR-013. Without the count check,
-  // `findIndex` silently picks the first match and a later occurrence
-  // (especially with different `range` / `behavior` overrides) loads
-  // a slice that does not match what the URL named.
+  location: CompositionLocation,
+): number {
+  if (location.kind === 'from-start') {
+    if (manifest.length === 0) {
+      fail(`composition "${compositionId}" is empty — no scene to navigate to`);
+    }
+    return 0;
+  }
+  if (location.kind === 'index') {
+    const { index } = location;
+    if (!Number.isInteger(index) || index < 0 || index >= manifest.length) {
+      fail(
+        `index ${index} is out of range for composition "${compositionId}" (size ${manifest.length})`,
+      );
+    }
+    return index;
+  }
   let startIndex = -1;
   let count = 0;
   for (const [index, entry] of manifest.entries()) {
-    if (entryId(entry) === sceneId) {
+    if (entryId(entry) === location.scene) {
       if (startIndex < 0) startIndex = index;
       count += 1;
     }
   }
   if (count === 0) {
-    fail(`scene "${sceneId}" is not a member of composition "${compositionId}"`);
+    fail(`scene "${location.scene}" is not a member of composition "${compositionId}"`);
   }
   if (count > 1) {
     fail(
-      `scene "${sceneId}" appears ${count} times in composition "${compositionId}" — use composition+index for ambiguous locators`,
+      `scene "${location.scene}" appears ${count} times in composition "${compositionId}" — use composition+index for ambiguous locators`,
     );
   }
-  const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
-  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, startIndex, audioBed);
+  return startIndex;
 }
 
-function resolveCompositionAndIndex(
+/**
+ * Resolve a composition locator into its {@link SceneNavigationCompositionContext}:
+ * look the composition up, pick the addressed start index per
+ * `location`, then snapshot the slice + scene modules. One path for all
+ * three composition locator kinds.
+ */
+function resolveCompositionContext(
   compositionId: string,
-  index: number,
+  location: CompositionLocation,
   scenes: SceneRegistry,
   compositions: CompositionRegistry,
 ): SceneNavigationCompositionContext {
   const { manifest, audioBed } = resolveRegisteredComposition(compositionId, compositions);
-  // Re-validate the index invariants PUL-F007's parser already
-  // enforces. `NavigationTarget` is an exported type and a non-parser
-  // caller (event-detail unmarshaling, future test harness, etc.)
-  // could supply a negative or non-integer index. Without this
-  // re-check, `manifest.slice(-1)` would silently load the last scene
-  // when the URL claimed `index=-1`.
-  if (!Number.isInteger(index) || index < 0 || index >= manifest.length) {
-    fail(
-      `index ${index} is out of range for composition "${compositionId}" (size ${manifest.length})`,
-    );
-  }
-  const manifestSlice = sliceManifestFromIndex(manifest, index);
-  const sceneSlice = snapshotSceneSlice(manifestSlice, index, scenes, compositionId);
-  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, index, audioBed);
+  const startIndex = findStartIndex(manifest, compositionId, location);
+  const manifestSlice = sliceManifestFromIndex(manifest, startIndex);
+  const sceneSlice = snapshotSceneSlice(manifestSlice, startIndex, scenes, compositionId);
+  return buildCompositionContext(compositionId, manifestSlice, sceneSlice, startIndex, audioBed);
 }
 
 /**
@@ -553,22 +566,27 @@ export function resolveSceneNavigation(
       return { scene: scenes.get(locator.scene) };
     }
     case 'composition': {
-      const composition = resolveCompositionFromStart(locator.composition, scenes, compositions);
+      const composition = resolveCompositionContext(
+        locator.composition,
+        { kind: 'from-start' },
+        scenes,
+        compositions,
+      );
       return { scene: composition.sceneSlice[0] as SceneModule, composition };
     }
     case 'composition-scene': {
-      const composition = resolveCompositionAndScene(
+      const composition = resolveCompositionContext(
         locator.composition,
-        locator.scene,
+        { kind: 'scene', scene: locator.scene },
         scenes,
         compositions,
       );
       return { scene: composition.sceneSlice[0] as SceneModule, composition };
     }
     case 'composition-index': {
-      const composition = resolveCompositionAndIndex(
+      const composition = resolveCompositionContext(
         locator.composition,
-        locator.index,
+        { kind: 'index', index: locator.index },
         scenes,
         compositions,
       );
@@ -685,52 +703,48 @@ export async function loadSceneNavigationTarget(
 
 /**
  * Build the {@link ResolveCompositionOptions} the bridge hands to the
- * resolver. Each optional input is spread only when supplied so a
- * resolver that branches on `'<key>' in opts` sees absent rather than
- * `undefined` — same idiom as the resolver's own `buildRunOptions`.
- * Hoisted out of `loadSceneNavigationTarget` so the latter stays
- * within Sonar's cognitive-complexity budget (S3776). Per ADR-015 /
- * ADR-018 / ADR-019 / ADR-020 / ADR-021 / ADR-023 / ADR-004 / ADR-028
- * each option is independent and gets its own conditional spread;
- * `onBeatMissing` is the only paired surface (it's meaningless without
- * `beat`), and `onPresenterError` is similarly paired with `presenter`.
+ * resolver. The bridge's input names (`beat` / `repeat` / `hold` /
+ * `cueGate` / `screenshot`) map onto the resolver's head-scoped names
+ * (`headBeat` / `headRepeat` / `headHold` / `headCueGate` /
+ * `headScreenshot`); `audioCueGate` / `onSceneCleaned` / `onSceneFailed`
+ * pass through unchanged. Absent keys are dropped so a resolver that
+ * branches on `'<key>' in opts` sees absent rather than `undefined`
+ * (and to keep the forwarded object minimal). Hoisted out of
+ * `loadSceneNavigationTarget` so the latter stays within Sonar's
+ * cognitive-complexity budget (S3776). `onBeatMissing` / `onPresenterError`
+ * are paired surfaces — meaningless without `beat` / `presenter` — so
+ * each is dropped when its partner is absent (the resolver also rejects
+ * `beat` without `onBeatMissing`, but the bridge must not forward an
+ * orphaned `onBeatMissing` either).
  */
 function buildResolverOptions(
   registry: ReturnType<typeof createSceneRegistry>,
   manifest: CompositionManifest,
   options: LoadSceneNavigationTargetOptions,
 ): ResolveCompositionOptions {
-  const beatPair =
-    options.beat === undefined
-      ? {}
-      : {
-          headBeat: options.beat,
-          ...(options.onBeatMissing === undefined ? {} : { onBeatMissing: options.onBeatMissing }),
-        };
-  const presenterPair =
-    options.presenter === undefined
-      ? {}
-      : {
-          presenter: options.presenter,
-          ...(options.onPresenterError === undefined
-            ? {}
-            : { onPresenterError: options.onPresenterError }),
-        };
+  const optional: Record<string, unknown> = {
+    signal: options.signal,
+    headBeat: options.beat,
+    onBeatMissing: options.beat === undefined ? undefined : options.onBeatMissing,
+    headRepeat: options.repeat,
+    headHold: options.hold,
+    headCueGate: options.cueGate,
+    audioCueGate: options.audioCueGate,
+    headScreenshot: options.screenshot,
+    presenter: options.presenter,
+    onPresenterError: options.presenter === undefined ? undefined : options.onPresenterError,
+    onSceneCleaned: options.onSceneCleaned,
+    onSceneFailed: options.onSceneFailed,
+  };
+  for (const key of Object.keys(optional)) {
+    if (optional[key] === undefined) delete optional[key];
+  }
   return {
     registry,
     manifest,
     ctx: options.ctx,
     preloadAssets: options.preloadAssets,
     timeline: options.timeline,
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    ...beatPair,
-    ...(options.repeat === undefined ? {} : { headRepeat: options.repeat }),
-    ...(options.hold === undefined ? {} : { headHold: options.hold }),
-    ...(options.cueGate === undefined ? {} : { headCueGate: options.cueGate }),
-    ...(options.audioCueGate === undefined ? {} : { audioCueGate: options.audioCueGate }),
-    ...(options.screenshot === undefined ? {} : { headScreenshot: options.screenshot }),
-    ...presenterPair,
-    ...(options.onSceneCleaned === undefined ? {} : { onSceneCleaned: options.onSceneCleaned }),
-    ...(options.onSceneFailed === undefined ? {} : { onSceneFailed: options.onSceneFailed }),
+    ...optional,
   };
 }

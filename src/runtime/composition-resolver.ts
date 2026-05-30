@@ -382,16 +382,14 @@ interface PlanStep {
   readonly range: SubRange | undefined;
   readonly behavior: BehaviorOverride | undefined;
   /**
-   * Position of the entry in the manifest the resolver was handed
-   * (PUL-F029 / ADR-028 diagnostic contract — see
-   * {@link SceneActivation.entryIndex}).
+   * This entry's stable per-occurrence {@link SceneActivation} identity
+   * — `{ sceneId, entryIndex, occurrence }` — built once at plan time
+   * and handed verbatim to every per-occurrence lifecycle surface
+   * (`onSceneCleaned`, `SceneFailureEvent`). Embedding it on the step
+   * removes the per-call activation reconstruction the lifecycle
+   * helpers used to do.
    */
-  readonly entryIndex: number;
-  /**
-   * 0-based ordinal of this entry among the plan entries that share
-   * `scene.id` (issue #99 — see {@link SceneActivation.occurrence}).
-   */
-  readonly occurrence: number;
+  readonly activation: SceneActivation;
   /**
    * The per-occurrence scene context (issue #99). Built once at plan
    * time from {@link ResolveCompositionOptions.ctx} and this entry's
@@ -402,17 +400,6 @@ interface PlanStep {
    */
   readonly ctx: unknown;
 }
-
-/**
- * Project a {@link PlanStep} onto its {@link SceneActivation} identity —
- * the `{ sceneId, entryIndex, occurrence }` tuple every per-occurrence
- * lifecycle surface (`onSceneCleaned`, `SceneFailureEvent`) carries.
- */
-const activationOf = (step: PlanStep): SceneActivation => ({
-  sceneId: step.scene.id,
-  entryIndex: step.entryIndex,
-  occurrence: step.occurrence,
-});
 
 /**
  * Build the resolver's wrapping `Error`. Every public failure carries
@@ -490,7 +477,7 @@ function buildPlan(
         cause,
       );
     }
-    plan.push({ scene, range, behavior, entryIndex, occurrence, ctx });
+    plan.push({ scene, range, behavior, activation, ctx });
   }
   return Object.freeze(plan);
 }
@@ -518,7 +505,7 @@ function buildSceneFailure(
   detail: string,
 ): { event: SceneFailureEvent; wrapper: Error } {
   const event: SceneFailureEvent = {
-    ...activationOf(step),
+    ...step.activation,
     phase,
     message: describeError(cause),
     cause,
@@ -528,62 +515,79 @@ function buildSceneFailure(
 
 /**
  * Failure / hook-error buckets the lifecycle helpers append into. One
- * record passed by reference instead of five separate arrays keeps the
+ * record passed by reference instead of separate arrays keeps the
  * helper signatures readable.
  *
- *  - `sceneFailures` / `sceneFailureErrors` — scene lifecycle failures
- *    (PUL-F029 / ADR-028). Surfaced through `onSceneFailed` when wired;
- *    aggregated into the resolver's `AggregateError` fallback when not.
- *  - `hookErrors` — workbench-supplied `onSceneCleaned` throws. Per the
- *    option contract these are NOT scene failures (the scene's cleanup
- *    succeeded; the workbench's audio-teardown hook is what threw), so
- *    they bypass `onSceneFailed` and ALWAYS aggregate into the
- *    resolver's throw — independent of whether `onSceneFailed` was
- *    supplied. Without that distinction a workbench hook bug becomes
- *    silently swallowed under PUL-F029.
+ *  - `sceneFailureErrors` — scene lifecycle failures (PUL-F029 /
+ *    ADR-028). Surfaced through `onSceneFailed` when wired; aggregated
+ *    into the resolver's `AggregateError` fallback when not.
+ *  - `hookErrors` — workbench-supplied `onSceneCleaned` / `onSceneFailed`
+ *    throws. Per the option contract these are NOT scene failures (the
+ *    scene's lifecycle hook succeeded; the workbench's teardown /
+ *    diagnostic sink is what threw), so they bypass `onSceneFailed` and
+ *    ALWAYS aggregate into the resolver's throw — independent of whether
+ *    `onSceneFailed` was supplied. Without that distinction a workbench
+ *    hook bug becomes silently swallowed under PUL-F029.
  */
 interface FailureBucket {
-  readonly sceneFailures: SceneFailureEvent[];
   readonly sceneFailureErrors: Error[];
   readonly hookErrors: Error[];
 }
 
 /**
  * Shared lifecycle plumbing the mount / compose / cleanup helpers all
- * thread through. One struct avoids each helper carrying 6–8 separate
+ * thread through. One struct avoids each helper carrying separate
  * positional parameters (Sonar S107) and keeps the bucket + observer
  * wiring identical across phases.
+ *
+ * `reportFailure` records one isolated scene-lifecycle failure: it
+ * collects the wrapped error in `bucket.sceneFailureErrors` AND fans the
+ * structured event out through the caller's `onSceneFailed` sink (when
+ * supplied). The `onSceneFailed` wrapping — the defensive try/catch that
+ * keeps a throwing diagnostic sink from breaking the cleanup-then-
+ * continue invariant — is applied ONCE when the context is built
+ * ({@link buildLifecycleContext}), not per call. A sink throw is
+ * collected in `bucket.hookErrors` so it surfaces through the resolver's
+ * final aggregate just like an `onSceneCleaned` hook throw — same
+ * "workbench bug, not a scene failure" contract (codex review, cycle 2).
  */
 interface LifecycleContext {
   readonly signal: AbortSignal | undefined;
   readonly onSceneCleaned: ((activation: SceneActivation) => void) | undefined;
-  readonly onSceneFailed: ((event: SceneFailureEvent) => void) | undefined;
   readonly bucket: FailureBucket;
+  readonly reportFailure: (phase: SceneFailurePhase, step: PlanStep, cause: unknown) => void;
 }
 
-/**
- * Invoke `onSceneFailed` defensively. A throw from the caller-supplied
- * diagnostic sink MUST NOT interrupt the resolver's cleanup-then-
- * continue invariant (codex review, cycle 2): if it did, a buggy
- * logger could break mandatory cleanup for surviving scenes, mask the
- * original phase error in the catch path, or strand resources. The
- * sink throw is collected in `bucket.hookErrors` so it surfaces
- * through the resolver's final aggregate just like an `onSceneCleaned`
- * hook throw — same "workbench bug, not a scene failure" contract.
- */
-function notifyFailure(
+const FAILURE_DETAIL: Record<SceneFailurePhase, string> = {
+  create: 'create',
+  timeline: 'timeline',
+  cleanup: 'cleanup',
+};
+
+function buildLifecycleContext(
+  signal: AbortSignal | undefined,
+  onSceneCleaned: ((activation: SceneActivation) => void) | undefined,
   onSceneFailed: ((event: SceneFailureEvent) => void) | undefined,
-  event: SceneFailureEvent,
   bucket: FailureBucket,
-): void {
-  if (onSceneFailed === undefined) return;
-  try {
-    onSceneFailed(event);
-  } catch (err) {
-    bucket.hookErrors.push(
-      fail(`scene ${quoteId(event.sceneId)} onSceneFailed threw: ${describeError(err)}`, err),
+): LifecycleContext {
+  const reportFailure = (phase: SceneFailurePhase, step: PlanStep, cause: unknown): void => {
+    const { event, wrapper } = buildSceneFailure(
+      phase,
+      step,
+      cause,
+      `scene ${quoteId(step.scene.id)} ${FAILURE_DETAIL[phase]} threw: ${describeError(cause)}`,
     );
-  }
+    bucket.sceneFailureErrors.push(wrapper);
+    if (onSceneFailed === undefined) return;
+    try {
+      onSceneFailed(event);
+    } catch (err) {
+      bucket.hookErrors.push(
+        fail(`scene ${quoteId(event.sceneId)} onSceneFailed threw: ${describeError(err)}`, err),
+      );
+    }
+  };
+  return { signal, onSceneCleaned, bucket, reportFailure };
 }
 
 /**
@@ -599,27 +603,19 @@ function notifyFailure(
  * continues — a real production observability gap (codex review,
  * cycle 1).
  *
- * Scene cleanup failures route to `bucket.sceneFailures` /
- * `sceneFailureErrors` + `onSceneFailed`. Hook (`onSceneCleaned`)
- * failures route to `bucket.hookErrors` only; per the option's
- * contract, a hook throw is a workbench bug, not a scene failure.
+ * Scene cleanup failures route to `bucket.sceneFailureErrors` +
+ * `onSceneFailed`. Hook (`onSceneCleaned`) failures route to
+ * `bucket.hookErrors` only; per the option's contract, a hook throw is
+ * a workbench bug, not a scene failure.
  */
 async function cleanOneScene(step: PlanStep, lc: LifecycleContext): Promise<void> {
   try {
     await step.scene.cleanup(step.ctx);
   } catch (error_) {
-    const { event, wrapper } = buildSceneFailure(
-      'cleanup',
-      step,
-      error_,
-      `scene ${quoteId(step.scene.id)} cleanup threw: ${describeError(error_)}`,
-    );
-    lc.bucket.sceneFailures.push(event);
-    lc.bucket.sceneFailureErrors.push(wrapper);
-    notifyFailure(lc.onSceneFailed, event, lc.bucket);
+    lc.reportFailure('cleanup', step, error_);
   }
   try {
-    lc.onSceneCleaned?.(activationOf(step));
+    lc.onSceneCleaned?.(step.activation);
   } catch (err) {
     lc.bucket.hookErrors.push(
       fail(`scene ${quoteId(step.scene.id)} onSceneCleaned threw: ${describeError(err)}`, err),
@@ -656,15 +652,7 @@ async function mountPlan(
     try {
       await step.scene.create(step.ctx);
     } catch (cause) {
-      const { event, wrapper } = buildSceneFailure(
-        'create',
-        step,
-        cause,
-        `scene ${quoteId(step.scene.id)} create threw: ${describeError(cause)}`,
-      );
-      lc.bucket.sceneFailures.push(event);
-      lc.bucket.sceneFailureErrors.push(wrapper);
-      notifyFailure(lc.onSceneFailed, event, lc.bucket);
+      lc.reportFailure('create', step, cause);
       // PUL-F029: run the failing scene's cleanup eagerly through the
       // SAME helper as the final cleanup loop, so the per-scene
       // `onSceneCleaned` hook (PUL-F024 / ADR-004 audio-group
@@ -716,15 +704,7 @@ async function composeSegments(
     try {
       timeline = step.scene.timeline(step.ctx);
     } catch (cause) {
-      const { event, wrapper } = buildSceneFailure(
-        'timeline',
-        step,
-        cause,
-        `scene ${quoteId(step.scene.id)} timeline threw: ${describeError(cause)}`,
-      );
-      lc.bucket.sceneFailures.push(event);
-      lc.bucket.sceneFailureErrors.push(wrapper);
-      notifyFailure(lc.onSceneFailed, event, lc.bucket);
+      lc.reportFailure('timeline', step, cause);
       // PUL-F029: run cleanup eagerly through the same helper so the
       // `onSceneCleaned` hook fires for the failed scene too (audio
       // teardown), then drop from `mounted` so the final cleanup
@@ -774,27 +754,28 @@ async function cleanupAll(mounted: readonly PlanStep[], lc: LifecycleContext): P
 }
 
 /**
- * Compute the tail of errors that should aggregate into the resolver's
- * final throw, given the `onSceneFailed` wiring. Scene lifecycle
- * failures are dropped when the callback fanned them out; hook errors
- * (`onSceneCleaned` workbench throws) always aggregate (Sonar S3776
- * pulled this out of `resolveComposition` to keep it under cognitive-
- * complexity 15).
+ * The terminal condition the bare lifecycle engine ({@link runLifecycle})
+ * reached after the cleanup phase ran. `finalize` maps it — together
+ * with the {@link FailureBucket} — onto the resolver's public
+ * return-or-throw contract.
+ *
+ *  - `completed` — mount → compose → run all finished and the signal
+ *    did not abort during playback (the happy path).
+ *  - `aborted` — `run` resolved because `signal` aborted mid-playback;
+ *    `reason` is the abort reason the public wrapper carries.
+ *  - `phase-error` — a composition-wide failure (preload / abort
+ *    checkpoint / manifest / registry-miss / adapter `run` rejection)
+ *    threw; `error` is the already-wrapped value to re-raise.
  */
-function residualTail(
-  bucket: FailureBucket,
-  onSceneFailed: ((event: SceneFailureEvent) => void) | undefined,
-): readonly Error[] {
-  const scene = onSceneFailed === undefined ? bucket.sceneFailureErrors : [];
-  return [...scene, ...bucket.hookErrors];
-}
+type LifecycleOutcome =
+  | { readonly kind: 'completed' }
+  | { readonly kind: 'aborted'; readonly reason: unknown }
+  | { readonly kind: 'phase-error'; readonly error: unknown };
 
 /**
- * Build the human-readable summary that prefixes the resolver's final
- * `AggregateError` on the happy path. The hand-rolled cases pick the
- * historical "cleanup hook(s) threw" / "scene failure(s)" wording the
- * pre-PUL-F029 tests pattern-match on. Sonar S3358 pulled this out of
- * `resolveComposition` to flatten the nested ternary.
+ * The historical happy-path aggregate wording (pre-PUL-F029 tests
+ * pattern-match on the "cleanup hook(s) threw" / "scene failure(s)"
+ * cases). Kept verbatim.
  */
 function happyPathAggregateDetail(sceneCount: number, hookCount: number): string {
   if (sceneCount === 0) return `composition completed but ${hookCount} cleanup hook(s) threw`;
@@ -803,29 +784,148 @@ function happyPathAggregateDetail(sceneCount: number, hookCount: number): string
 }
 
 /**
- * Build the {@link CompositionTimelineRunOptions} the resolver forwards
- * to the adapter, omitting absent keys (so an adapter that branches on
- * `'<key>' in opts` sees absent rather than `undefined`).
+ * The aborted-during-playback aggregate wording. Historically reads
+ * "cleanup failure(s)" when the residual is scene-cleanup-only (no hook
+ * errors) — pre-PUL-F029 tests pattern-match on it — and "additional
+ * failure(s)" once a workbench hook threw too.
  */
-function buildRunOptions(options: ResolveCompositionOptions): CompositionTimelineRunOptions {
-  const opts: {
-    -readonly [K in keyof CompositionTimelineRunOptions]: CompositionTimelineRunOptions[K];
-  } = {};
-  if (options.signal !== undefined) opts.signal = options.signal;
-  if (options.headBeat !== undefined) {
-    opts.headBeat = options.headBeat;
-    if (options.onBeatMissing !== undefined) opts.onBeatMissing = options.onBeatMissing;
+function abortedPlaybackDetail(sceneCount: number, hookCount: number): string {
+  return hookCount === 0
+    ? `composition aborted during playback with ${sceneCount} cleanup failure(s)`
+    : `composition aborted during playback with ${sceneCount + hookCount} additional failure(s)`;
+}
+
+/**
+ * Build the head error + aggregate-detail prefix for a non-happy
+ * {@link LifecycleOutcome}. `null` means the happy path — `finalize`
+ * picks the happy-path wording instead.
+ */
+function outcomeHead(
+  outcome: LifecycleOutcome,
+  sceneCount: number,
+  hookCount: number,
+): { head: unknown; detail: string } | null {
+  if (outcome.kind === 'completed') return null;
+  if (outcome.kind === 'phase-error') {
+    return {
+      head: outcome.error,
+      detail: `composition aborted with ${sceneCount + hookCount} additional failure(s) after: ${describeError(outcome.error)}`,
+    };
   }
-  if (options.headRepeat !== undefined) opts.headRepeat = options.headRepeat;
-  if (options.headHold !== undefined) opts.headHold = options.headHold;
-  if (options.headCueGate !== undefined) opts.headCueGate = options.headCueGate;
-  if (options.audioCueGate !== undefined) opts.audioCueGate = options.audioCueGate;
-  if (options.headScreenshot !== undefined) opts.headScreenshot = options.headScreenshot;
-  if (options.presenter !== undefined) {
-    opts.presenter = options.presenter;
-    if (options.onPresenterError !== undefined) opts.onPresenterError = options.onPresenterError;
+  return {
+    head: fail('aborted during composition playback', outcome.reason),
+    detail: abortedPlaybackDetail(sceneCount, hookCount),
+  };
+}
+
+/**
+ * Map the bare lifecycle's {@link LifecycleOutcome} + accumulated
+ * {@link FailureBucket} onto the resolver's public return-or-throw
+ * contract. The single decision point for "aggregate vs re-raise vs
+ * return": `aggregateScene` (set from whether `onSceneFailed` was
+ * supplied) decides whether already-fanned-out scene failures
+ * re-aggregate. Hook errors (`onSceneCleaned` / `onSceneFailed`
+ * workbench throws) ALWAYS aggregate.
+ *
+ *  - `onSceneFailed` wired → scene failures already reached the callback;
+ *    they do NOT re-aggregate (re-aggregating would route the loader
+ *    into its fatal navigation-error surface for events PUL-F029 says
+ *    must isolate). Only hook errors ride along.
+ *  - `onSceneFailed` absent → scene failures aggregate so a direct
+ *    caller does not lose the signal.
+ *
+ * A non-null `outcomeHead` (composition-wide failure / aborted playback)
+ * is always re-raised; residual failures aggregate behind it.
+ */
+function finalize(outcome: LifecycleOutcome, bucket: FailureBucket, aggregateScene: boolean): void {
+  const sceneErrors = aggregateScene ? bucket.sceneFailureErrors : [];
+  const residual = [...sceneErrors, ...bucket.hookErrors];
+  const headSpec = outcomeHead(outcome, sceneErrors.length, bucket.hookErrors.length);
+  if (headSpec === null) {
+    if (residual.length === 0) return;
+    throw failAggregate(
+      happyPathAggregateDetail(sceneErrors.length, bucket.hookErrors.length),
+      residual,
+    );
   }
-  return opts;
+  if (residual.length === 0) throw headSpec.head;
+  throw failAggregate(headSpec.detail, [headSpec.head, ...residual]);
+}
+
+/**
+ * The bare composition lifecycle engine: validate → build the plan →
+ * mount-all → compose-master → play → cleanup-all (reverse), per the
+ * module header (ADR-025). It is GSAP-free, fans NOTHING out, and makes
+ * no aggregate-vs-reraise decision — every per-scene failure it
+ * encounters flows through `lc.reportFailure` (which the caller wires)
+ * and every composition-wide failure surfaces as a returned
+ * {@link LifecycleOutcome}. That keeps the orchestrator testable bare:
+ * a test can drive it with a plain collecting `reportFailure` and assert
+ * the cleanup-exactly-once-per-activation and lifecycle-order invariants
+ * without the `onSceneFailed` / `AggregateError` selection layered on by
+ * {@link withFailureIsolation}.
+ *
+ * The cleanup phase ALWAYS runs (every failure path included) before the
+ * outcome is returned — the caller never has to remember to clean up.
+ */
+async function runLifecycle(
+  plan: readonly PlanStep[],
+  preloadAssets: AssetPreloader,
+  timeline: CompositionTimelineAdapter,
+  runOptions: CompositionTimelineRunOptions,
+  lc: LifecycleContext,
+): Promise<LifecycleOutcome> {
+  // Scenes mounted so far — the cleanup list for the final cleanup
+  // phase. `mountPlan` / `composeSegments` remove eagerly-cleaned scenes
+  // so cleanup never runs twice. Declared outside the try so a
+  // preload-or-abort throw still leaves the partial mount list visible.
+  const mounted: PlanStep[] = [];
+  let phaseError: { error: unknown } | null = null;
+  try {
+    await mountPlan(plan, preloadAssets, lc, mounted);
+    const segments = await composeSegments(mounted, lc);
+    try {
+      await timeline.run(segments, runOptions);
+    } catch (cause) {
+      throw fail(`composition timeline failed: ${describeError(cause)}`, cause);
+    }
+  } catch (error) {
+    phaseError = { error };
+  }
+  await cleanupAll(mounted, lc);
+  if (phaseError !== null) return { kind: 'phase-error', error: phaseError.error };
+  // Abort observed only after the mandatory cleanup phase (a cleanup
+  // hook could fire it), matching the historical post-cleanup check.
+  if (lc.signal?.aborted === true) return { kind: 'aborted', reason: lc.signal.reason };
+  return { kind: 'completed' };
+}
+
+/**
+ * Pick the {@link CompositionTimelineRunOptions} keys out of the
+ * resolver options, dropping the ones the caller left absent so the
+ * adapter receives only what was supplied. The GSAP adapter reads every
+ * field via `opts.<key>` / optional chaining (never `'<key>' in opts`),
+ * so the strip exists for `exactOptionalPropertyTypes` cleanliness and
+ * to keep the forwarded object minimal — not for adapter correctness.
+ */
+function runOptionsFrom(options: ResolveCompositionOptions): CompositionTimelineRunOptions {
+  const all: Record<keyof CompositionTimelineRunOptions, unknown> = {
+    signal: options.signal,
+    headBeat: options.headBeat,
+    onBeatMissing: options.onBeatMissing,
+    headRepeat: options.headRepeat,
+    headHold: options.headHold,
+    headCueGate: options.headCueGate,
+    audioCueGate: options.audioCueGate,
+    headScreenshot: options.headScreenshot,
+    presenter: options.presenter,
+    onPresenterError: options.onPresenterError,
+  };
+  const opts: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(all)) {
+    if (value !== undefined) opts[key] = value;
+  }
+  return opts as CompositionTimelineRunOptions;
 }
 
 /**
@@ -833,38 +933,40 @@ function buildRunOptions(options: ResolveCompositionOptions): CompositionTimelin
  * in the module header (mount-all → compose-master → play → cleanup-all,
  * ADR-025).
  *
+ * This is the scene-failure-isolation decorator over {@link runLifecycle}:
+ * it owns the failure bucket, wraps `onSceneFailed` ONCE (the defensive
+ * try/catch that keeps a throwing diagnostic sink from breaking
+ * cleanup-then-continue), runs the bare engine, and routes the result
+ * through {@link finalize}.
+ *
  * Failure semantics (PUL-F029 / ADR-028):
  *  - A failing `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)` is a
- *    per-scene lifecycle failure. The resolver isolates the failing
- *    scene (runs its `cleanup(ctx)` eagerly when the failure is in
- *    `create` or `timeline`, drops it from the segment list, and
- *    continues the active composition with the remaining scenes).
- *    Each failure surfaces through {@link ResolveCompositionOptions.onSceneFailed}
- *    when supplied; when omitted the failures still isolate but
- *    aggregate into the resolver's `AggregateError` at the end of the
- *    lifecycle so direct callers don't lose the signal.
+ *    per-scene lifecycle failure. The engine isolates the failing scene
+ *    (runs its `cleanup(ctx)` eagerly when the failure is in `create` or
+ *    `timeline`, drops it from the segment list, and continues with the
+ *    remaining scenes). Each failure surfaces through
+ *    {@link ResolveCompositionOptions.onSceneFailed} when supplied; when
+ *    omitted the failures still isolate but aggregate into an
+ *    `AggregateError` at the end so direct callers don't lose the signal.
  *  - A failing preload / signal-aborted checkpoint / manifest /
  *    registry-miss / timeline-adapter `run` rejection is a
- *    composition-wide failure (NOT per-scene). The resolver tears
- *    every still-mounted scene down (reverse order), then re-raises
- *    the original error wrapped with the `composition resolution
- *    failed:` prefix and the original as `Error.cause`.
- *  - When the phase failure AND one or more cleanup hooks throw, the
- *    wrapping error is an `AggregateError` whose `errors` array carries
- *    the phase error first then the cleanup errors in order. Nothing is
- *    mutated; everything is programmatically recoverable.
+ *    composition-wide failure (NOT per-scene). Every still-mounted scene
+ *    is torn down (reverse order), then the original error is re-raised
+ *    wrapped with the `composition resolution failed:` prefix and the
+ *    original as `Error.cause`.
+ *  - When a phase failure AND one or more hook errors occur, the wrapper
+ *    is an `AggregateError` carrying the phase error first then the hook
+ *    errors in order. Nothing is mutated; everything is programmatically
+ *    recoverable.
  *  - A navigation abort during master playback makes the adapter's `run`
- *    resolve (not throw); the resolver then tears every scene down and
- *    re-raises an `aborted during composition playback` error so the
- *    loader's pure-abort suppression applies.
- *  - The happy path tears every scene down and resolves. When
- *    `onSceneFailed` is wired the resolver returns normally even if
- *    some scenes failed (they were already fanned out through the
- *    callback). When the callback is NOT wired, any scene cleanup
- *    failure aggregates with the scene's already-isolated lifecycle
- *    failures into an `AggregateError`. `onSceneCleaned` hook throws
- *    (workbench bugs — not scene failures) ALWAYS aggregate
- *    regardless of `onSceneFailed`.
+ *    resolve (not throw); every scene is torn down and an `aborted
+ *    during composition playback` error re-raised so the loader's
+ *    pure-abort suppression applies.
+ *  - The happy path tears every scene down and resolves. With
+ *    `onSceneFailed` wired the resolver returns normally even if some
+ *    scenes failed (already fanned out). Without it, scene failures
+ *    aggregate. `onSceneCleaned` / `onSceneFailed` hook throws (workbench
+ *    bugs — not scene failures) ALWAYS aggregate.
  */
 export async function resolveComposition(options: ResolveCompositionOptions): Promise<void> {
   const { registry, manifest, preloadAssets, timeline, signal } = options;
@@ -886,105 +988,13 @@ export async function resolveComposition(options: ResolveCompositionOptions): Pr
   // Pre-start abort: nothing was touched, so this needs no cleanup.
   throwIfAborted(signal, 'aborted before the composition started');
 
-  // PUL-F029 / ADR-028: per-scene failures and `onSceneCleaned` hook
-  // throws collect into one bucket. Scene lifecycle failures fan out
-  // through `onSceneFailed` when wired (and aggregate into the
-  // resolver's throw when not). Hook errors ALWAYS aggregate — per the
-  // option's contract a hook throw is "treated like a cleanup failure
-  // (collected, not swallowed)."
-  const lc: LifecycleContext = {
-    signal,
-    onSceneCleaned: options.onSceneCleaned,
-    onSceneFailed: options.onSceneFailed,
-    bucket: { sceneFailures: [], sceneFailureErrors: [], hookErrors: [] },
-  };
+  // PUL-F029 / ADR-028: per-scene failures and hook throws collect into
+  // one bucket. `reportFailure` (built here, ONCE) fans scene failures
+  // out through `onSceneFailed` when wired; the aggregate-vs-reraise
+  // selection below keys off whether it was wired.
+  const bucket: FailureBucket = { sceneFailureErrors: [], hookErrors: [] };
+  const lc = buildLifecycleContext(signal, options.onSceneCleaned, options.onSceneFailed, bucket);
 
-  // Scenes mounted so far — the cleanup list for the final cleanup
-  // phase. `mountPlan` / `composeSegments` remove eagerly-cleaned
-  // scenes from this list so cleanup never runs twice. Passed as an
-  // out-parameter so a preload-or-abort throw still leaves the partial
-  // mount list visible to the catch handler below.
-  const mounted: PlanStep[] = [];
-  try {
-    await mountPlan(plan, preloadAssets, lc, mounted);
-    const segments = await composeSegments(mounted, lc);
-    try {
-      await timeline.run(segments, buildRunOptions(options));
-    } catch (cause) {
-      throw fail(`composition timeline failed: ${describeError(cause)}`, cause);
-    }
-  } catch (phaseError) {
-    await cleanupAll(mounted, lc);
-    return finalizeCompositionWideFailure(phaseError, lc);
-  }
-
-  await cleanupAll(mounted, lc);
-  if (signal?.aborted === true) {
-    return finalizeAbortedPlayback(signal, lc);
-  }
-  return finalizeHappyPath(lc);
-}
-
-/**
- * Re-raise a composition-wide failure (preload / abort / manifest /
- * registry / adapter `run` rejection) after the mandatory cleanup
- * phase ran. PUL-F029: when `onSceneFailed` is wired, scene lifecycle
- * failures already fanned out through the callback, so they do NOT
- * re-aggregate here (that would route the loader into its fatal
- * navigation-error surface for events PUL-F029 says must isolate).
- * Hook errors still aggregate. Hoisted out of `resolveComposition` to
- * keep the latter under Sonar's cognitive-complexity budget (S3776).
- */
-function finalizeCompositionWideFailure(phaseError: unknown, lc: LifecycleContext): never {
-  const tail = residualTail(lc.bucket, lc.onSceneFailed);
-  if (tail.length > 0) {
-    throw failAggregate(
-      `composition aborted with ${tail.length} additional failure(s) after: ${describeError(phaseError)}`,
-      [phaseError, ...tail],
-    );
-  }
-  throw phaseError;
-}
-
-/**
- * Re-raise the post-playback abort wrapper after the cleanup phase
- * ran. Same scene-failure / hook-error policy as
- * {@link finalizeCompositionWideFailure}, with the historical
- * "cleanup failure(s)" wording preserved when the aggregate is
- * scene-cleanup-only (pre-PUL-F029 tests pattern-match on it).
- */
-function finalizeAbortedPlayback(signal: AbortSignal, lc: LifecycleContext): never {
-  const tail = residualTail(lc.bucket, lc.onSceneFailed);
-  if (tail.length > 0) {
-    const sceneCount = lc.onSceneFailed === undefined ? lc.bucket.sceneFailureErrors.length : 0;
-    const hookCount = lc.bucket.hookErrors.length;
-    const detail =
-      hookCount === 0
-        ? `composition aborted during playback with ${sceneCount} cleanup failure(s)`
-        : `composition aborted during playback with ${tail.length} additional failure(s)`;
-    throw failAggregate(detail, [
-      fail('aborted during composition playback', signal.reason),
-      ...tail,
-    ]);
-  }
-  throw fail('aborted during composition playback', signal.reason);
-}
-
-/**
- * Happy-path finalizer: when no `onSceneFailed` was wired, surface every
- * isolated scene failure (mount / compose / cleanup) PLUS any hook
- * errors as one `AggregateError` so the caller doesn't lose
- * information. When the callback IS wired, the resolver has already
- * fanned out every per-scene failure inline; only hook errors
- * aggregate (workbench-contract violations PUL-F029 does not subsume).
- */
-function finalizeHappyPath(lc: LifecycleContext): void {
-  const sceneFailuresForAggregate =
-    lc.onSceneFailed === undefined ? lc.bucket.sceneFailureErrors : [];
-  const aggregate = [...sceneFailuresForAggregate, ...lc.bucket.hookErrors];
-  if (aggregate.length === 0) return;
-  throw failAggregate(
-    happyPathAggregateDetail(sceneFailuresForAggregate.length, lc.bucket.hookErrors.length),
-    aggregate,
-  );
+  const outcome = await runLifecycle(plan, preloadAssets, timeline, runOptionsFrom(options), lc);
+  finalize(outcome, bucket, options.onSceneFailed === undefined);
 }
