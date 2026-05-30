@@ -869,6 +869,24 @@ export function assertAudioBedDeclaration(value: unknown): asserts value is Audi
 }
 
 /**
+ * The simple-typed {@link PlayOptions} fields and the error class each
+ * raises on a type mismatch. `sprite` / `loop` are `AudioSoundError`,
+ * `group` is `AudioGroupError`, `volume` is `AudioRangeError` (its range
+ * is checked later by `assertGain`); `rate` is validated separately
+ * because it is range-bounded, not just typed.
+ */
+const PLAY_OPTION_TYPES: readonly {
+  readonly name: keyof PlayOptions;
+  readonly type: 'string' | 'boolean' | 'number';
+  readonly Error: new (message: string) => Error;
+}[] = [
+  { name: 'sprite', type: 'string', Error: AudioSoundError },
+  { name: 'loop', type: 'boolean', Error: AudioSoundError },
+  { name: 'group', type: 'string', Error: AudioGroupError },
+  { name: 'volume', type: 'number', Error: AudioRangeError },
+];
+
+/**
  * Validate the {@link PlayOptions} payload shape at the runtime
  * boundary — scenes can be plain JS, so the static type does not hold.
  * Each option is type-checked before the play is attempted; volume is
@@ -882,66 +900,20 @@ function assertPlayOptions(
   if (!isPlainRecord(options)) {
     throw new AudioSoundError(`audio sound "${soundId}" play options must be an object or omitted`);
   }
-  const opts = options as {
-    sprite?: unknown;
-    loop?: unknown;
-    volume?: unknown;
-    group?: unknown;
-    rate?: unknown;
-  };
-  assertPlayOptionTypeString(soundId, 'sprite', opts.sprite, AudioSoundError);
-  assertPlayOptionTypeBoolean(soundId, 'loop', opts.loop, AudioSoundError);
-  assertPlayOptionTypeString(soundId, 'group', opts.group, AudioGroupError);
-  assertPlayOptionTypeNumber(soundId, 'volume', opts.volume, AudioRangeError);
-  assertPlayOptionRate(soundId, opts.rate);
-}
-
-type AudioErrorCtor = new (message: string) => Error;
-
-function assertPlayOptionTypeString(
-  soundId: string,
-  name: string,
-  value: unknown,
-  ErrorCtor: AudioErrorCtor,
-): void {
-  if (value !== undefined && typeof value !== 'string') {
-    throw new ErrorCtor(
-      `audio sound "${soundId}" play option "${name}" must be a string; got ${typeof value}`,
-    );
+  const opts = options as Record<string, unknown>;
+  for (const { name, type, Error: ErrorCtor } of PLAY_OPTION_TYPES) {
+    const value = opts[name];
+    const actual = typeof value;
+    if (value !== undefined && actual !== type) {
+      throw new ErrorCtor(
+        `audio sound "${soundId}" play option "${name}" must be a ${type}; got ${actual}`,
+      );
+    }
   }
-}
-
-function assertPlayOptionTypeBoolean(
-  soundId: string,
-  name: string,
-  value: unknown,
-  ErrorCtor: AudioErrorCtor,
-): void {
-  if (value !== undefined && typeof value !== 'boolean') {
-    throw new ErrorCtor(
-      `audio sound "${soundId}" play option "${name}" must be a boolean; got ${typeof value}`,
-    );
-  }
-}
-
-function assertPlayOptionTypeNumber(
-  soundId: string,
-  name: string,
-  value: unknown,
-  ErrorCtor: AudioErrorCtor,
-): void {
-  if (value !== undefined && typeof value !== 'number') {
-    throw new ErrorCtor(
-      `audio sound "${soundId}" play option "${name}" must be a number; got ${typeof value}`,
-    );
-  }
-}
-
-function assertPlayOptionRate(soundId: string, value: unknown): void {
-  if (value === undefined) return;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+  const rate = opts.rate;
+  if (rate !== undefined && (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0)) {
     throw new AudioRangeError(
-      `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof value === 'number' ? value : typeof value}`,
+      `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof rate === 'number' ? rate : typeof rate}`,
     );
   }
 }
@@ -1180,7 +1152,13 @@ export function createAudioService(
 
   const sounds = new Map<string, RegisteredSound>();
   const groups = new Map<string, GroupedPlay[]>();
-  let disposed = false;
+  // Disposal gate. The per-navigation `options.signal` and the public
+  // `stopAll()` are the two disposal triggers; both feed this one
+  // internal controller, so `lifecycle.signal.aborted` is the single
+  // source of truth every method guards on (no separate boolean flag).
+  // Teardown (stop + unload every sound) runs once, on its abort.
+  const lifecycle = new AbortController();
+  const disposed = (): boolean => lifecycle.signal.aborted;
   // Per-service monotonic sequence for `AudioCueLogEntry.sequence`.
   // Only incremented when a cue is actually emitted (policy is
   // `log-cues` AND a sink is wired), so non-log-cues services pay
@@ -1211,7 +1189,7 @@ export function createAudioService(
     | Omit<AudioCueLogStop, 'sequence'>
     | Omit<AudioCueLogStopGroup, 'sequence'>;
   const emitCue = (entry: CueInput): void => {
-    if (outputPolicy !== 'log-cues' || onCue === undefined || disposed) return;
+    if (outputPolicy !== 'log-cues' || onCue === undefined || disposed()) return;
     cueSequence += 1;
     // Deep-freeze (codex review, cycle 1): the contract says the cue
     // log is read-only. `Object.freeze` alone would leave nested
@@ -1330,107 +1308,79 @@ export function createAudioService(
   };
 
   /**
-   * Start the composition audio bed (PUL-F014 / ADR-004). Runs once at
-   * construction when a bed is supplied and not suppressed. The bed
-   * source passes the SAME `normalizeSources` scheme gate scene sounds
-   * pass, but its membership allowlist is the bed's OWN declared `src`
-   * — NOT the scene-facing `allowedSources`. The bed declaration is
-   * authoritative for the bed exactly as `scene.audio` is for scenes;
-   * routing it through the scene allowlist would leak the bed URL into
-   * `ctx.audio.load()`, letting a scene register and play the bed
-   * source as its own sound even under `mode=standalone` where the bed
-   * is suppressed (codex review, cycle 1). The bed is registered into
-   * the shared `sounds` map under {@link BED_SOUND_KEY} so `stopAll()`
-   * / abort teardown unloads it. The bed loops for the lifetime of the
-   * navigation; it is constructed `muted` under the `silent` /
-   * `log-cues` policies like every other sound. No cue is emitted — the
-   * rehearsal cue log records scene-requested operations, and the bed
-   * is runtime infrastructure, not a scene operation.
+   * Register a sound under `key` and return its handle, or `undefined`
+   * when the key is already bound to an identical definition (idempotent
+   * re-`load` of a shared SFX). The single registration core shared by
+   * the scene-facing `load` and the composition-bed startup below.
+   *
+   * `allowedForSource` is the membership allowlist for THIS
+   * registration: scene sounds pass `allowed` (the slice's declared
+   * `scene.audio`); the composition bed passes its OWN declared `src`
+   * set — NOT the scene-facing `allowedSources` — so routing the bed
+   * through the scene allowlist can never leak the bed URL into
+   * `ctx.audio.load()` (codex review, cycle 1). A re-`load` with a
+   * different definition is an {@link AudioSoundError}.
    */
-  const startBed = (bed: AudioBedDeclaration): void => {
-    // The bed's membership allowlist is its own declared source list:
-    // the bed is gated against what the composition declared for the
-    // bed, not against the scene `scene.audio` allowlist. Building the
-    // allowed set from the raw declaration keeps the bed source out of
-    // the scene-facing `allowedSources` entirely.
-    const bedAllowed: ReadonlySet<string> = new Set(
-      typeof bed.src === 'string' ? [bed.src] : bed.src,
+  const registerSound = (
+    key: string,
+    definition: SoundDefinition,
+    allowedForSource: ReadonlySet<string> | null,
+  ): AudioSoundHandle | undefined => {
+    const src = normalizeSources(key, definition.src, allowedForSource);
+    if (definition.sprite !== undefined) assertSpriteMap(key, definition.sprite);
+    const existing = sounds.get(key);
+    if (existing !== undefined) {
+      // Idempotent re-registration of the same sound (e.g. a shared
+      // transition SFX two scenes both `load` — the sound-id namespace
+      // is composition-slice-scoped); a different definition is a
+      // genuine conflict.
+      if (sameSourceList(existing.src, src) && sameSpriteMap(existing.sprite, definition.sprite)) {
+        return undefined;
+      }
+      throw new AudioSoundError(
+        `audio sound "${key}" is already registered with a different definition`,
+      );
+    }
+    const spriteNames: ReadonlySet<string> = new Set(
+      definition.sprite === undefined ? [] : Object.keys(definition.sprite),
     );
-    const src = normalizeSources(BED_SOUND_KEY, bed.src, bedAllowed);
-    if (bed.volume !== undefined) assertGain(bed.volume, 'bed volume');
     const handle = engine.createSound({
       src,
+      ...(definition.sprite === undefined ? {} : { sprite: definition.sprite }),
       muted,
       onError: (err) => {
-        if (disposed) return;
+        // Howler's async load failures can arrive after the navigation
+        // ended (abort / supersession / completion). A disposed service
+        // must not write a stale diagnostic over the active navigation,
+        // and this non-fatal sink must not throw back through Howler's
+        // callback.
+        if (disposed()) return;
         try {
-          onError(new AudioError(`audio bed: ${describeError(err)}`, { cause: err }));
+          onError(new AudioError(`audio sound "${key}": ${describeError(err)}`, { cause: err }));
         } catch {
           // Intentionally empty: the diagnostic sink is non-fatal.
         }
       },
     });
-    sounds.set(BED_SOUND_KEY, { handle, spriteNames: new Set(), src, sprite: undefined });
-    const playId = handle.play();
-    handle.loop(true, playId);
-    if (bed.volume !== undefined) handle.volume(bed.volume, playId);
+    sounds.set(key, { handle, spriteNames, src, sprite: definition.sprite });
+    return handle;
   };
 
   const service: AudioService = {
     load(soundId, definition) {
-      if (disposed) return;
+      if (disposed()) return;
       assertSoundId(soundId);
       assertSoundDefinition(soundId, definition);
       // Scene-facing `load`: the membership allowlist is the slice's
       // declared `scene.audio` (`allowed`). The composition bed source
-      // is NOT in this set — it is gated separately inside `startBed`
-      // — so a scene cannot register the bed URL as its own sound.
-      const src = normalizeSources(soundId, definition.src, allowed);
-      if (definition.sprite !== undefined) assertSpriteMap(soundId, definition.sprite);
-      const existing = sounds.get(soundId);
-      if (existing !== undefined) {
-        // Idempotent re-registration of the same sound (e.g. a shared
-        // transition SFX two scenes both `load` — the sound-id namespace
-        // is composition-slice-scoped); a different definition is a
-        // genuine conflict.
-        if (
-          sameSourceList(existing.src, src) &&
-          sameSpriteMap(existing.sprite, definition.sprite)
-        ) {
-          return;
-        }
-        throw new AudioSoundError(
-          `audio sound "${soundId}" is already registered with a different definition`,
-        );
-      }
-      const spriteNames: ReadonlySet<string> = new Set(
-        definition.sprite === undefined ? [] : Object.keys(definition.sprite),
-      );
-      const handle = engine.createSound({
-        src,
-        ...(definition.sprite === undefined ? {} : { sprite: definition.sprite }),
-        muted,
-        onError: (err) => {
-          // Howler's async load failures can arrive after the navigation
-          // ended (abort / supersession / completion). A disposed
-          // service must not write a stale diagnostic over the active
-          // navigation, and this non-fatal sink must not throw back
-          // through Howler's callback.
-          if (disposed) return;
-          try {
-            onError(
-              new AudioError(`audio sound "${soundId}": ${describeError(err)}`, { cause: err }),
-            );
-          } catch {
-            // Intentionally empty: the diagnostic sink is non-fatal.
-          }
-        },
-      });
-      sounds.set(soundId, { handle, spriteNames, src, sprite: definition.sprite });
+      // is NOT in this set — it is gated against the bed's own
+      // declaration at construction — so a scene cannot register the
+      // bed URL as its own sound.
+      registerSound(soundId, definition, allowed);
     },
 
     play(soundId, options) {
-      if (disposed) return;
+      if (disposed()) return;
       assertPlayOptions(soundId, options);
       const sound = requireSound(soundId);
       const opts = options ?? {};
@@ -1457,7 +1407,7 @@ export function createAudioService(
     },
 
     fade(soundId, from, to, durationMs) {
-      if (disposed) return;
+      if (disposed()) return;
       const sound = requireSound(soundId);
       assertGain(from, 'fade start volume');
       assertGain(to, 'fade end volume');
@@ -1475,14 +1425,14 @@ export function createAudioService(
     },
 
     stop(soundId) {
-      if (disposed) return;
+      if (disposed()) return;
       const sound = requireSound(soundId);
       sound.handle.stop();
       emitCue({ operation: 'stop', soundId });
     },
 
     stopGroup(group) {
-      if (disposed) return;
+      if (disposed()) return;
       assertGroupName(group);
       const list = groups.get(group);
       if (list !== undefined) {
@@ -1511,7 +1461,7 @@ export function createAudioService(
     },
 
     mute(muted) {
-      if (disposed) return;
+      if (disposed()) return;
       // Runtime boundary: scenes can be plain JS, so the boolean type
       // does not hold (codex review, cycle 4).
       if (typeof muted !== 'boolean') {
@@ -1524,50 +1474,88 @@ export function createAudioService(
       return engine.isMasterMuted();
     },
 
+    // Disposal triggers the single `lifecycle` controller; the teardown
+    // below runs on its abort. Idempotent — a second `abort()` after the
+    // controller has aborted fires no listener.
     stopAll() {
-      if (disposed) return;
-      disposed = true;
-      // Per-sound error isolation (codex review, cycle 3): a throwing
-      // engine `stop()` / `unload()` must not prevent later sounds from
-      // being torn down. Each call is wrapped; failures route through
-      // the non-fatal `onError` sink. Bookkeeping is cleared
-      // unconditionally so the disposed service is in a known state.
-      for (const [soundId, sound] of sounds) {
-        try {
-          sound.handle.stop();
-        } catch (err) {
-          reportCleanupError('stopAll', soundId, err);
-        }
-        try {
-          sound.handle.unload();
-        } catch (err) {
-          reportCleanupError('stopAll', soundId, err);
-        }
-      }
-      sounds.clear();
-      groups.clear();
+      lifecycle.abort();
     },
 
     isDisposed() {
-      return disposed;
+      return disposed();
     },
   };
 
-  // Composition audio bed (PUL-F014): start it BEFORE the abort wiring
-  // so a pre-aborted signal's `stopAll()` below also tears the bed
-  // down. Skipped entirely when `bedSuppressed` is set (`mode=
-  // standalone`) — the scene runs as if no surrounding composition
-  // existed — or when no composition supplied a bed, or when the
-  // navigation was already aborted (no point starting a loop the next
-  // line stops).
+  // The one place sounds are stopped + unloaded. Driven by the single
+  // `lifecycle` gate so navigation abort and an explicit `stopAll()`
+  // share one teardown path (PUL-F024 / ADR-004 — audio never survives
+  // the navigation that started it).
+  const teardown = (): void => {
+    // Per-sound error isolation (codex review, cycle 3): a throwing
+    // engine `stop()` / `unload()` must not prevent later sounds from
+    // being torn down. Each call is wrapped; failures route through the
+    // non-fatal `onError` sink. Bookkeeping is cleared unconditionally
+    // so the disposed service is in a known state.
+    for (const [soundId, sound] of sounds) {
+      try {
+        sound.handle.stop();
+      } catch (err) {
+        reportCleanupError('stopAll', soundId, err);
+      }
+      try {
+        sound.handle.unload();
+      } catch (err) {
+        reportCleanupError('stopAll', soundId, err);
+      }
+    }
+    sounds.clear();
+    groups.clear();
+  };
+
+  // Composition audio bed (PUL-F014): register it as a reserved sound id
+  // through the same `registerSound` core scene sounds use, then start
+  // it looping. The reserved key is deliberately NOT a kebab identifier,
+  // so the scene-facing `load` / `play` / `stop` (which run
+  // `assertSoundId`) can never name, collide with, or reach the bed —
+  // bed playback stays distinct from scene-owned `ctx.audio` playback,
+  // and the shared `sounds` map gives it `stopAll()` / abort teardown
+  // for free. The bed's membership allowlist is its OWN declared `src`
+  // (not the scene-facing `allowedSources`), so it is gated against the
+  // composition's bed declaration exactly as `scene.audio` gates scenes.
+  // Skipped when `bedSuppressed` is set (`mode=standalone` — the scene
+  // runs as if no surrounding composition existed), when no composition
+  // supplied a bed, or when the navigation was already aborted (no point
+  // starting a loop the abort below stops). No cue is emitted — the
+  // rehearsal cue log records scene-requested operations, and the bed is
+  // runtime infrastructure.
+  const startBed = (bed: AudioBedDeclaration): void => {
+    if (bed.volume !== undefined) assertGain(bed.volume, 'bed volume');
+    const bedAllowed: ReadonlySet<string> = new Set(
+      typeof bed.src === 'string' ? [bed.src] : bed.src,
+    );
+    const handle = registerSound(BED_SOUND_KEY, { src: bed.src }, bedAllowed);
+    if (handle === undefined) return;
+    const playId = handle.play();
+    handle.loop(true, playId);
+    if (bed.volume !== undefined) handle.volume(bed.volume, playId);
+  };
+
+  // Wire the single teardown to the `lifecycle` gate BEFORE anything can
+  // abort it, so both triggers — the per-navigation `options.signal` and
+  // the public `stopAll()` — converge on one teardown that runs once.
+  lifecycle.signal.addEventListener('abort', teardown, { once: true });
+
   if (options.bed !== undefined && options.bedSuppressed !== true && !options.signal.aborted) {
     startBed(options.bed);
   }
 
+  // Forward navigation abort into the gate. A pre-aborted navigation
+  // disposes the service immediately (after the bed-start guard above
+  // skipped, so no sound was created to tear down).
   if (options.signal.aborted) {
-    service.stopAll();
+    lifecycle.abort();
   } else {
-    options.signal.addEventListener('abort', () => service.stopAll(), { once: true });
+    options.signal.addEventListener('abort', () => lifecycle.abort(), { once: true });
   }
 
   return service;
