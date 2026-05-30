@@ -27,10 +27,11 @@
 // scene, rewrite URL/history, or persist the playhead; they are
 // runner-owned transport state on the same command seam, not a new
 // mode or lifecycle path (ADR-024). The keyboard presenter source
-// (`src/system/presenter/keyboard-source.ts`) and the GSAP runner's
-// `applyPresenterCommandToMaster` (`src/runtime/timeline.ts`) now
-// deliver and honor these commands end to end — PUL-F020 / PUL-F021 are
-// ACTIVE (issue #132).
+// (`src/system/presenter/keyboard-source.ts`) and the present-mode
+// transport seam `applyPresenterCommandToMaster`
+// (`src/runtime/presenter-transport.ts`, wired onto the master only when
+// `mode=present` forwards a controller) now deliver and honor these
+// commands end to end — PUL-F020 / PUL-F021 are ACTIVE (issue #132).
 //
 // PUL-F025 (master mute) composes ADR-004 with this same seam by
 // adding the `toggle-master-mute` kind to the allowlist below. The

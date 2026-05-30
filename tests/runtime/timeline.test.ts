@@ -1235,4 +1235,36 @@ describe('createGsapCompositionTimeline — presenter command transport (PUL-F02
     r.abort();
     await r.settled;
   });
+
+  // The transport seam (`presenter-transport.ts`) is opt-in: it is wired
+  // ONLY when the run input carries a `presenter` controller — i.e. the
+  // present-mode path. A non-present navigation forwards no controller,
+  // so the transport state machine is never instantiated and the
+  // workbench command source is never subscribed.
+  it('a non-present run (no opts.presenter) never subscribes the presenter source — transport not instantiated', async () => {
+    const ctrl = new AbortController();
+    const subscribe = vi.fn(() => () => undefined);
+    const source: PresenterCommandSource = { subscribe };
+    // The controller exists, but it is NOT forwarded as `opts.presenter`
+    // (the loader builds one only under mode=present). The transport must
+    // not be wired, so the source's `subscribe` is never invoked.
+    createPresenterController(source, ctrl.signal);
+    const adapter = createGsapCompositionTimeline({ engine });
+    await adapter.run([segment('a', sceneTl(1))], { signal: ctrl.signal });
+    expect(subscribe).not.toHaveBeenCalled();
+    ctrl.abort();
+  });
+
+  it('a present run (opts.presenter set) subscribes the presenter source — transport wired', async () => {
+    const ctrl = new AbortController();
+    const subscribe = vi.fn(() => () => undefined);
+    const source: PresenterCommandSource = { subscribe };
+    const presenter = createPresenterController(source, ctrl.signal);
+    const adapter = createGsapCompositionTimeline({ engine });
+    const settled = adapter.run([segment('a', sceneTl(30))], { signal: ctrl.signal, presenter });
+    await flush();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    ctrl.abort();
+    await settled;
+  });
 });

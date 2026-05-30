@@ -70,6 +70,7 @@ import type {
   SceneTimelineSegment,
 } from './composition-resolver';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
+import { wirePresenterCommands } from './presenter-transport';
 
 type GsapTimeline = InstanceType<typeof gsap.core.Timeline>;
 
@@ -138,6 +139,26 @@ const isGsapTimeline = (value: unknown): value is GsapTimeline =>
  * `composition timeline failed:` envelope and tears every mounted scene
  * down (ADR-025).
  */
+/**
+ * A label's time must be a finite number in `[0, duration]` — a label
+ * outside the scene's content is not a usable moment. `kind` is the noun
+ * the error uses (`sentinel label` for runtime sentinels, `beat` for
+ * authored beats) so both callers share one range check.
+ */
+function validateLabelTime(
+  sceneId: string,
+  kind: string,
+  label: string,
+  time: number,
+  duration: number,
+): void {
+  if (!Number.isFinite(time) || time < 0 || time > duration) {
+    throw new SceneTimelineLabelError(
+      `scene "${sceneId}" timeline ${kind} "${label}" is at an invalid time ${time}: a ${kind} time must be a finite number between 0 and the scene timeline duration (${duration}s)`,
+    );
+  }
+}
+
 export function assertSceneTimeline(
   value: unknown,
   sceneId: string,
@@ -156,11 +177,7 @@ export function assertSceneTimeline(
     // by `MasterTimeline.beats()`. The kebab-case rule is a contract
     // for beat names only.
     if (label.startsWith('_')) {
-      if (!Number.isFinite(time) || time < 0 || time > duration) {
-        throw new SceneTimelineLabelError(
-          `scene "${sceneId}" timeline sentinel label "${label}" is at an invalid time ${time}: a label time must be a finite number between 0 and the scene timeline duration (${duration}s)`,
-        );
-      }
+      validateLabelTime(sceneId, 'sentinel label', label, time, duration);
       continue;
     }
     if (!isKebabIdentifier(label)) {
@@ -168,11 +185,7 @@ export function assertSceneTimeline(
         `scene "${sceneId}" timeline label "${label}" is not a valid beat: beat labels must be lowercase kebab-case identifiers (${KEBAB_IDENTIFIER_FORM})`,
       );
     }
-    if (!Number.isFinite(time) || time < 0 || time > duration) {
-      throw new SceneTimelineLabelError(
-        `scene "${sceneId}" timeline beat "${label}" is at an invalid time ${time}: a beat time must be a finite number between 0 and the scene timeline duration (${duration}s)`,
-      );
-    }
+    validateLabelTime(sceneId, 'beat', label, time, duration);
   }
 }
 
@@ -797,6 +810,23 @@ type MasterRunMode = 'hold' | 'loop' | 'play' | 'scrub';
  *    → `'scrub'`.
  *  - default: → `'play'`.
  */
+/**
+ * The head hints that freeze the master at the addressed beat (or frame
+ * 0) and never play, in precedence order. Each shares the same
+ * positioning — `seek(beatLabel ?? 0); pause()` — differing only in the
+ * run mode it reports, so the branch is table-driven rather than a chain
+ * of near-identical `if` blocks. `headHold` is NOT in this table: it
+ * holds at frame 0 unconditionally and must run before the beat lookup
+ * (`mode=paused` is first-frame inspection, never a beat seek).
+ */
+const PAUSE_AT_BEAT_HINTS: readonly {
+  readonly engaged: (opts: CompositionTimelineRunOptions) => boolean;
+  readonly mode: MasterRunMode;
+}[] = [
+  { engaged: (o) => o.headScreenshot === 'capture', mode: 'hold' },
+  { engaged: (o) => o.headCueGate === 'monotonic-forward', mode: 'scrub' },
+];
+
 function positionMaster(
   master: MasterTimeline,
   headSceneId: string | undefined,
@@ -808,15 +838,11 @@ function positionMaster(
     return 'hold';
   }
   const beatLabel = resolveHeadBeatLabel(master, headSceneId, opts);
-  if (opts.headScreenshot === 'capture') {
+  const pauseHint = PAUSE_AT_BEAT_HINTS.find((hint) => hint.engaged(opts));
+  if (pauseHint !== undefined) {
     master.seek(beatLabel ?? 0);
     master.pause();
-    return 'hold';
-  }
-  if (opts.headCueGate === 'monotonic-forward') {
-    master.seek(beatLabel ?? 0);
-    master.pause();
-    return 'scrub';
+    return pauseHint.mode;
   }
   if (beatLabel !== undefined) {
     master.seek(beatLabel);
@@ -852,7 +878,14 @@ function buildSegmentLabelMap(
   return out;
 }
 
-const segmentIndexAtTime = (segments: readonly MasterSegment[], time: number): number => {
+/**
+ * The 0-based index of the composition segment whose start time the
+ * `time` playhead has reached, scanning from the tail so the most recent
+ * boundary wins. `-1` for an empty slice; `0` before the first segment
+ * start. The present-mode presenter transport (`presenter-transport.ts`)
+ * uses this to keep its scene cursor in sync with the playhead.
+ */
+export const segmentIndexAtTime = (segments: readonly MasterSegment[], time: number): number => {
   if (segments.length === 0) return -1;
   for (let i = segments.length - 1; i >= 0; i--) {
     const segment = segments[i];
@@ -860,170 +893,6 @@ const segmentIndexAtTime = (segments: readonly MasterSegment[], time: number): n
   }
   return 0;
 };
-
-/**
- * Per-activation presenter transport state, held inside the
- * {@link createGsapCompositionTimeline} `run` closure (fresh per
- * navigation). GSAP exposes only a single `paused()` bit, which is not
- * a sufficient state model: a PUL-F020 beat `hold`, a GSAP `addPause`
- * advance-gate, and an explicit PUL-F021 `pause` all read as "paused"
- * but compose differently. ADR-024 *Cross-command precedence* requires
- * the runner to keep them apart; these two flags are that private
- * state, scoped to the timeline adapter — not URL, loader, scene, or
- * storage state.
- */
-interface PresenterTransportState {
-  /** A PUL-F020 beat `hold` is engaged. */
-  held: boolean;
-  /** A PUL-F021 transport `pause` freeze is engaged. */
-  explicitlyPaused: boolean;
-  /** Current scene segment cursor in the active composition slice. */
-  activeSegmentIndex: number;
-}
-
-/**
- * Translate a {@link PresenterCommand} into a master-timeline transport
- * action. Wired by {@link createGsapCompositionTimeline} so the
- * presenter keyboard / cross-window bridge / future remote source all
- * drive playback the same way. ADR-024 *Cross-command precedence* is
- * the binding contract:
- *
- *  - `pause` — engage the explicit PUL-F021 transport freeze. The
- *    playhead stops wherever it is.
- *  - `resume` — release an explicit `pause`. A `resume` with no explicit
- *    pause in effect is a no-op; a `resume` that lifts a pause engaged
- *    while a `hold` was active leaves the master held (the snapshotted
- *    beat-pacing state survives — only the freeze is lifted).
- *  - `hold` — engage a PUL-F020 beat hold at the current playhead.
- *    Idempotent: a second `hold` keeps the master held; it is NOT a
- *    play/pause toggle.
- *  - `advance` — release a beat hold / `addPause` gate, or (when
- *    playing) seek forward to the next authored beat label OR next
- *    segment boundary (whichever is closer). Dropped while explicitly
- *    paused — a beat-pacing command never unfreezes an explicit pause.
- *  - `skip-forward` / `skip-backward` — seek to the start of the next /
- *    previous segment (frame 0 before the first). While explicitly
- *    paused this seeks the frozen playhead but does not resume.
- *  - `toggle-master-mute` / `toggle-practice` — audio-owned / L2-owned;
- *    ignored here.
- */
-function presenterAdvance(
-  master: MasterTimeline,
-  segments: readonly MasterSegment[],
-  state: PresenterTransportState,
-  onSegmentChange: (segment: MasterSegment) => void,
-): void {
-  // ADR-024: a beat-pacing command received while explicitly paused
-  // MUST NOT resume playback — drop it; the frozen playhead stays put.
-  if (state.explicitlyPaused) return;
-  state.held = false;
-  if (master.isPaused()) {
-    // Release the beat hold (or a GSAP addPause advance-gate).
-    master.play();
-    return;
-  }
-  const now = master.time();
-  const beatTimes = master.beats().map((b) => b.time);
-  const nextBeat = beatTimes.filter((t) => t > now + 0.05).sort((a, b) => a - b)[0];
-  const nextSegment = segments.find((s) => s.time > now + 0.05);
-  if (nextBeat === undefined && nextSegment === undefined) return;
-  if (nextSegment !== undefined && (nextBeat === undefined || nextSegment.time <= nextBeat)) {
-    master.seek(nextSegment.time);
-    state.activeSegmentIndex = nextSegment.index;
-    onSegmentChange(nextSegment);
-    return;
-  }
-  if (nextBeat !== undefined) {
-    master.seek(nextBeat);
-    state.activeSegmentIndex = segmentIndexAtTime(segments, nextBeat);
-  }
-}
-
-/**
- * Shared skip body: seek to `target`, report the new active segment,
- * then — unless an explicit PUL-F021 pause is in effect — release any
- * beat hold and resume playback. ADR-024 permits skip to move the
- * frozen playhead while paused (presenter scrubbing), but it must not
- * resume.
- */
-function presenterSkip(
-  master: MasterTimeline,
-  state: PresenterTransportState,
-  target: MasterSegment | undefined,
-  onSegmentChange: (segment: MasterSegment) => void,
-): void {
-  if (target === undefined) return;
-  master.seek(target.time);
-  state.activeSegmentIndex = target.index;
-  onSegmentChange(target);
-  if (state.explicitlyPaused) return;
-  state.held = false;
-  if (master.isPaused()) master.play();
-}
-
-function presenterSkipForward(
-  master: MasterTimeline,
-  segments: readonly MasterSegment[],
-  state: PresenterTransportState,
-  onSegmentChange: (segment: MasterSegment) => void,
-): void {
-  state.activeSegmentIndex = segmentIndexAtTime(segments, master.time());
-  const targetIndex = Math.min(state.activeSegmentIndex + 1, segments.length - 1);
-  presenterSkip(master, state, segments[targetIndex], onSegmentChange);
-}
-
-function presenterSkipBackward(
-  master: MasterTimeline,
-  segments: readonly MasterSegment[],
-  state: PresenterTransportState,
-  onSegmentChange: (segment: MasterSegment) => void,
-): void {
-  state.activeSegmentIndex = segmentIndexAtTime(segments, master.time());
-  const targetIndex = Math.max(state.activeSegmentIndex - 1, 0);
-  presenterSkip(master, state, segments[targetIndex], onSegmentChange);
-}
-
-function applyPresenterCommandToMaster(
-  master: MasterTimeline,
-  segments: readonly MasterSegment[],
-  state: PresenterTransportState,
-  onSegmentChange: (segment: MasterSegment) => void,
-  cmd: { readonly kind: string },
-): void {
-  switch (cmd.kind) {
-    case 'hold':
-      // Engage a PUL-F020 beat hold. Idempotent — NOT a toggle.
-      state.held = true;
-      master.pause();
-      return;
-    case 'pause':
-      // Engage the explicit PUL-F021 transport freeze.
-      state.explicitlyPaused = true;
-      master.pause();
-      return;
-    case 'resume':
-      // ADR-024: only `resume` unfreezes an explicit pause; a `resume`
-      // with no explicit pause in effect is a no-op.
-      if (!state.explicitlyPaused) return;
-      state.explicitlyPaused = false;
-      // Restore the snapshotted beat-pacing state: a `hold` engaged
-      // before the pause survives the resume — the master stays held.
-      if (state.held) return;
-      master.play();
-      return;
-    case 'advance':
-      presenterAdvance(master, segments, state, onSegmentChange);
-      return;
-    case 'skip-forward':
-      presenterSkipForward(master, segments, state, onSegmentChange);
-      return;
-    case 'skip-backward':
-      presenterSkipBackward(master, segments, state, onSegmentChange);
-      return;
-    default:
-      return; // toggle-master-mute / toggle-practice / unknown — not master's concern
-  }
-}
 
 /**
  * Run the positioned master and resolve when the composition activation
@@ -1094,22 +963,42 @@ function runMasterUntilDone(
   });
 }
 
+/**
+ * The per-activation observability seam: the single sink the run loop
+ * (and the composer's segment-start callbacks, and the present-mode
+ * transport) push active-segment changes through. `report` de-duplicates
+ * consecutive identical segments so a GSAP segment-start callback that
+ * lands on the segment a direct seek already reported does not double-
+ * fire; `reportInitial` seeds it from the positioned playhead.
+ */
+interface SegmentReporter {
+  report(segment: MasterSegment): void;
+  reportInitial(master: MasterTimeline, segmentAnchors: readonly MasterSegment[]): void;
+}
+
 const createSegmentReporter = (
   onSegmentChange: ((segment: MasterSegment) => void) | undefined,
-): ((segment: MasterSegment) => void) => {
+): SegmentReporter => {
   let lastReportedSegment: string | null = null;
-  return (segment) => {
+  const report = (segment: MasterSegment): void => {
     const key = `${segment.label}@${segment.index}`;
     if (key === lastReportedSegment) return;
     lastReportedSegment = key;
     onSegmentChange?.(segment);
+  };
+  return {
+    report,
+    reportInitial(master, segmentAnchors) {
+      const initial = segmentAnchors[segmentIndexAtTime(segmentAnchors, master.time())];
+      if (initial !== undefined) report(initial);
+    },
   };
 };
 
 const buildRunComposeOptions = (
   opts: CompositionTimelineRunOptions,
   options: GsapCompositionTimelineOptions,
-  reportSegmentChange: (segment: MasterSegment) => void,
+  reporter: SegmentReporter,
 ): ComposeMasterTimelineOptions => {
   const composeOpts: ComposeMasterTimelineOptions = {};
   if (options.transitions !== undefined) {
@@ -1120,39 +1009,14 @@ const buildRunComposeOptions = (
       options.transitionOverlay;
   }
   if (options.onSegmentChange !== undefined) {
-    (composeOpts as { onSegmentStart?: (segment: MasterSegment) => void }).onSegmentStart =
-      reportSegmentChange;
+    (composeOpts as { onSegmentStart?: (segment: MasterSegment) => void }).onSegmentStart = (
+      segment,
+    ) => reporter.report(segment);
   }
   if (opts.headCueGate === 'monotonic-forward' && opts.audioCueGate !== undefined) {
     (composeOpts as { audioCueGate?: CueGateControl }).audioCueGate = opts.audioCueGate;
   }
   return composeOpts;
-};
-
-const reportInitialSegment = (
-  master: MasterTimeline,
-  segmentAnchors: readonly MasterSegment[],
-  reportSegmentChange: (segment: MasterSegment) => void,
-): void => {
-  const initialSegment = segmentAnchors[segmentIndexAtTime(segmentAnchors, master.time())];
-  if (initialSegment !== undefined) reportSegmentChange(initialSegment);
-};
-
-const wirePresenterCommands = (
-  master: MasterTimeline,
-  segmentAnchors: readonly MasterSegment[],
-  opts: CompositionTimelineRunOptions,
-  reportSegmentChange: (segment: MasterSegment) => void,
-): void => {
-  if (opts.presenter === undefined) return;
-  const transport: PresenterTransportState = {
-    held: false,
-    explicitlyPaused: false,
-    activeSegmentIndex: segmentIndexAtTime(segmentAnchors, master.time()),
-  };
-  opts.presenter.subscribe((cmd) => {
-    applyPresenterCommandToMaster(master, segmentAnchors, transport, reportSegmentChange, cmd);
-  });
 };
 
 /**
@@ -1168,13 +1032,15 @@ const wirePresenterCommands = (
  * tears every scene down).
  *
  * `opts.presenter` (the per-navigation presenter command controller) is
- * subscribed here: each {@link PresenterCommand} is translated into a
- * master transport action by {@link applyPresenterCommandToMaster}
- * (PUL-F020 advance / hold / skip-forward / skip-backward; PUL-F021
- * pause / resume). A segment's `range` (per-entry composition override)
- * is still not interpreted — sub-range cuts are PUL-F003's and extend
- * this adapter's `MasterTimeline` transport seam when that requirement
- * is implemented.
+ * the opt-in present-mode seam: when supplied,
+ * {@link import('./presenter-transport').wirePresenterCommands} subscribes
+ * it and translates each presenter command into a master transport
+ * action (PUL-F020 advance / hold / skip-forward / skip-backward;
+ * PUL-F021 pause / resume). A non-present navigation supplies no
+ * `presenter`, so the transport state machine is never instantiated. A
+ * segment's `range` (per-entry composition override) is still not
+ * interpreted — sub-range cuts are PUL-F003's and extend this adapter's
+ * `MasterTimeline` transport seam when that requirement is implemented.
  */
 export function createGsapCompositionTimeline(
   options: GsapCompositionTimelineOptions,
@@ -1185,13 +1051,13 @@ export function createGsapCompositionTimeline(
       let master: MasterTimeline;
       let mode: MasterRunMode;
       let segmentAnchors: readonly MasterSegment[];
-      const reportSegmentChange = createSegmentReporter(onSegmentChange);
+      const reporter = createSegmentReporter(onSegmentChange);
       try {
-        const composeOpts = buildRunComposeOptions(opts, options, reportSegmentChange);
+        const composeOpts = buildRunComposeOptions(opts, options, reporter);
         master = composeMasterTimeline(engine, segments, composeOpts);
         segmentAnchors = buildSegmentLabelMap(segments, master);
         mode = positionMaster(master, segments[0]?.id, opts);
-        reportInitialSegment(master, segmentAnchors, reportSegmentChange);
+        reporter.reportInitial(master, segmentAnchors);
       } catch (err) {
         return Promise.reject(err);
       }
@@ -1204,10 +1070,12 @@ export function createGsapCompositionTimeline(
         return Promise.reject(err);
       }
       // Wire the per-navigation presenter controller to master-timeline
-      // navigation. The controller is signal-bound (per-handler
-      // auto-detach on navigation abort), so we never accumulate
-      // subscriptions across activations.
-      wirePresenterCommands(master, segmentAnchors, opts, reportSegmentChange);
+      // transport — ONLY when `opts.presenter` is set (present mode). A
+      // non-present navigation never instantiates the transport state
+      // machine in `presenter-transport.ts`. The controller is
+      // signal-bound (per-handler auto-detach on navigation abort), so
+      // subscriptions never accumulate across activations.
+      wirePresenterCommands(master, segmentAnchors, opts, (segment) => reporter.report(segment));
       return runMasterUntilDone(master, mode, opts.signal);
     },
   };
