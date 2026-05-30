@@ -11,7 +11,12 @@
 // their own DOM use the scene root returned from `mountTemplateRoot`.
 
 import { NAVIGATION_MODES } from '../../runtime/navigation';
-import type { Caption, SceneLifecycleFn, SceneModule } from '../../runtime/scene';
+import {
+  type Caption,
+  type SceneLifecycleFn,
+  type SceneModule,
+  defineScene,
+} from '../../runtime/scene';
 import type { WorkbenchSceneCtx } from '../../runtime/scene-loader';
 import type { ChromeSlots } from '../chrome';
 import { addAdvanceGate } from '../helpers/timing';
@@ -315,21 +320,23 @@ export interface BuildTemplateSceneHost {
 
 /**
  * Build a `SceneModule` from the template-specific lifecycle hooks +
- * metadata. Provides sensible defaults so each template factory only
- * declares what differs.
+ * metadata. Routes through {@link defineScene} so scene defaulting and
+ * validation live in exactly one place; only the template-specific
+ * defaults (a `template` tag, standalone/trailer-safe by default, and
+ * the standard root-removing cleanup) are applied here.
  */
-export const buildTemplateScene = (host: BuildTemplateSceneHost): SceneModule => ({
-  id: host.id,
-  title: host.title,
-  duration: null,
-  tags: host.tags ?? ['template'],
-  assets: host.assets ?? [],
-  captions: host.captions ?? [],
-  audio: host.audio ?? [],
-  defaultNext: host.defaultNext ?? null,
-  standalone: host.standalone ?? true,
-  trailerSafe: host.trailerSafe ?? true,
-  create: host.create,
-  timeline: host.timeline,
-  cleanup: host.cleanup ?? cleanupTemplateRoot(host.id),
-});
+export const buildTemplateScene = (host: BuildTemplateSceneHost): SceneModule =>
+  defineScene({
+    id: host.id,
+    title: host.title,
+    tags: host.tags ?? ['template'],
+    assets: host.assets,
+    captions: host.captions,
+    audio: host.audio,
+    defaultNext: host.defaultNext,
+    standalone: host.standalone ?? true,
+    trailerSafe: host.trailerSafe ?? true,
+    create: host.create,
+    timeline: host.timeline,
+    cleanup: host.cleanup ?? cleanupTemplateRoot(host.id),
+  });

@@ -318,6 +318,59 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
 }
 
 /**
+ * Author-facing scene input. Only identity (`id`, `title`) and the two
+ * lifecycle hooks that actually do work (`create`, `timeline`) are
+ * required; every other field defaults. {@link defineScene} normalizes
+ * this into the canonical {@link SceneModule} the runtime consumes, so
+ * authoring a scene is a plain object literal — not a 13-field ritual.
+ */
+export interface SceneInput {
+  id: string;
+  title: string;
+  duration?: number | null | undefined;
+  tags?: readonly string[] | undefined;
+  assets?: readonly string[] | undefined;
+  captions?: readonly Caption[] | undefined;
+  audio?: readonly string[] | undefined;
+  defaultNext?: string | null | undefined;
+  standalone?: boolean | undefined;
+  trailerSafe?: boolean | undefined;
+  create: SceneLifecycleFn;
+  timeline: SceneLifecycleFn;
+  /** Defaults to a no-op. Mandatory cleanup (PUL-P001) is satisfied trivially when a scene mounts nothing of its own. */
+  cleanup?: SceneLifecycleFn | undefined;
+}
+
+const NOOP_CLEANUP: SceneLifecycleFn = () => {};
+
+/**
+ * The single source of scene defaulting. Fills the optional metadata
+ * fields, then asserts the result against the {@link SceneModule}
+ * contract so a malformed input fails loudly at authoring time rather
+ * than at mount time. Template factories and decks both route through
+ * here — there is exactly one place defaults live.
+ */
+export function defineScene(input: SceneInput): SceneModule {
+  const scene: SceneModule = {
+    id: input.id,
+    title: input.title,
+    duration: input.duration ?? null,
+    tags: input.tags ?? [],
+    assets: input.assets ?? [],
+    captions: input.captions ?? [],
+    audio: input.audio ?? [],
+    defaultNext: input.defaultNext ?? null,
+    standalone: input.standalone ?? false,
+    trailerSafe: input.trailerSafe ?? false,
+    create: input.create,
+    timeline: input.timeline,
+    cleanup: input.cleanup ?? NOOP_CLEANUP,
+  };
+  assertSceneModule(scene);
+  return scene;
+}
+
+/**
  * PUL-F030 / ADR-029: predicate the loader/workbench unlock gate, the
  * validation pass, and future authoring lints all consult so "this
  * scene declares audio" has one source of truth. True when the

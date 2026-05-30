@@ -3,6 +3,7 @@ import {
   type Caption,
   type SceneModule,
   assertSceneModule,
+  defineScene,
   isSceneModule,
   sceneDeclaresAudio,
 } from '../../src/runtime/scene';
@@ -560,5 +561,93 @@ describe('SceneModule contract (PUL-F001)', () => {
         /non-negative integer/,
       );
     });
+  });
+});
+
+describe('defineScene (authoring normalizer)', () => {
+  it('requires only id, title, create, and timeline', () => {
+    const scene = defineScene({
+      id: 'minimal',
+      title: 'Minimal',
+      create: () => undefined,
+      timeline: () => undefined,
+    });
+    expect(isSceneModule(scene)).toBe(true);
+  });
+
+  it('defaults every optional metadata field', () => {
+    const scene = defineScene({
+      id: 'minimal',
+      title: 'Minimal',
+      create: () => undefined,
+      timeline: () => undefined,
+    });
+    expect(scene.duration).toBeNull();
+    expect(scene.tags).toEqual([]);
+    expect(scene.assets).toEqual([]);
+    expect(scene.captions).toEqual([]);
+    expect(scene.audio).toEqual([]);
+    expect(scene.defaultNext).toBeNull();
+    expect(scene.standalone).toBe(false);
+    expect(scene.trailerSafe).toBe(false);
+  });
+
+  it('defaults cleanup to a callable no-op (mandatory cleanup, PUL-P001)', () => {
+    const scene = defineScene({
+      id: 'minimal',
+      title: 'Minimal',
+      create: () => undefined,
+      timeline: () => undefined,
+    });
+    expect(typeof scene.cleanup).toBe('function');
+    expect(() => scene.cleanup(undefined)).not.toThrow();
+  });
+
+  it('preserves supplied values over defaults', () => {
+    const captions: Caption[] = [{ at: 0, text: 'hook' }];
+    const scene = defineScene({
+      id: 'rich',
+      title: 'Rich',
+      duration: 4200,
+      tags: ['act-i'],
+      assets: ['assets/a.mp3'],
+      audio: ['assets/a.mp3'],
+      captions,
+      defaultNext: 'next-scene',
+      standalone: true,
+      trailerSafe: true,
+      create: () => undefined,
+      timeline: () => undefined,
+    });
+    expect(scene.duration).toBe(4200);
+    expect(scene.tags).toEqual(['act-i']);
+    expect(scene.audio).toEqual(['assets/a.mp3']);
+    expect(scene.captions).toEqual(captions);
+    expect(scene.defaultNext).toBe('next-scene');
+    expect(scene.standalone).toBe(true);
+    expect(scene.trailerSafe).toBe(true);
+  });
+
+  it('validates the normalized result and throws on a malformed field', () => {
+    expect(() =>
+      defineScene({
+        id: 'Bad Id',
+        title: 'Bad',
+        create: () => undefined,
+        timeline: () => undefined,
+      }),
+    ).toThrow(/scene "Bad Id" is invalid: id/);
+  });
+
+  it('enforces the audio-subset-of-assets cross-field invariant (PUL-F030)', () => {
+    expect(() =>
+      defineScene({
+        id: 'audio-leak',
+        title: 'Audio Leak',
+        audio: ['assets/undeclared.mp3'],
+        create: () => undefined,
+        timeline: () => undefined,
+      }),
+    ).toThrow(/audio\[0\].*must be a member of scene\.assets/);
   });
 });
