@@ -54,8 +54,14 @@ function per site.
 | [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `normalizeSources` arrow | 17 |
 | [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `play(soundId, options)` method | 24 |
 | [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `buildLoad` arrow | 18 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `runLifecycle` arrow | 21 |
 | [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `runTarget` async arrow | 23 |
+
+`runLifecycle` (formerly score 21) was removed from this list when the
+per-mode runner hints (`repeat` / `hold` / `cueGate` / `screenshot`)
+collapsed from four `mode === X` ternaries into a single
+`...runnerHints` spread sourced from
+[`src/runtime/mode-profile.ts`](../../src/runtime/mode-profile.ts). Its
+site-level suppression was deleted with it.
 
 ### Test fixtures and helpers
 

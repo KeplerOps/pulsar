@@ -26,6 +26,7 @@
 // removal — testable against fakes while production `main.ts` supplies
 // real `document.createElement` and the live mount point.
 
+import { profileFor } from './mode-profile';
 import { NAVIGATION_MODES, type NavigationMode } from './navigation';
 
 /**
@@ -131,18 +132,7 @@ export interface WorkbenchChromeController {
  * the resolver.
  */
 export function chromeVisibilityFor(mode: NavigationMode): 'visible' | 'hidden' {
-  switch (mode) {
-    case 'standalone':
-    case 'screenshot':
-      return 'hidden';
-    case 'present':
-    case 'loop':
-    case 'paused':
-    case 'scrub':
-    case 'prompter':
-    case 'rehearsal':
-      return 'visible';
-  }
+  return profileFor(mode).chromeVisibility;
 }
 
 const VISIBILITY_ATTR = 'data-pulsar-chrome-visibility';

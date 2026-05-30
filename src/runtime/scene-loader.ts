@@ -49,6 +49,7 @@ import type {
 } from './composition-resolver';
 import { describeErrorDetailed, formatSceneContext } from './error';
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
+import { profileFor } from './mode-profile';
 import {
   NAVIGATION_MODES,
   type NavigationLocator,
@@ -658,9 +659,7 @@ function countSceneOccurrences(target: SceneNavigationTarget): Map<string, numbe
  * budget and the mode→policy table lives in one place.
  */
 function audioOutputPolicyFor(mode: NavigationMode): AudioOutputPolicy {
-  if (mode === 'rehearsal') return 'log-cues';
-  if (mode === 'screenshot' || mode === 'paused') return 'silent';
-  return 'audible';
+  return profileFor(mode).audioPolicy;
 }
 
 /**
@@ -1268,6 +1267,10 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // selects whether the audio service is `silent` (screenshot /
     // paused suppress audible playback — ADR-019 / ADR-021).
     const mode = effectiveMode(target);
+    // Mode is data: the profile decides audio policy, slice truncation,
+    // bed suppression, the scrub cue gate, and the head-scene runner
+    // hints. See ./mode-profile.ts.
+    const profile = profileFor(mode);
     // PUL-F018 / ADR-021: the per-navigation deterministic RNG seed,
     // derived from the addressed URL target. Computed once here and
     // combined per occurrence in `buildSceneCtx` so every scene
@@ -1324,8 +1327,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     // cursor, not playing monotonically forward — and the GSAP adapter
     // opens it on `play()`. Absent for every other mode, so non-scrub
     // navigations build an ungated audio service exactly as before.
-    const audioCueGate: CueGateControl | undefined =
-      mode === 'scrub' ? createCueGate(false) : undefined;
+    const audioCueGate: CueGateControl | undefined = profile.buildScrubCueGate
+      ? createCueGate(false)
+      : undefined;
     // issue #99: the loader threads a per-occurrence ctx factory rather
     // than a single ctx. `buildCtx` builds the navigation-scoped base
     // (stage / gsap / audio / mode / presenter / chrome) once; the
@@ -1358,7 +1362,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         ...(resolved.composition?.audioBed === undefined
           ? {}
           : { bed: resolved.composition.audioBed }),
-        bedSuppressed: mode === 'standalone',
+        bedSuppressed: profile.suppressBed,
         // PUL-F017 / ADR-020: the shared cue gate (scrub only). The
         // audio service consults it; the timeline adapter toggles it.
         ...(audioCueGate === undefined ? {} : { cueGate: audioCueGate }),
@@ -1391,55 +1395,14 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
     const beat = target.beat;
     const onBeatMissing = buildOnBeatMissing(beat, resolved.scene.id, controller.signal);
-    // PUL-F015 / ADR-018: under `mode=loop` the runner restarts the
-    // addressed scene's timeline on completion. The loader is the
-    // dispatch point for mode → runner-input plumbing (parallel to
-    // PUL-F012's `ctx.mode` derivation): when `effectiveMode === 'loop'`,
-    // pass `repeat: 'until-aborted'` through the bridge. The bridge
-    // and resolver scope delivery to the head scene only — following
-    // composition entries do not see `repeat`, because a looping
-    // head's timeline never naturally completes. Use a literal
-    // `undefined` sentinel so the spread below cleanly omits the key
-    // for non-loop modes (parity with the `beat` plumbing).
-    const repeat: 'until-aborted' | undefined = mode === 'loop' ? 'until-aborted' : undefined;
-    // PUL-F016 / ADR-019: under `mode=paused` the runner mounts the
-    // addressed scene and holds its timeline at the first frame.
-    // Same dispatch-point pattern as `repeat`: when
-    // `effectiveMode === 'paused'`, pass `hold: 'first-frame'`
-    // through the bridge. The bridge and resolver scope delivery to
-    // the head scene only — following composition entries do not see
-    // `hold`, because a paused head's timeline never advances.
-    // `mode=paused` and `mode=loop` are mutually exclusive at the URL
-    // boundary (mode is a single field), so at most one of `repeat` /
-    // `hold` is non-undefined here.
-    const hold: 'first-frame' | undefined = mode === 'paused' ? 'first-frame' : undefined;
-    // PUL-F017 / ADR-020: under `mode=scrub` the runner gates audio
-    // cues to monotonic forward playback only. Same dispatch-point
-    // pattern as `repeat` and `hold`: when `effectiveMode === 'scrub'`,
-    // pass `cueGate: 'monotonic-forward'` through the bridge. The
-    // bridge and resolver scope delivery to the head scene only —
-    // following composition entries do not see `cueGate`, because the
-    // slice is truncated upstream and the head's interactive timeline
-    // never hands off to following entries. `mode=scrub`, `mode=loop`,
-    // and `mode=paused` are mutually exclusive at the URL boundary,
-    // so at most one of `repeat` / `hold` / `cueGate` is non-undefined
-    // here.
-    const cueGate: 'monotonic-forward' | undefined =
-      mode === 'scrub' ? 'monotonic-forward' : undefined;
-    // PUL-F018 / ADR-021: under `mode=screenshot` the runner renders
-    // the addressed scene at the addressed beat (or first frame),
-    // holds the timeline still, suppresses all audio, and sources
-    // any randomness from a deterministic seed. Same dispatch-point
-    // pattern as `repeat` / `hold` / `cueGate`: when
-    // `effectiveMode === 'screenshot'`, pass `screenshot: 'capture'`
-    // through the bridge. The bridge and resolver scope delivery to
-    // the head scene only — following composition entries do not
-    // see `screenshot`, because the slice is truncated upstream and
-    // the captured frame belongs to one scene. `mode=screenshot`,
-    // `mode=scrub`, `mode=loop`, and `mode=paused` are mutually
-    // exclusive at the URL boundary, so at most one of `repeat` /
-    // `hold` / `cueGate` / `screenshot` is non-undefined here.
-    const screenshot: 'capture' | undefined = mode === 'screenshot' ? 'capture' : undefined;
+    // Head-scene runner-input hints (repeat / hold / cueGate /
+    // screenshot) per the mode profile. The resolver scopes each hint
+    // to the addressed head scene only; following composition entries
+    // never see them. The modes that set them are mutually exclusive
+    // at the URL boundary, so at most one field is present. See
+    // ./mode-profile.ts for the per-mode table and PUL-F015..F018 /
+    // ADR-018..021 for the semantics.
+    const runnerHints = profile.runnerHints;
     // `presenter` / `presenterAbort` already built above (before
     // buildCtx) so the controller could be threaded onto `ctx.presenter`.
     const onSceneFailed = buildOnSceneFailed(
@@ -1464,7 +1427,6 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       remainingOccurrences.set(activation.sceneId, left);
       if (left <= 0) audio.stopGroup(activation.sceneId);
     };
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 21). runLifecycle wires every per-target option (preload, timeline, abort, presenter, screenshot, error envelope) into the scene-loader lifecycle; refactor tracked in docs/design/complexity-backlog.md.
     const runLifecycle = (): Promise<void> =>
       loadSceneNavigationTarget(resolved, {
         ctx: buildSceneCtx,
@@ -1473,13 +1435,12 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         signal: controller.signal,
         ...(beat === undefined ? {} : { beat }),
         ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
-        ...(repeat === undefined ? {} : { repeat }),
-        ...(hold === undefined ? {} : { hold }),
-        ...(cueGate === undefined ? {} : { cueGate }),
+        // Head-scene runner hints (repeat / hold / cueGate / screenshot)
+        // from the mode profile; an empty object for modes that set none.
+        ...runnerHints,
         // PUL-F017 / ADR-020: the same gate handed to the audio service
         // above — the timeline adapter toggles it by playhead direction.
         ...(audioCueGate === undefined ? {} : { audioCueGate }),
-        ...(screenshot === undefined ? {} : { screenshot }),
         // Forward `presenter` AND the `onError` sink so the
         // resolver's per-scene wrapper around `presenter` can
         // route runner-handler exceptions / unknown-kind drops
@@ -1606,14 +1567,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     target: NavigationTarget,
   ): SceneNavigationTarget => {
     const mode = effectiveMode(target);
-    if (
-      (mode !== 'standalone' &&
-        mode !== 'loop' &&
-        mode !== 'paused' &&
-        mode !== 'scrub' &&
-        mode !== 'screenshot') ||
-      resolved.composition === undefined
-    ) {
+    if (!profileFor(mode).singleScene || resolved.composition === undefined) {
       return resolved;
     }
     const headEntry = resolved.composition.manifestSlice[0];
