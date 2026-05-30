@@ -172,6 +172,70 @@ export interface AudioEngine {
  *  Howler-backed engine
  * ------------------------------------------------------------------ */
 
+/** The slice of Howler's mutable global the unlock dance reads. */
+interface HowlerHandle {
+  ctx: AudioContext | null | undefined;
+  noAudio: boolean | undefined;
+  usingWebAudio: boolean | undefined;
+}
+
+/** 44-byte silent WAV used by both unlock fallback branches. */
+const SILENT_UNLOCK_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+/**
+ * HTML5-audio autoplay-policy unlock: `play()` a muted silent `<audio>`
+ * during the user gesture so the document's HTML5 audio is marked
+ * user-activated. Requires `globalThis.Audio`; rejects (fails closed) if
+ * it is absent. Used when Howler falls back to HTML5 audio
+ * (`usingWebAudio === false`).
+ */
+async function unlockHtml5Fallback(): Promise<void> {
+  type AudioCtor = new (src?: string) => HTMLAudioElement;
+  const AudioCtor = (globalThis as unknown as { Audio?: AudioCtor }).Audio;
+  if (AudioCtor === undefined) {
+    throw new Error(
+      'audio unlock: Howler is in HTML5 mode but globalThis.Audio is unavailable — cannot satisfy autoplay policy',
+    );
+  }
+  const probe = new AudioCtor(SILENT_UNLOCK_WAV);
+  probe.muted = true;
+  await probe.play();
+  probe.pause();
+}
+
+/**
+ * Web Audio autoplay-policy unlock: ensure `Howler.ctx` exists (trigger
+ * Howler's own setup via a throwaway `Howl` so `ctx` AND `masterGain`
+ * are created consistently — cycle-2 review fix) then `resume()` it.
+ * Rejects (fails closed) if Howler setup throws, if the ctx is still
+ * null after setup, or if the ctx has no `resume()`. Idempotent — a
+ * second call with a running ctx just re-resolves `resume()`.
+ */
+async function resumeWebAudioContext(howler: HowlerHandle): Promise<void> {
+  if (howler.ctx === null || howler.ctx === undefined) {
+    try {
+      const seed = new Howl({ src: [SILENT_UNLOCK_WAV] });
+      seed.unload();
+    } catch (cause) {
+      throw new Error(
+        `audio unlock: Howler setup failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    }
+  }
+  const ctx = howler.ctx;
+  if (ctx === null || ctx === undefined) {
+    throw new Error(
+      'audio unlock: Howler setup completed but Howler.ctx is still null — cannot resume audio',
+    );
+  }
+  if (typeof ctx.resume !== 'function') {
+    throw new TypeError('audio unlock: Howler.ctx.resume is not a function');
+  }
+  await ctx.resume();
+}
+
 function wrapHowl(howl: Howl): AudioSoundHandle {
   return {
     play: (sprite) => (sprite === undefined ? howl.play() : howl.play(sprite)),
@@ -282,56 +346,17 @@ export function createHowlerAudioEngine(): AudioEngine {
     //     `resume()`, REJECT. Idempotent: a second unlock with a
     //     running ctx just calls `resume()` again (no-op when
     //     already running).
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 22). Audio-unlock branching covers Howler's setup, ctx-resume, and silent-fallback paths inside a single user-activation tick; refactor tracked in docs/design/complexity-backlog.md.
     async unlock() {
-      const howlerHandle = Howler as unknown as {
-        ctx: AudioContext | null | undefined;
-        noAudio: boolean | undefined;
-        usingWebAudio: boolean | undefined;
-      };
-      // Branch 1: explicit no-audio fallback.
-      if (howlerHandle.noAudio === true) return;
-      // 44-byte silent WAV used by both unlock branches.
-      const SILENT_WAV =
-        'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-      // Branch 2: HTML5 audio fallback. Howler will play sounds via
-      // `<audio>` elements, which are subject to autoplay policy too.
-      if (howlerHandle.usingWebAudio === false) {
-        type AudioCtor = new (src?: string) => HTMLAudioElement;
-        const AudioCtor = (globalThis as unknown as { Audio?: AudioCtor }).Audio;
-        if (AudioCtor === undefined) {
-          throw new Error(
-            'audio unlock: Howler is in HTML5 mode but globalThis.Audio is unavailable — cannot satisfy autoplay policy',
-          );
-        }
-        const probe = new AudioCtor(SILENT_WAV);
-        probe.muted = true;
-        await probe.play();
-        probe.pause();
+      const howler = Howler as unknown as HowlerHandle;
+      // Branch 1: explicit no-audio fallback — nothing to unlock.
+      if (howler.noAudio === true) return;
+      // Branch 2: Howler fell back to HTML5 audio.
+      if (howler.usingWebAudio === false) {
+        await unlockHtml5Fallback();
         return;
       }
-      // Branch 3: Web Audio path. Trigger Howler's setup if needed.
-      if (howlerHandle.ctx === null || howlerHandle.ctx === undefined) {
-        try {
-          const seed = new Howl({ src: [SILENT_WAV] });
-          seed.unload();
-        } catch (cause) {
-          throw new Error(
-            `audio unlock: Howler setup failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-            { cause },
-          );
-        }
-      }
-      const ctx = howlerHandle.ctx;
-      if (ctx === null || ctx === undefined) {
-        throw new Error(
-          'audio unlock: Howler setup completed but Howler.ctx is still null — cannot resume audio',
-        );
-      }
-      if (typeof ctx.resume !== 'function') {
-        throw new TypeError('audio unlock: Howler.ctx.resume is not a function');
-      }
-      await ctx.resume();
+      // Branch 3: Web Audio path.
+      await resumeWebAudioContext(howler);
     },
   };
 }
@@ -1051,6 +1076,21 @@ function buildPlayCue(soundId: string, opts: PlayOptions): Omit<AudioCueLogPlay,
   };
 }
 
+/**
+ * Start one play instance on `handle` and apply the per-play options
+ * (loop / volume / rate) keyed to the returned `playId`. Returns that
+ * `playId` so the caller can register it in a group. Hoisted out of
+ * `play()` so that method stays within the cognitive-complexity budget;
+ * pure delegation to the engine handle, no service state.
+ */
+function applyPlayToHandle(handle: AudioSoundHandle, opts: PlayOptions): number {
+  const playId = handle.play(opts.sprite);
+  if (opts.loop === true) handle.loop(true, playId);
+  if (opts.volume !== undefined) handle.volume(opts.volume, playId);
+  if (opts.rate !== undefined) handle.rate(opts.rate, playId);
+  return playId;
+}
+
 export function createAudioService(
   engine: AudioEngine,
   options: AudioServiceOptions,
@@ -1223,6 +1263,21 @@ export function createAudioService(
   };
 
   /**
+   * Validate `play` options against the registered `sound` (sprite name,
+   * group name, volume range). Runs after `assertPlayOptions` has shape-
+   * checked the payload; a failure throws the documented audio error.
+   * Split out of `play()` to keep that method within the cognitive-
+   * complexity budget.
+   */
+  const validatePlay = (soundId: string, sound: RegisteredSound, opts: PlayOptions): void => {
+    if (opts.sprite !== undefined && !sound.spriteNames.has(opts.sprite)) {
+      throw new AudioSoundError(unknownSpriteMessage(soundId, opts.sprite, sound.spriteNames));
+    }
+    if (opts.group !== undefined) assertGroupName(opts.group);
+    if (opts.volume !== undefined) assertGain(opts.volume, 'volume');
+  };
+
+  /**
    * Route an engine-side cleanup failure (a throwing `stop()` / `unload()`
    * during `stopGroup` / `stopAll`) through the non-fatal `onError`
    * sink, swallowing any further throw the sink itself produces. The
@@ -1374,17 +1429,12 @@ export function createAudioService(
       sounds.set(soundId, { handle, spriteNames, src, sprite: definition.sprite });
     },
 
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 22). play() validates sprite/offset/volume options, threads disposal and silent-mode gates, and wires error envelopes; refactor tracked in docs/design/complexity-backlog.md.
     play(soundId, options) {
       if (disposed) return;
       assertPlayOptions(soundId, options);
       const sound = requireSound(soundId);
       const opts = options ?? {};
-      if (opts.sprite !== undefined && !sound.spriteNames.has(opts.sprite)) {
-        throw new AudioSoundError(unknownSpriteMessage(soundId, opts.sprite, sound.spriteNames));
-      }
-      if (opts.group !== undefined) assertGroupName(opts.group);
-      if (opts.volume !== undefined) assertGain(opts.volume, 'volume');
+      validatePlay(soundId, sound, opts);
       // PUL-F017 / ADR-020: cue gate. Checked AFTER every boundary
       // validation above (a malformed cue still fails loud) and BEFORE
       // any engine output / group bookkeeping / cue-log emit. A closed
@@ -1392,10 +1442,7 @@ export function createAudioService(
       // (reverse playback, paused) so this accepted cue produces no
       // sound — "audio cues fire only on monotonic forward playback".
       if (cueGate !== undefined && !cueGate.isEligible()) return;
-      const playId = sound.handle.play(opts.sprite);
-      if (opts.loop === true) sound.handle.loop(true, playId);
-      if (opts.volume !== undefined) sound.handle.volume(opts.volume, playId);
-      if (opts.rate !== undefined) sound.handle.rate(opts.rate, playId);
+      const playId = applyPlayToHandle(sound.handle, opts);
       if (opts.group !== undefined) {
         const list = groups.get(opts.group);
         if (list === undefined) groups.set(opts.group, [{ handle: sound.handle, playId }]);

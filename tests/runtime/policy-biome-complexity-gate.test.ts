@@ -44,10 +44,7 @@ const SUPPRESSION_PREFIX = '// biome-ignore lint/complexity/noExcessiveCognitive
 // path). Production-source and test-side rows are partitioned so the
 // override-allowlist assertion can name the policy-scanner cluster
 // without re-deriving it from the suppression list.
-const EXPECTED_RUNTIME_FILES_WITH_SUPPRESSIONS = [
-  'src/runtime/asset-preloader.ts',
-  'src/runtime/audio.ts',
-] as const;
+const EXPECTED_RUNTIME_FILES_WITH_SUPPRESSIONS = ['src/runtime/asset-preloader.ts'] as const;
 
 const EXPECTED_TEST_FILES_WITH_SUPPRESSIONS = [
   'tests/runtime/scene-loader.helpers.ts',

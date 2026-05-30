@@ -50,9 +50,15 @@ function per site.
 | File | Symbol | Score |
 |------|--------|-------|
 | [`src/runtime/asset-preloader.ts`](../../src/runtime/asset-preloader.ts) | returned async `(scene) => ...` arrow inside `createAssetPreloader` | 16 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `async unlock()` method on the AudioUnlocker | 22 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `normalizeSources` arrow | 17 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `play(soundId, options)` method | 24 |
+
+The three `src/runtime/audio.ts` offenders — `async unlock()` (22),
+`normalizeSources` (17), and `play(soundId, options)` (24) — were
+removed when the audio engine was slimmed: `unlock()` delegates to the
+`unlockHtml5Fallback` / `resumeWebAudioContext` module helpers, the
+per-URL validation lives in the hoisted `normalizeAudioUrl`, and
+`play()` delegates option validation to `validatePlay` and engine
+output to `applyPlayToHandle`. Their site-level suppressions were
+deleted with them.
 
 `runLifecycle` (formerly score 21) was removed from this list when the
 per-mode runner hints (`repeat` / `hold` / `cueGate` / `screenshot`)
