@@ -53,8 +53,6 @@ function per site.
 | [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `async unlock()` method on the AudioUnlocker | 22 |
 | [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `normalizeSources` arrow | 17 |
 | [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `play(soundId, options)` method | 24 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `buildLoad` arrow | 18 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `runTarget` async arrow | 23 |
 
 `runLifecycle` (formerly score 21) was removed from this list when the
 per-mode runner hints (`repeat` / `hold` / `cueGate` / `screenshot`)
@@ -62,6 +60,17 @@ collapsed from four `mode === X` ternaries into a single
 `...runnerHints` spread sourced from
 [`src/runtime/mode-profile.ts`](../../src/runtime/mode-profile.ts). Its
 site-level suppression was deleted with it.
+
+`buildLoad` (score 18) and `runTarget` (score 23) were removed when the
+scene loader was decomposed into cohesive single-responsibility units:
+per-navigation audio/presenter/ctx construction moved to
+[`src/runtime/scene-loader-ctx.ts`](../../src/runtime/scene-loader-ctx.ts),
+the unlock-gate predicate and chrome dispatch policy to
+[`src/runtime/scene-loader-guard.ts`](../../src/runtime/scene-loader-guard.ts),
+and the `beat` / `mode` grammar re-check unified onto the shared
+`NAVIGATION_GRAMMAR` source in
+[`src/runtime/navigation.ts`](../../src/runtime/navigation.ts). Both
+site-level suppressions were deleted with them.
 
 ### Test fixtures and helpers
 

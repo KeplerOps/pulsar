@@ -33,10 +33,8 @@ import type { AssetUrlPolicy } from './asset-preloader';
 import {
   type AudioCueLogEntry,
   type AudioEngine,
-  type AudioOutputPolicy,
   type AudioService,
   type CueGateControl,
-  createAudioService,
   createCueGate,
   noopAudioEngine,
 } from './audio';
@@ -48,14 +46,13 @@ import type {
   SceneFailureEvent,
 } from './composition-resolver';
 import { describeErrorDetailed, formatSceneContext } from './error';
-import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { profileFor } from './mode-profile';
 import {
-  NAVIGATION_MODES,
-  type NavigationLocator,
   type NavigationMode,
   type NavigationTarget,
   effectiveMode,
+  validateBeatGrammar,
+  validateModeGrammar,
 } from './navigation';
 import {
   type PresenterCommandSource,
@@ -69,15 +66,25 @@ import {
   buildPrompterScript,
 } from './prompter';
 import type { SceneRegistry } from './registry';
-import { createSeededRng } from './rng';
-import { sceneDeclaresAudio } from './scene';
+import {
+  buildNavigationServices,
+  countSceneOccurrences,
+  deriveNavigationSeed,
+} from './scene-loader-ctx';
+import {
+  type AudioUnlockAdapter,
+  type AudioUnlockContext,
+  type UnlockGate,
+  type WorkbenchChromeAdapter,
+  applyChromeForTarget,
+  resolveUnlockGate,
+} from './scene-loader-guard';
 import {
   type SceneNavigationTarget,
   loadSceneNavigationTarget,
   resolveSceneNavigation,
 } from './scene-navigation';
 import { type TimelineEngine, sceneSegmentLabel } from './timeline';
-import { PULSAR_RUNTIME_VERSION } from './version';
 
 /** The minimal subset of an HTMLElement the loader writes to. */
 export interface StageElement {
@@ -451,75 +458,11 @@ export interface SceneLoaderOptions {
   readonly chrome?: WorkbenchChromeAdapter;
 }
 
-/**
- * PUL-F031 / ADR-031: workbench-supplied chrome controller surface.
- * The loader only needs the one operation — apply a validated mode
- * to chrome — so the interface stays narrow. The full chrome
- * controller lives in {@link import('./workbench-chrome').WorkbenchChromeController}
- * with a `dispose()` method the workbench (not the loader) calls on
- * HMR teardown.
- */
-export interface WorkbenchChromeAdapter {
-  applyMode(mode: NavigationMode): void;
-  /**
-   * Optional composition-level override: force chrome visibility hidden
-   * regardless of the mode-derived default. Used when a composition's
-   * head entry declares `behavior.chrome: 'hidden'` (e.g. a deck that
-   * owns its own atmospherics). Pass `null` to clear the override.
-   * Optional on the adapter so existing chrome implementations stay
-   * compatible — the loader only calls it when defined.
-   */
-  setForcedVisibility?(visibility: 'hidden' | null): void;
-  /**
-   * Optional composition-scoped atmospheric layer switch. The global
-   * workbench default is no animated atmospheric background; decks that
-   * were designed for it opt in from the composition manifest.
-   */
-  setAtmosphere?(atmosphere: 'cinematic' | null): void;
-}
-
-/**
- * PUL-F030 / ADR-029: semantic context handed to the workbench-supplied
- * unlock adapter. The adapter MUST NOT receive raw scene objects, source
- * URLs, scheme parsers, Howler handles, request headers, cookies, or
- * any payload outside this shape — the gate is the structural defense,
- * and the workbench gesture surface only needs bounded identifiers and
- * a callback into the audio boundary.
- */
-export interface AudioUnlockContext {
-  /** Composition id (from the resolved navigation target). */
-  readonly compositionId: string;
-  /**
-   * Scene ids in the resolved composition slice, in playback order.
-   * Lets the workbench prompt copy (when it lands) reflect what is
-   * about to play without exposing scene objects or URLs.
-   */
-  readonly sceneIds: readonly string[];
-  /**
-   * Navigation `AbortSignal`. Adapters that show a gesture surface
-   * MUST listen for abort and reject (or resolve cleanly without
-   * starting playback) so a superseded navigation does not start the
-   * old composition after the user finally clicks.
-   */
-  readonly signal: AbortSignal;
-  /**
-   * Audio-boundary unlock callback bound to the runtime audio engine.
-   * The adapter calls this AFTER collecting the user gesture; the
-   * engine resumes its `AudioContext` so subsequent playback satisfies
-   * browser autoplay policy. Idempotent.
-   */
-  readonly unlock: () => Promise<void>;
-}
-
-/**
- * PUL-F030 / ADR-029: signature of the workbench-supplied unlock
- * adapter. Resolves when the gate is satisfied (engine unlocked, the
- * navigation may proceed); rejects when the user dismissed the gesture
- * or another error prevents unlock. The loader awaits the returned
- * promise BEFORE running asset preload / scene lifecycle for the
- * present-mode composition.
- */
-export type AudioUnlockAdapter = (gate: AudioUnlockContext) => Promise<void>;
+// PUL-F031 / ADR-031 chrome adapter + PUL-F030 / ADR-029 unlock-gate
+// types live in `./scene-loader-guard` alongside the helpers that
+// consume them; re-exported here (the imported bindings above) so the
+// loader's public surface is byte-identical.
+export type { AudioUnlockAdapter, AudioUnlockContext, WorkbenchChromeAdapter };
 
 /**
  * Returned by {@link createSceneLoader}. Each call to `handle(target)`
@@ -586,148 +529,11 @@ function isPureAbort(err: unknown, signal: AbortSignal): boolean {
   );
 }
 
-/**
- * The audio source URLs the resolved (possibly head-truncated) slice
- * declared as audio — every scene's static {@link import('./scene').SceneModule.audio}
- * list in the slice (just the head scene's for a bare `kind: 'scene'`
- * target, the full composition slice's for composition targets). The
- * per-navigation audio service uses this as the SCENE-FACING source
- * allowlist so `ctx.audio.load()` can only register URLs the scene
- * EXPLICITLY declared as audio — not any URL that happens to be in
- * `scene.assets`. This makes the PUL-F030 / ADR-029 unlock-gate
- * predicate ({@link import('./scene').sceneDeclaresAudio}) AND the
- * audio-service allowlist consistent: a scene that registers audio
- * MUST declare it in `scene.audio`, so the present-mode unlock gate
- * cannot be bypassed by a scene that hides its audio in `assets`
- * (codex review, cycle 1 — class finding "audio gate can be bypassed
- * by undeclared ctx.audio loads"). `scene.audio` is validated at the
- * schema boundary to be a subset of `scene.assets`, so the preloader
- * still warms every declared audio URL.
- *
- * The PUL-F014 composition audio bed is deliberately NOT added here.
- * The bed is composition-owned runtime infrastructure, not a
- * `scene.audio` entry, and exposing its source through the scene
- * allowlist would let a scene `ctx.audio.load()` the bed URL as its
- * own sound — playing the bed even under `mode=standalone` where it
- * is suppressed. The audio service gates the bed against the bed's
- * OWN declared `src` inside `startBed`, so the scene allowlist stays
- * limited to `scene.audio` (codex review, cycle 1 — "composition bed
- * source leaks into scene audio allowlist").
- *
- * Pure function (no closure captures), hoisted to module scope so the
- * loader factory does not recreate it per instance.
- */
-function collectAudioSources(target: SceneNavigationTarget): readonly string[] {
-  return target.composition === undefined
-    ? target.scene.audio
-    : target.composition.sceneSlice.flatMap((scene) => scene.audio);
-}
-
-/**
- * Count, per scene id, how many times it occurs in the resolved
- * navigation slice (issue #99). The loader's occurrence-safe audio
- * teardown consults this so the scene-scoped audio group
- * (`group: <sceneId>`, shared by every occurrence of that scene because
- * `ctx.audio` is one slice-scoped service) is stopped exactly once —
- * when the LAST occurrence of that id has been cleaned up — rather than
- * once per occurrence. Stopping it on the first occurrence's cleanup
- * would tear down a still-active sibling occurrence's audio. For a
- * single-occurrence scene the count is `1`, so teardown fires on its
- * only cleanup, unchanged. Pure function (no closure captures), hoisted
- * to module scope so the loader factory does not recreate it per
- * instance.
- */
-function countSceneOccurrences(target: SceneNavigationTarget): Map<string, number> {
-  const scenes = target.composition === undefined ? [target.scene] : target.composition.sceneSlice;
-  const counts = new Map<string, number>();
-  for (const scene of scenes) {
-    counts.set(scene.id, (counts.get(scene.id) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/**
- * Map the effective workbench mode to the per-navigation
- * {@link AudioOutputPolicy} (PUL-F024 / PUL-F026 / ADR-004):
- *
- *  - `'rehearsal'`                       → `'log-cues'`
- *  - `'screenshot'` / `'paused'`         → `'silent'`
- *  - every other lifecycle-running mode  → `'audible'`
- *
- * Pure function (no closure captures), hoisted to module scope so the
- * loader's `buildLoad` stays within Sonar's cognitive-complexity
- * budget and the mode→policy table lives in one place.
- */
-function audioOutputPolicyFor(mode: NavigationMode): AudioOutputPolicy {
-  return profileFor(mode).audioPolicy;
-}
-
-/**
- * Serialize a {@link NavigationLocator} into a stable, collision-free
- * string. Every locator kind contributes its discriminant plus its
- * identifier fields, so two distinct addressed targets never fold to
- * the same string. Pure helper for {@link deriveNavigationSeed}.
- */
-function serializeLocator(locator: NavigationLocator): string {
-  switch (locator.kind) {
-    case 'none':
-      return 'none';
-    case 'scene':
-      return `scene:${locator.scene}`;
-    case 'composition':
-      return `composition:${locator.composition}`;
-    case 'composition-scene':
-      return `composition:${locator.composition}/scene:${locator.scene}`;
-    case 'composition-index':
-      return `composition:${locator.composition}/index:${locator.index}`;
-  }
-}
-
-/**
- * PUL-F018 / ADR-021: derive the per-navigation deterministic seed
- * string for the scene-context RNG ({@link WorkbenchSceneCtx.rng}).
- *
- * The seed is built only from bounded, deterministic inputs the
- * workbench URL already carries: the normalized navigation locator
- * (the addressed scene / composition / index), the addressed beat,
- * and `PULSAR_RUNTIME_VERSION` — ADR-021's "bundle/runtime revision
- * literal" so a code revision changes the seed. It deliberately does
- * NOT read the wall clock, `localStorage`, `sessionStorage`, cookies,
- * `history.state`, `process.env`, `process.argv`, or the workbench
- * `mode` (the addressed frame is mode-independent — `?scene=x&beat=y`
- * names the same frame whether captured or played).
- *
- * Under `mode=screenshot` this makes the captured frame reproducible:
- * the same workbench URL derives the same seed and so replays the same
- * random sequence across reloads. A future explicit `seed=` URL
- * parameter would populate this same derivation through the canonical
- * `parseNavigationSearch` grammar — the seam ADR-021 reserves.
- *
- * Pure function (no closure captures), hoisted to module scope and
- * exported so the per-navigation seam is unit-testable in isolation.
- */
-export function deriveNavigationSeed(target: NavigationTarget): string {
-  return [
-    'pulsar-rng',
-    serializeLocator(target.locator),
-    `beat:${target.beat ?? ''}`,
-    `v:${PULSAR_RUNTIME_VERSION}`,
-  ].join('|');
-}
-
-/**
- * PUL-F018 / ADR-021: combine the per-navigation seed from
- * {@link deriveNavigationSeed} with one scene occurrence's identity
- * ({@link SceneActivation}) so every occurrence gets its OWN seeded
- * generator. A composition slice that repeats a scene id (issue #99)
- * therefore hands each occurrence an independent random stream — one
- * occurrence's draws cannot perturb a sibling's draw order, the
- * RNG-scoping the ADR-021 guardrail requires. Pure function, hoisted
- * to module scope.
- */
-function deriveActivationSeed(navigationSeed: string, activation: SceneActivation): string {
-  return `${navigationSeed}|occ:${activation.sceneId}#${activation.entryIndex}.${activation.occurrence}`;
-}
+// PUL-F018 / ADR-021: the per-navigation deterministic RNG seed seam
+// lives in `./scene-loader-ctx` alongside the audio/ctx construction it
+// feeds; re-exported here so the unit-test seam stays addressable on
+// the loader's public surface.
+export { deriveNavigationSeed };
 
 /**
  * One in-flight load: the abort signal that cancels it, the promise
@@ -776,21 +582,6 @@ interface InFlightLoad {
 type NavigationEvent =
   | { readonly kind: 'target'; readonly target: NavigationTarget }
   | { readonly kind: 'error'; readonly err: unknown };
-
-/**
- * PUL-F030 / ADR-029: the internal gate-prelude callback `buildLoad`
- * invokes BEFORE the resolver lifecycle. Distinct from the public
- * {@link AudioUnlockAdapter}: the public adapter receives a semantic
- * composition context (composition id, scene ids, signal, unlock);
- * this internal helper is what `buildLoad` actually awaits, with the
- * composition context already partially-applied by `buildUnlockGate`.
- * The adapter is workbench-supplied; the helper is the loader's
- * internal closure over it.
- */
-type UnlockGate = (env: {
-  readonly signal: AbortSignal;
-  readonly unlock: () => Promise<void>;
-}) => Promise<void>;
 
 export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   const { stage } = options;
@@ -951,57 +742,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     setStageAttr(ATTR_ERROR, rendered);
   };
 
-  /**
-   * Defense-in-depth for ADR-013's `beat` grammar rules.
-   * `parseNavigationSearch` enforces both on URL input, but
-   * `NavigationTarget` is an exported type that non-parser callers
-   * (event-detail unmarshaling, future test harnesses, programmatic
-   * navigation) can construct directly. Re-checking at the loader
-   * boundary stops a hand-built target with an invalid `beat`
-   * (wrong shape, or paired with a non-scene-like locator) from
-   * reaching the runner with a value the parser would have
-   * rejected. Returns an `Error` with the parser's exact grammar
-   * message when the target is invalid, or `null` when no further
-   * check is needed.
-   */
-  const validateBeatGrammar = (target: NavigationTarget): Error | null => {
-    if (target.beat === undefined) return null;
-    if (!isKebabIdentifier(target.beat)) {
-      return new Error(
-        `navigation grammar is invalid: "beat" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
-      );
-    }
-    const k = target.locator.kind;
-    if (k !== 'scene' && k !== 'composition-scene' && k !== 'composition-index') {
-      return new Error(
-        'navigation grammar is invalid: "beat" requires a scene-like target ("scene", "composition" + "scene", or "composition" + "index")',
-      );
-    }
-    return null;
-  };
-
-  /**
-   * Defense-in-depth for ADR-007's mode allowlist (PUL-F012).
-   * `parseNavigationSearch` validates `mode` against
-   * `NAVIGATION_MODES` on URL input, but `NavigationTarget` is an
-   * exported type that non-parser callers (event-detail unmarshaling,
-   * future test harnesses, programmatic navigation) can construct
-   * directly. Re-checking at the loader boundary stops a hand-built
-   * target with a mode the parser would have rejected from reaching
-   * `effectiveMode` and `buildCtx`, where it would propagate to
-   * scenes as `ctx.mode`. Returns an `Error` with the parser's exact
-   * grammar message when the target is invalid, or `null` when no
-   * further check is needed.
-   */
-  const validateModeGrammar = (target: NavigationTarget): Error | null => {
-    if (target.mode === undefined) return null;
-    if (!(NAVIGATION_MODES as readonly string[]).includes(target.mode)) {
-      return new Error(
-        `navigation grammar is invalid: "mode" unknown mode "${target.mode}" — allowed: ${NAVIGATION_MODES.join(', ')}`,
-      );
-    }
-    return null;
-  };
+  // ADR-013 `beat` + ADR-007 `mode` defense-in-depth re-checks now live
+  // in `./navigation` (`validateBeatGrammar` / `validateModeGrammar`),
+  // consuming the shared `NAVIGATION_GRAMMAR` rule source so the loader's
+  // trust-seam diagnostics stay byte-identical to the parser's without
+  // re-declaring the rules here.
 
   /**
    * PUL-F011 / ADR-015: build the non-fatal callback the loader
@@ -1067,425 +812,187 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
-  /**
-   * Construct the per-navigation presenter pipeline:
-   *  - `presenterAbort` — a separate `AbortController` whose signal
-   *    drives the `PresenterController`'s teardown. Distinct from
-   *    the navigation `controller` so the navigation signal can
-   *    stay un-aborted across a successful completion (PUL-F013
-   *    boundary). Wired to fire on navigation abort AND aborted by
-   *    `runTarget`'s `finally` on normal completion.
-   *  - `presenter` — the `PresenterController` itself (PUL-F020 /
-   *    ADR-023), with the PUL-F025 audio handler attached.
-   *
-   * Both are `null` / `undefined` when the loader does NOT build a
-   * controller for this navigation: non-present mode OR the workbench
-   * did not supply a `presenterCommands` source. Hoisted out of
-   * `buildLoad` to keep that function within Sonar's
-   * cognitive-complexity budget.
-   *
-   * The PUL-F025 audio handler (presenter master mute / ADR-004)
-   * lives here — the only seam where both the controller and the
-   * per-navigation `AudioService` are in scope. On
-   * `'toggle-master-mute'` it reads the engine's current master
-   * mute and flips it via the audio boundary; `audio.mute()`
-   * validates the boolean (PUL-F024) and is inert post-dispose.
-   * Master mute is engine-level runtime state so the flip survives
-   * scene cleanup and is observable by sibling services backed by
-   * the same engine (pinned in `audio.test.ts`). The handler is
-   * additive — the runner still receives every kind on its own
-   * `input.presenter.subscribe(...)`. The controller's per-handler
-   * `try/catch` already routes any throw through the same `onError`.
-   */
-  const buildPresenterPipe = (
-    mode: NavigationMode,
-    controller: AbortController,
-    audio: AudioService,
-  ): {
-    readonly presenter: ReturnType<typeof createPresenterController> | undefined;
-    readonly presenterAbort: AbortController | null;
-  } => {
-    if (mode !== 'present' || options.presenterCommands === undefined) {
-      return { presenter: undefined, presenterAbort: null };
-    }
-    const presenterAbort = new AbortController();
-    // Propagate navigation abort → presenter abort. Without this
-    // wiring, supersession-time `controller.abort()` would not tear
-    // down the presenter controller (bound to `presenterAbort.signal`,
-    // not `controller.signal`).
-    if (controller.signal.aborted) {
-      presenterAbort.abort();
-    } else {
-      controller.signal.addEventListener('abort', () => presenterAbort.abort(), { once: true });
-    }
-    const presenter = createPresenterController(
-      options.presenterCommands,
-      presenterAbort.signal,
-      onError,
-    );
-    // PUL-F025 / ADR-004 audio handler — see method header.
-    presenter.subscribe((cmd) => {
-      if (cmd.kind !== 'toggle-master-mute') return;
-      audio.mute(!audio.isMuted());
-    });
-    return { presenter, presenterAbort };
+  // The per-navigation audio service + presenter pipe + ctx factory live
+  // in `./scene-loader-ctx` (`buildNavigationServices`); the present-mode
+  // unlock-gate predicate (`resolveUnlockGate`) and the composition chrome
+  // dispatch policy (`applyChromeForTarget`) live in `./scene-loader-guard`.
+  // The loader binds its instance deps once and calls them.
+  const navigationServicesDeps = {
+    audioEngine,
+    ...(options.assetPolicy === undefined ? {} : { assetPolicy: options.assetPolicy }),
+    ...(options.onAudioCue === undefined ? {} : { onAudioCue: options.onAudioCue }),
+    ...(options.presenterCommands === undefined
+      ? {}
+      : { presenterCommands: options.presenterCommands }),
+    onError,
+    buildCtx: options.buildCtx,
   };
 
   /**
-   * Build the in-flight load record: an `AbortController`, the
-   * preloader factory's per-load preloader (a synchronous failure
-   * is rolled back through `resetStageAttrs()` + `surfaceError`),
-   * and the bridge call that drives the lifecycle. Returns the
-   * record, or `null` when the preloader factory threw — in which
-   * case the caller has already been told via `surfaceError` and
-   * should bail. Hoisted out of `runTarget` so the latter stays
-   * within Sonar's cognitive-complexity budget.
+   * Composition-level chrome policy (PUL-F031 / ADR-031), bound to this
+   * loader's chrome adapter + registries. No-op when no chrome adapter
+   * was supplied. See `applyChromeForTarget` in `./scene-loader-guard`.
    */
-  /**
-   * PUL-F030 / ADR-029: build the per-navigation closure that calls
-   * the workbench-supplied unlock adapter with the composition context
-   * captured here and the navigation-bound signal + engine-bound
-   * unlock callback supplied at gate-invocation time by `buildLoad`.
-   * Partial application keeps the composition context out of the
-   * `buildLoad` body so the latter stays within Sonar's cognitive-
-   * complexity budget.
-   *
-   * Pure factory — captures only `adapter` and `composition`. The
-   * adapter receives bounded semantic context: composition id, scene
-   * ids in playback order, the navigation `AbortSignal`, and the
-   * engine-bound `unlock()` callback. It does NOT receive scene
-   * objects, source URLs, asset payloads, or Howler handles (per
-   * ADR-029's "workbench gesture surface" guardrail).
-   */
-  const buildUnlockGate = (
-    adapter: AudioUnlockAdapter,
-    composition: SceneNavigationTarget['composition'] & object,
-  ): UnlockGate => {
-    const compositionId = composition.id;
-    const sceneIds = Object.freeze(composition.sceneSlice.map((scene) => scene.id));
-    return ({ signal, unlock }) =>
-      adapter({
-        compositionId,
-        sceneIds,
-        signal,
-        unlock,
-      });
-  };
-
-  /**
-   * PUL-F030 / ADR-029: decide whether the present-mode audio unlock
-   * gate applies to this navigation, and if so build the gate. Returns
-   * one of:
-   *
-   *  - `null` — the gate does not apply (mode is not present, no
-   *    composition slice, or no scene in the slice declares audio).
-   *    The lifecycle runs without a prelude.
-   *  - `'fail-loud'` — the gate applies but no `audioUnlockAdapter`
-   *    is supplied. The caller surfaces a navigation-level error and
-   *    skips the lifecycle.
-   *  - `UnlockGate` — a closure that invokes the workbench adapter
-   *    with the composition context. The lifecycle awaits it before
-   *    preload / `create(ctx)` / `timeline(ctx)` / master playback.
-   *
-   * Hoisted out of `runTarget` so the latter stays within Sonar's
-   * cognitive-complexity budget (S3776).
-   */
-  const resolveUnlockGate = (
-    target: NavigationTarget,
-    resolved: SceneNavigationTarget,
-  ): UnlockGate | 'fail-loud' | null => {
-    if (effectiveMode(target) !== 'present') return null;
-    const composition = resolved.composition;
-    if (composition === undefined) return null;
-    if (!composition.sceneSlice.some(sceneDeclaresAudio)) return null;
-    if (options.audioUnlockAdapter === undefined) return 'fail-loud';
-    return buildUnlockGate(options.audioUnlockAdapter, composition);
-  };
-
-  const chromeBehaviorFromResolved = (resolved: SceneNavigationTarget | null): unknown => {
-    const head = resolved?.composition?.manifestSlice[0];
-    if (head === null || typeof head !== 'object') return undefined;
-    return (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior?.chrome;
-  };
-
-  const chromeBehaviorForTarget = (target: NavigationTarget): unknown => {
-    try {
-      return chromeBehaviorFromResolved(
-        resolveSceneNavigation(target, {
-          scenes: options.scenes,
-          compositions: options.compositions,
-        }),
-      );
-    } catch {
-      return undefined;
-    }
-  };
-
-  const applyChromeDispatchPolicy = (
-    chrome: WorkbenchChromeAdapter,
-    mode: NavigationMode,
-    chromeBehavior: unknown,
-  ): void => {
-    const forcedVisibility = chromeBehavior === 'hidden' ? 'hidden' : null;
-    const atmosphere =
-      typeof chromeBehavior === 'object' &&
-      chromeBehavior !== null &&
-      (chromeBehavior as { readonly atmosphere?: unknown }).atmosphere === 'cinematic'
-        ? 'cinematic'
-        : null;
-    chrome.setForcedVisibility?.(forcedVisibility);
-    chrome.setAtmosphere?.(atmosphere);
-    chrome.applyMode(mode);
-  };
-
-  /**
-   * Composition-level chrome policy: the head manifest entry's
-   * `behavior.chrome` can hide chrome or opt into cinematic atmosphere.
-   * The default is explicit reset (`forcedVisibility=null`,
-   * `atmosphere=null`) so a navigation away from an atmospheric deck
-   * clears that state immediately, before serialized scene cleanup.
-   */
-  const applyChromeForTarget = (target: NavigationTarget): void => {
+  const dispatchChromeForTarget = (target: NavigationTarget): void => {
     const chrome = options.chrome;
     if (chrome === undefined) return;
-    applyChromeDispatchPolicy(chrome, effectiveMode(target), chromeBehaviorForTarget(target));
+    applyChromeForTarget(
+      chrome,
+      { scenes: options.scenes, compositions: options.compositions },
+      target,
+    );
+  };
+
+  /**
+   * Build the resolver run-input for one navigation. Threads the
+   * per-occurrence ctx factory, preloader, beat + missing-beat callback,
+   * the mode-profile runner hints (repeat / hold / cueGate / screenshot),
+   * the shared scrub cue gate, the presenter controller + its error
+   * sink, the occurrence-safe per-scene audio teardown, and the
+   * scene-level failure isolation (PUL-F029) — see the individual
+   * option docs on {@link loadSceneNavigationTarget}.
+   */
+  const buildRunInput = (
+    resolved: SceneNavigationTarget,
+    services: ReturnType<typeof buildNavigationServices>,
+    preloadAssets: AssetPreloader,
+    signal: AbortSignal,
+    mode: NavigationMode,
+    beat: string | undefined,
+    audioCueGate: CueGateControl | undefined,
+  ): Parameters<typeof loadSceneNavigationTarget>[1] => {
+    const onBeatMissing = buildOnBeatMissing(beat, resolved.scene.id, signal);
+    const onSceneFailed = buildOnSceneFailed(
+      signal,
+      mode,
+      resolved.composition === undefined
+        ? undefined
+        : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
+    );
+    // issue #99: occurrence-safe per-scene audio teardown — the
+    // scene-scoped group is stopped only when the LAST occurrence of
+    // that id has been cleaned up.
+    const remainingOccurrences = countSceneOccurrences(resolved);
+    const onSceneCleaned = (activation: SceneActivation): void => {
+      const left = (remainingOccurrences.get(activation.sceneId) ?? 1) - 1;
+      remainingOccurrences.set(activation.sceneId, left);
+      if (left <= 0) services.audio.stopGroup(activation.sceneId);
+    };
+    return {
+      ctx: services.buildSceneCtx,
+      preloadAssets,
+      timeline: options.timeline,
+      signal,
+      ...(beat === undefined ? {} : { beat }),
+      ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
+      // Head-scene runner hints from the mode profile; empty for modes
+      // that set none.
+      ...profileFor(mode).runnerHints,
+      ...(audioCueGate === undefined ? {} : { audioCueGate }),
+      ...(services.presenter === undefined
+        ? {}
+        : { presenter: services.presenter, onPresenterError: onError }),
+      onSceneCleaned,
+      onSceneFailed,
+    };
   };
 
   const buildLoad = (
     resolved: SceneNavigationTarget,
     target: NavigationTarget,
     unlockGate: UnlockGate | null,
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 18). buildLoad is the navigation-mode dispatch seam — derives effective mode, builds audio + presenter pipes, and threads abort signals; refactor tracked in docs/design/complexity-backlog.md.
   ): InFlightLoad | null => {
     const controller = new AbortController();
     // PUL-F012 / ADR-007: mode dispatch lives at the runtime-core seam.
-    // The loader derives the effective mode from the parsed target via
-    // `effectiveMode` (URL-only — no localStorage, sessionStorage,
-    // cookies, history.state, or cached state); every navigation
-    // re-derives from its own target, so a previous non-`present` mode
-    // cannot leak into a subsequent `mode`-less URL. The mode also
-    // selects whether the audio service is `silent` (screenshot /
-    // paused suppress audible playback — ADR-019 / ADR-021).
+    // `effectiveMode` re-derives mode from the parsed target (URL-only —
+    // no storage / cookies / history.state / cached state) on every
+    // navigation, so a previous non-`present` mode cannot leak.
     const mode = effectiveMode(target);
-    // Mode is data: the profile decides audio policy, slice truncation,
-    // bed suppression, the scrub cue gate, and the head-scene runner
-    // hints. See ./mode-profile.ts.
     const profile = profileFor(mode);
-    // PUL-F018 / ADR-021: the per-navigation deterministic RNG seed,
-    // derived from the addressed URL target. Computed once here and
-    // combined per occurrence in `buildSceneCtx` so every scene
-    // occurrence gets its own seeded `ctx.rng`.
-    const navigationSeed = deriveNavigationSeed(target);
     let preloadAssets: AssetPreloader;
     try {
       preloadAssets = options.createPreloader(controller.signal);
     } catch (err) {
-      // Roll back the success-state attrs we just wrote and surface
-      // the error so the stage doesn't lie about a half-loaded scene.
-      // `resetStageAttrs()` clears all three navigation attrs in
-      // lock-step with the success-path reset, so this rollback
-      // cannot drift if a fourth navigation attr is added later.
+      // Roll back the success-state attrs and surface the error so the
+      // stage doesn't lie about a half-loaded scene.
       resetStageAttrs();
       surfaceError(err);
       return null;
     }
-    // PUL-F024 / PUL-F026 / ADR-004: the per-navigation audio service.
-    // Built over `audioEngine`, scoped to `controller.signal` (abort ⇒
-    // every sound stopped + unloaded), restricted to the URLs the slice
-    // declared in `scene.audio` (PUL-F030 / ADR-029 — every audio entry
-    // must also be in `scene.assets` so the preloader warmed it), and
-    // with a per-mode `AudioOutputPolicy`:
-    //  - `'silent'`   under `mode=screenshot` / `mode=paused` (audible
-    //                 playback suppressed — ADR-019 / ADR-021).
-    //  - `'log-cues'` under `mode=rehearsal` (audible playback
-    //                 suppressed AND every accepted audio operation
-    //                 is emitted to the workbench's optional
-    //                 `onAudioCue` sink — PUL-F026 / ADR-004).
-    //  - `'audible'`  otherwise (`present` / `standalone` / `loop` /
-    //                 `scrub`).
-    //
-    // The rehearsal policy lives entirely on this audio-service seam
-    // — there is no head-only runner-input hint, no slice truncation,
-    // no resolver semantics — so "without altering timeline state"
-    // (PUL-F026) is the structural invariant. The optional
-    // `onAudioCue` sink is threaded through unconditionally; the
-    // policy decides whether cues are emitted, so a non-rehearsal
-    // navigation pays no per-op cost even when the workbench wired a
-    // cue surface.
-    //
-    // Threaded into `ctx.audio` via `buildCtx`, alongside `mode`
-    // (PUL-F012). Built AFTER the preloader so a preloader-factory
-    // failure does not waste allocations, and wrapped in the same
-    // rollback-then-surfaceError pattern so a throwing builder does
-    // not leave stale stage attrs or skip the queue's error sink.
-    const outputPolicy = audioOutputPolicyFor(mode);
-    // PUL-F017 / ADR-020: under `mode=scrub` build the dynamic audio
-    // cue gate ONCE and share the single instance between the audio
-    // service (which consults `isEligible()` to suppress a cue's
-    // output) and the timeline adapter (which toggles it by playhead
-    // direction). It starts closed — a scrub master is held at its
-    // cursor, not playing monotonically forward — and the GSAP adapter
-    // opens it on `play()`. Absent for every other mode, so non-scrub
-    // navigations build an ungated audio service exactly as before.
+    // PUL-F017 / ADR-020: under `mode=scrub` build the dynamic audio cue
+    // gate ONCE and share it between the audio service (consults
+    // `isEligible()`) and the timeline adapter (toggles by playhead
+    // direction). Starts closed; the GSAP adapter opens it on `play()`.
     const audioCueGate: CueGateControl | undefined = profile.buildScrubCueGate
       ? createCueGate(false)
       : undefined;
-    // issue #99: the loader threads a per-occurrence ctx factory rather
-    // than a single ctx. `buildCtx` builds the navigation-scoped base
-    // (stage / gsap / audio / mode / presenter / chrome) once; the
-    // factory adds each occurrence's `SceneActivation` so a slice that
-    // repeats a scene id gives every occurrence a distinct `ctx`.
-    let buildSceneCtx: (activation: SceneActivation) => unknown;
-    let audio: AudioService;
-    // Per-navigation presenter pipe is built BEFORE buildCtx so the
-    // controller can be threaded onto `ctx.presenter` for scenes that
-    // subscribe to presenter `advance` commands directly (calgary-style
-    // `while (!state.advanceSignal)` loop scenes). Declared here so the
-    // try/catch can construct audio first (the pipe's mute handler
-    // closes over audio), then ctx with both refs.
-    let presenter: ReturnType<typeof createPresenterController> | undefined;
-    let presenterAbort: AbortController | null = null;
+    // PUL-F024 / PUL-F025 / PUL-F018: the per-navigation audio service,
+    // presenter pipe, and per-occurrence ctx factory. Built AFTER the
+    // preloader so a preloader-factory failure wastes no allocations,
+    // and wrapped in the same rollback-then-surfaceError pattern so a
+    // throwing builder leaves no stale stage attrs and skips no error
+    // sink. On throw the controller is aborted first so any signal-tied
+    // resource (preloader fetch listener, audio stop-on-abort hook)
+    // observes cancellation rather than being GC'd un-aborted.
+    let services: ReturnType<typeof buildNavigationServices>;
     try {
-      audio = createAudioService(audioEngine, {
-        signal: controller.signal,
-        outputPolicy,
-        allowedSources: collectAudioSources(resolved),
-        ...(options.assetPolicy === undefined ? {} : { assetPolicy: options.assetPolicy }),
-        onError,
-        ...(options.onAudioCue === undefined ? {} : { onCue: options.onAudioCue }),
-        // PUL-F014 / ADR-004: the composition audio bed, played
-        // underneath the slice — suppressed under `mode=standalone`,
-        // where the scene runs as if no surrounding composition
-        // existed. The resolver snapshots the declaration onto the
-        // composition context; the loader is the mode-dispatch point
-        // that decides bed vs no-bed, keeping the resolver mode-opaque.
-        ...(resolved.composition?.audioBed === undefined
-          ? {}
-          : { bed: resolved.composition.audioBed }),
-        bedSuppressed: profile.suppressBed,
-        // PUL-F017 / ADR-020: the shared cue gate (scrub only). The
-        // audio service consults it; the timeline adapter toggles it.
-        ...(audioCueGate === undefined ? {} : { cueGate: audioCueGate }),
-      });
-      const pipe = buildPresenterPipe(mode, controller, audio);
-      presenter = pipe.presenter;
-      presenterAbort = pipe.presenterAbort;
-      const baseCtx = options.buildCtx(mode, audio, presenter);
-      // PUL-F018 / ADR-021: the loader adds each occurrence's
-      // `activation` AND a deterministic `rng` seeded from the
-      // navigation seed + that occurrence's identity, so a slice that
-      // repeats a scene id gives every occurrence an independent
-      // random stream.
-      buildSceneCtx = (activation) => ({
-        ...baseCtx,
-        activation,
-        rng: createSeededRng(deriveActivationSeed(navigationSeed, activation)),
-      });
+      services = buildNavigationServices(
+        navigationServicesDeps,
+        resolved,
+        target,
+        mode,
+        controller,
+        audioCueGate,
+      );
     } catch (err) {
-      // Abort the freshly-created controller before bailing so any
-      // signal-tied resource (the preloader factory's fetch listener,
-      // the audio service's stop-on-abort hook) observes cancellation
-      // and releases. Without this, the signal is GC'd in the
-      // never-aborted state and any abort-keyed listener runs at GC
-      // time (or never).
       controller.abort();
       resetStageAttrs();
       surfaceError(err);
       return null;
     }
-    const beat = target.beat;
-    const onBeatMissing = buildOnBeatMissing(beat, resolved.scene.id, controller.signal);
-    // Head-scene runner-input hints (repeat / hold / cueGate /
-    // screenshot) per the mode profile. The resolver scopes each hint
-    // to the addressed head scene only; following composition entries
-    // never see them. The modes that set them are mutually exclusive
-    // at the URL boundary, so at most one field is present. See
-    // ./mode-profile.ts for the per-mode table and PUL-F015..F018 /
-    // ADR-018..021 for the semantics.
-    const runnerHints = profile.runnerHints;
-    // `presenter` / `presenterAbort` already built above (before
-    // buildCtx) so the controller could be threaded onto `ctx.presenter`.
-    const onSceneFailed = buildOnSceneFailed(
+    const runInput = buildRunInput(
+      resolved,
+      services,
+      preloadAssets,
       controller.signal,
       mode,
-      resolved.composition === undefined
-        ? undefined
-        : { id: resolved.composition.id, startIndex: resolved.composition.startIndex },
+      target.beat,
+      audioCueGate,
     );
-    // PUL-F024 / ADR-004 + issue #99: occurrence-safe per-scene audio
-    // teardown. A scene scopes a sound to itself with
-    // `play(id, { group: <its-scene-id> })`; that group is shared by
-    // every occurrence of the scene in the slice (`ctx.audio` is one
-    // slice-scoped service). The runtime stops the group only when the
-    // LAST occurrence of that id has been cleaned up — counting down
-    // per scene id — so an earlier occurrence's cleanup never stops a
-    // still-active sibling occurrence's audio. A single-occurrence
-    // scene counts `1` and tears down on its only cleanup, unchanged.
-    const remainingOccurrences = countSceneOccurrences(resolved);
-    const onSceneCleaned = (activation: SceneActivation): void => {
-      const left = (remainingOccurrences.get(activation.sceneId) ?? 1) - 1;
-      remainingOccurrences.set(activation.sceneId, left);
-      if (left <= 0) audio.stopGroup(activation.sceneId);
-    };
-    const runLifecycle = (): Promise<void> =>
-      loadSceneNavigationTarget(resolved, {
-        ctx: buildSceneCtx,
-        preloadAssets,
-        timeline: options.timeline,
-        signal: controller.signal,
-        ...(beat === undefined ? {} : { beat }),
-        ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
-        // Head-scene runner hints (repeat / hold / cueGate / screenshot)
-        // from the mode profile; an empty object for modes that set none.
-        ...runnerHints,
-        // PUL-F017 / ADR-020: the same gate handed to the audio service
-        // above — the timeline adapter toggles it by playhead direction.
-        ...(audioCueGate === undefined ? {} : { audioCueGate }),
-        // Forward `presenter` AND the `onError` sink so the
-        // resolver's per-scene wrapper around `presenter` can
-        // route runner-handler exceptions / unknown-kind drops
-        // through the same diagnostic channel as every other
-        // navigation-level error (codex review, cycle 2).
-        ...(presenter === undefined ? {} : { presenter, onPresenterError: onError }),
-        // PUL-F024 / ADR-004 + issue #99: runtime-guaranteed per-scene
-        // audio teardown — see `onSceneCleaned` above. (`stopGroup` is
-        // a no-op when the group is empty or the service is disposed.)
-        onSceneCleaned,
-        // PUL-F029 / ADR-028: scene-level error isolation. Each
-        // isolated `create` / `timeline` / `cleanup` failure becomes
-        // a stage attribute entry + `onError` call without halting
-        // the active composition.
-        onSceneFailed,
-      });
+    const runLifecycle = (): Promise<void> => loadSceneNavigationTarget(resolved, runInput);
     // PUL-F030 / ADR-029: when the gate applies, the settled promise
     // begins with the adapter await — the lifecycle runs only after
-    // unlock succeeds AND the navigation has not been aborted. The
-    // gate's signal IS the navigation signal, so supersession /
-    // dispose / popstate aborts the gate; adapters that respect the
-    // signal can reject deterministically. The audio service / ctx /
-    // preloader are constructed BEFORE the gate (above), but none of
-    // them touches the network or DOM until `loadSceneNavigationTarget`
-    // calls `preloadAssets(scene)` and `create(ctx)` — so the gate
-    // running first preserves the structural invariant "no lifecycle
-    // work before unlock."
+    // unlock succeeds AND the navigation has not been aborted. The gate's
+    // signal IS the navigation signal. None of the services constructed
+    // above touch the network or DOM until `loadSceneNavigationTarget`
+    // calls `preloadAssets(scene)` / `create(ctx)`, so running the gate
+    // first preserves the "no lifecycle work before unlock" invariant.
     const settled =
       unlockGate === null
         ? runLifecycle()
-        : (async (): Promise<void> => {
-            await unlockGate({
-              signal: controller.signal,
-              unlock: () => audioEngine.unlock(),
-            });
-            if (controller.signal.aborted) return;
-            return runLifecycle();
-          })();
+        : runGatedLifecycle(unlockGate, controller, runLifecycle);
     return {
       controller,
       settled,
       silent: false,
-      audio,
-      presenterAbort,
+      audio: services.audio,
+      presenterAbort: services.presenterAbort,
     };
+  };
+
+  /**
+   * PUL-F030 / ADR-029: await the unlock gate, then run the lifecycle
+   * only if the navigation has not been superseded. Extracted so
+   * `buildLoad` stays within the cognitive-complexity budget.
+   */
+  const runGatedLifecycle = async (
+    unlockGate: UnlockGate,
+    controller: AbortController,
+    runLifecycle: () => Promise<void>,
+  ): Promise<void> => {
+    await unlockGate({ signal: controller.signal, unlock: () => audioEngine.unlock() });
+    if (controller.signal.aborted) return;
+    return runLifecycle();
   };
 
   /**
@@ -1664,16 +1171,70 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     };
   };
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing pre-rule offender (cognitive complexity 23). runTarget is the per-navigation orchestrator — beat/mode grammar validation, dispatch routing across prompter / screenshot / present, and abort handling; refactor tracked in docs/design/complexity-backlog.md.
-  const runTarget = async (target: NavigationTarget): Promise<void> => {
-    const beatErr = validateBeatGrammar(target);
-    if (beatErr !== null) {
-      surfaceError(beatErr);
-      return;
+  /**
+   * Dispatch the resolved target to a non-prompter load: truncate the
+   * slice for single-scene modes (PUL-F014..F018), resolve the
+   * present-mode audio unlock gate (PUL-F030), and build the load.
+   * Returns `null` when the gate fails loud (no adapter supplied — a
+   * workbench-bootstrap defect, surfaced after stage-attr reset) or the
+   * load builder bailed. `mode=prompter` is dispatched by the caller
+   * (it bypasses the resolver lifecycle structurally).
+   */
+  const dispatchLifecycleLoad = (
+    resolved: SceneNavigationTarget,
+    target: NavigationTarget,
+  ): InFlightLoad | null => {
+    const runnable = applySingleSceneSlice(resolved, target);
+    const gateOrFailure = resolveUnlockGate(options.audioUnlockAdapter, target, resolved);
+    if (gateOrFailure === 'fail-loud') {
+      resetStageAttrs();
+      surfaceError(
+        new Error(
+          'audio unlock gate: present-mode composition declares audio but no audioUnlockAdapter was supplied — workbench bootstrap must wire one to satisfy PUL-F030 / ADR-029',
+        ),
+      );
+      return null;
     }
-    const modeErr = validateModeGrammar(target);
-    if (modeErr !== null) {
-      surfaceError(modeErr);
+    return buildLoad(runnable, target, gateOrFailure);
+  };
+
+  /**
+   * Await the in-flight load to settle, then run the per-navigation
+   * teardown exactly once. Suppresses only the resolver's own "aborted"
+   * wrapper (the superseding event owns the visible state); every other
+   * error — including multi-fault `AggregateError`s — still surfaces.
+   */
+  const awaitLoad = async (load: InFlightLoad): Promise<void> => {
+    try {
+      await load.settled;
+    } catch (err) {
+      if (!load.silent && !isPureAbort(err, load.controller.signal)) {
+        surfaceError(err);
+      }
+    } finally {
+      // PUL-F024 / ADR-004: the navigation is over — stop + unload every
+      // sound it created (idempotent; harmless on the abort paths where
+      // the signal binding already disposed the service).
+      load.audio?.stopAll();
+      // PUL-F025 / ADR-023: tear down the presenter controller's
+      // subscriptions on the happy path. The controller is bound to a
+      // SEPARATE `presenterAbort` signal (not the navigation signal) so
+      // the navigation signal's "un-aborted on success" invariant
+      // (PUL-F013) is preserved; that separate signal still fires on
+      // navigation abort. Idempotent.
+      load.presenterAbort?.abort();
+      if (inFlight === load) inFlight = null;
+    }
+  };
+
+  const runTarget = async (target: NavigationTarget): Promise<void> => {
+    // Defense-in-depth grammar re-check (ADR-013 beat / ADR-007 mode)
+    // for programmatically-built targets — the parser already enforces
+    // these on URL input. Both validators share the `NAVIGATION_GRAMMAR`
+    // rule source in `./navigation`.
+    const grammarErr = validateBeatGrammar(target) ?? validateModeGrammar(target);
+    if (grammarErr !== null) {
+      surfaceError(grammarErr);
       return;
     }
 
@@ -1696,76 +1257,17 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     }
 
     // PUL-F019 / ADR-022: under `mode=prompter` bypass the resolver
-    // lifecycle entirely. Visual rendering is suppressed structurally
-    // by NOT running the path that would mount scenes. The captions
-    // data path takes its place. No `applySingleSceneSlice` (the
-    // captions view consumes the FULL slice — see ADR-022 for why
-    // the truncation defense from F015–F018 does not apply here),
-    // no `buildLoad` (no preloader, no buildCtx, no runner), just a
-    // captions-renderer dispatch wrapped in the same abort/queue
-    // pattern so cleanup-before-handoff and supersession still work.
-    let load: InFlightLoad | null;
-    if (effectiveMode(target) === 'prompter') {
-      load = buildPrompterLoad(resolved);
-    } else {
-      const runnable = applySingleSceneSlice(resolved, target);
-      // PUL-F030 / ADR-029: resolve the present-mode audio unlock
-      // gate up front. The helper returns `'fail-loud'` when the gate
-      // applies but no adapter is supplied (workbench-bootstrap
-      // defect — the gate IS the structural defense), `null` when
-      // the gate does not apply or there is no composition, and a
-      // built unlock gate otherwise.
-      const gateOrFailure = resolveUnlockGate(target, resolved);
-      if (gateOrFailure === 'fail-loud') {
-        resetStageAttrs();
-        surfaceError(
-          new Error(
-            'audio unlock gate: present-mode composition declares audio but no audioUnlockAdapter was supplied — workbench bootstrap must wire one to satisfy PUL-F030 / ADR-029',
-          ),
-        );
-        return;
-      }
-      load = buildLoad(runnable, target, gateOrFailure);
-    }
+    // lifecycle entirely (no `applySingleSceneSlice`, no `buildLoad`) —
+    // visual rendering is suppressed structurally by NOT running the
+    // path that would mount scenes. The captions data path takes its
+    // place, wrapped in the same abort/queue pattern.
+    const load =
+      effectiveMode(target) === 'prompter'
+        ? buildPrompterLoad(resolved)
+        : dispatchLifecycleLoad(resolved, target);
     if (load === null) return;
     inFlight = load;
-
-    try {
-      await load.settled;
-    } catch (err) {
-      // Suppress only the resolver's own "aborted" wrapper error —
-      // the new event that triggered the abort owns the visible
-      // state. AggregateErrors (multi-fault: phase + cleanup) and
-      // any non-abort errors still surface so cleanup failures
-      // during an aborted lifecycle are not silently dropped.
-      if (!load.silent && !isPureAbort(err, load.controller.signal)) {
-        surfaceError(err);
-      }
-    } finally {
-      // PUL-F024 / ADR-004: the navigation is over — stop + unload
-      // every sound it created. On supersession / dispose the signal
-      // binding already disposed the service, so this is the
-      // happy-path-completion path (the resolver ran every scene's
-      // `cleanup(ctx)`, then `load.settled` resolved); `stopAll()` is
-      // idempotent so the double-call on the abort paths is harmless.
-      load.audio?.stopAll();
-      // PUL-F025 / ADR-023 (codex review, post-PUL-F025): tear down
-      // the presenter controller's subscriptions on the happy path
-      // too. The presenter controller is built against a *separate*
-      // `presenterAbort` signal in `buildLoad` (NOT the navigation
-      // signal) so the navigation signal's "un-aborted on success"
-      // invariant — pinned by the PUL-F013 boundary tests — is
-      // preserved. The separate signal still fires on navigation
-      // abort (wired in `buildLoad`), and we abort it here so the
-      // long-lived `PresenterCommandSource` does not accumulate
-      // stale wrappers across successful present-mode completions
-      // (the loader's PUL-F025 mute handler, plus any runner-owned
-      // subscription that forgot to unsubscribe at scene-exit).
-      // Idempotent: a subsequent supersession-time abort of the
-      // same `presenterAbort` is a no-op.
-      load.presenterAbort?.abort();
-      if (inFlight === load) inFlight = null;
-    }
+    await awaitLoad(load);
   };
 
   /**
@@ -1797,7 +1299,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     if (options.chrome === undefined) return null;
     if (validateModeGrammar(target) !== null) return null;
     try {
-      applyChromeForTarget(target);
+      dispatchChromeForTarget(target);
       return null;
     } catch (err) {
       return err instanceof Error ? err : new Error(String(err));

@@ -106,6 +106,47 @@ export interface NavigationTarget {
 
 const GRAMMAR_KEYS = ['scene', 'composition', 'index', 'beat', 'mode'] as const;
 
+/** Stable prefix every grammar diagnostic carries (see {@link fail}). */
+export const NAVIGATION_GRAMMAR_PREFIX = 'navigation grammar is invalid:';
+
+/**
+ * The locator kinds a `beat` may pair with (ADR-013): a beat positions
+ * a scene timeline, so the target must address a single scene.
+ */
+function isSceneLikeLocator(locator: NavigationLocator): boolean {
+  return (
+    locator.kind === 'scene' ||
+    locator.kind === 'composition-scene' ||
+    locator.kind === 'composition-index'
+  );
+}
+
+/**
+ * The single source of truth for ADR-013's `beat` / `mode` grammar
+ * rules. Both {@link parseNavigationSearch} (URL boundary) and the
+ * scene loader's defense-in-depth re-check (programmatic / forged
+ * `NavigationTarget`s) consume these predicates + condition messages
+ * so the rules — and their exact diagnostic wording — live in one
+ * place. The condition strings are the suffix after
+ * {@link NAVIGATION_GRAMMAR_PREFIX}; consumers prepend the prefix.
+ */
+export const NAVIGATION_GRAMMAR = Object.freeze({
+  beatKebab: Object.freeze({
+    valid: (beat: string): boolean => isKebabIdentifier(beat),
+    condition: `"beat" must be a non-empty lowercase kebab-case string (${KEBAB_IDENTIFIER_FORM})`,
+  }),
+  beatSceneLike: Object.freeze({
+    valid: isSceneLikeLocator,
+    condition:
+      '"beat" requires a scene-like target ("scene", "composition" + "scene", or "composition" + "index")',
+  }),
+  mode: Object.freeze({
+    valid: (mode: string): boolean => (NAVIGATION_MODES as readonly string[]).includes(mode),
+    condition: (mode: string): string =>
+      `"mode" unknown mode "${mode}" — allowed: ${NAVIGATION_MODES.join(', ')}`,
+  }),
+});
+
 // ADR-013 defines `index` as "base-10, zero-based, non-negative safe
 // integer." The pattern enforces only the base-10 digit set; leading
 // zeros (e.g. `01`) are accepted because the ADR does not forbid
@@ -120,7 +161,7 @@ const INDEX_PATTERN = /^\d+$/;
  * field-specific detail.
  */
 function fail(condition: string): never {
-  throw new Error(`navigation grammar is invalid: ${condition}`);
+  throw new Error(`${NAVIGATION_GRAMMAR_PREFIX} ${condition}`);
 }
 
 function toSearchParams(input: URLSearchParams | string): URLSearchParams {
@@ -146,6 +187,11 @@ function validateKebab(field: string, value: string): void {
   }
 }
 
+// `beat` is the only kebab field whose diagnostic is shared verbatim
+// with the loader's defense-in-depth re-check, so its rule lives in
+// `NAVIGATION_GRAMMAR`; `scene` / `composition` reuse `validateKebab`
+// (same wording, parser-only) to avoid widening the shared source.
+
 function parseIndex(raw: string): number {
   if (!INDEX_PATTERN.test(raw)) {
     fail('"index" must be a base-10 non-negative integer (e.g. 0, 1, 12)');
@@ -162,12 +208,12 @@ function parseIndex(raw: string): number {
 }
 
 function parseMode(raw: string): NavigationMode {
-  // The membership check is correct as written; the type assertion
-  // documents that callers receive a typed mode, not a bare string.
-  if ((NAVIGATION_MODES as readonly string[]).includes(raw)) {
+  // The membership check is the shared `NAVIGATION_GRAMMAR.mode` rule;
+  // the type assertion documents that callers receive a typed mode.
+  if (NAVIGATION_GRAMMAR.mode.valid(raw)) {
     return raw as NavigationMode;
   }
-  fail(`"mode" unknown mode "${raw}" — allowed: ${NAVIGATION_MODES.join(', ')}`);
+  fail(NAVIGATION_GRAMMAR.mode.condition(raw));
 }
 
 function buildLocator(
@@ -202,16 +248,8 @@ function buildLocator(
 
 function ensureBeatHasSceneLikeTarget(beat: string | undefined, locator: NavigationLocator): void {
   if (beat === undefined) return;
-  if (
-    locator.kind === 'scene' ||
-    locator.kind === 'composition-scene' ||
-    locator.kind === 'composition-index'
-  ) {
-    return;
-  }
-  fail(
-    '"beat" requires a scene-like target ("scene", "composition" + "scene", or "composition" + "index")',
-  );
+  if (NAVIGATION_GRAMMAR.beatSceneLike.valid(locator)) return;
+  fail(NAVIGATION_GRAMMAR.beatSceneLike.condition);
 }
 
 /**
@@ -261,6 +299,52 @@ export function parseNavigationSearch(input: URLSearchParams | string): Navigati
   if (beat !== undefined) target.beat = beat;
   if (mode !== undefined) target.mode = mode;
   return Object.freeze(target);
+}
+
+/**
+ * Build a grammar `Error` (prefixed with {@link NAVIGATION_GRAMMAR_PREFIX})
+ * from a condition string, so the loader's defense-in-depth re-check
+ * produces byte-identical diagnostics to {@link parseNavigationSearch}.
+ */
+function grammarError(condition: string): Error {
+  return new Error(`${NAVIGATION_GRAMMAR_PREFIX} ${condition}`);
+}
+
+/**
+ * Defense-in-depth for ADR-013's `beat` grammar (PUL-F011).
+ * {@link parseNavigationSearch} enforces these rules on URL input, but
+ * `NavigationTarget` is an exported type that non-parser callers
+ * (event-detail unmarshaling, programmatic navigation, test harnesses)
+ * can construct directly. Re-checking at the loader boundary stops a
+ * hand-built target with an invalid `beat` from reaching the runner.
+ * Returns an `Error` carrying the parser's exact grammar message, or
+ * `null` when no further check is needed. Consumes {@link NAVIGATION_GRAMMAR}
+ * so the rule lives in one place yet the trust seam is preserved.
+ */
+export function validateBeatGrammar(target: NavigationTarget): Error | null {
+  if (target.beat === undefined) return null;
+  if (!NAVIGATION_GRAMMAR.beatKebab.valid(target.beat)) {
+    return grammarError(NAVIGATION_GRAMMAR.beatKebab.condition);
+  }
+  if (!NAVIGATION_GRAMMAR.beatSceneLike.valid(target.locator)) {
+    return grammarError(NAVIGATION_GRAMMAR.beatSceneLike.condition);
+  }
+  return null;
+}
+
+/**
+ * Defense-in-depth for ADR-007's mode allowlist (PUL-F012). Symmetric
+ * to {@link validateBeatGrammar}: re-checks a programmatically-built
+ * `target.mode` against {@link NAVIGATION_GRAMMAR} before it reaches
+ * {@link effectiveMode} and the scene ctx. Returns an `Error` with the
+ * parser's exact message, or `null` when no further check is needed.
+ */
+export function validateModeGrammar(target: NavigationTarget): Error | null {
+  if (target.mode === undefined) return null;
+  if (!NAVIGATION_GRAMMAR.mode.valid(target.mode)) {
+    return grammarError(NAVIGATION_GRAMMAR.mode.condition(target.mode));
+  }
+  return null;
 }
 
 /**
