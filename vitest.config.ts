@@ -23,8 +23,12 @@ export default mergeConfig(
         provider: 'v8',
         reporter: ['text', 'lcov'],
         reportsDirectory: 'coverage',
+        // Example decks are demonstration content (E2E-covered), not the
+        // product surface — mirror sonar-project.properties so local
+        // coverage matches the gate. The product is the runtime +
+        // reusable template library under src/runtime and src/system.
         include: ['src/**/*.ts'],
-        exclude: ['src/main.ts', '**/*.config.ts'],
+        exclude: ['src/main.ts', '**/*.config.ts', 'src/decks/**'],
       },
     },
   }),
