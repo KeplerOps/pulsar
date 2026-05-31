@@ -536,9 +536,9 @@ export interface FailureBucket {
 
 /**
  * Shared lifecycle plumbing the mount / compose / cleanup helpers all
- * thread through. One struct avoids each helper carrying separate
- * positional parameters (Sonar S107) and keeps the bucket + observer
- * wiring identical across phases.
+ * thread through. One struct avoids each helper carrying a long
+ * positional parameter list and keeps the bucket + observer wiring
+ * identical across phases.
  *
  * `reportFailure` records one isolated scene-lifecycle failure: it
  * collects the wrapped error in `bucket.sceneFailureErrors` AND fans the
@@ -695,9 +695,9 @@ async function composeSegments(
 ): Promise<SceneTimelineSegment[]> {
   const segments: SceneTimelineSegment[] = [];
   // Snapshot up-front: the loop body removes failed scenes from
-  // `mounted` and a live iteration would skip the entry after the
-  // splice. Sonar's "unnecessary `[...mounted]`" hint (S7747) is
-  // wrong here — the mutation is the whole point.
+  // `mounted`, and iterating the live array would skip the entry after
+  // each splice. The copy is deliberate — we iterate a stable list
+  // while `mounted` mutates underneath.
   const snapshot = Array.from(mounted);
   for (const step of snapshot) {
     let timeline: unknown;

@@ -492,12 +492,10 @@ const ATTR_SCENE_FAILURES = 'data-pulsar-scene-failures';
 
 /**
  * Resolve when `signal` is aborted (or immediately if already
- * aborted). Pure helper hoisted to module scope so the prompter
- * dispatch path can keep its callback nesting under Sonar's
- * S2004 4-level limit (the inline `addEventListener` arrow inside
- * an IIFE inside `buildPrompterLoad` would put the listener at
- * level 5; routing through this helper keeps every callback at
- * level ≤ 2).
+ * aborted). Pure module-scope helper — no closure captures — so the
+ * prompter dispatch path can express abort-waiting as a single awaited
+ * promise instead of inlining a one-shot `addEventListener` at each
+ * call site.
  */
 function waitForAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
@@ -978,8 +976,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
 
   /**
    * PUL-F030 / ADR-029: await the unlock gate, then run the lifecycle
-   * only if the navigation has not been superseded. Extracted so
-   * `buildLoad` stays within the cognitive-complexity budget.
+   * only if the navigation has not been superseded. Owns the
+   * gate-then-supersession-check sequence as one unit so `buildLoad`
+   * composes it as a single step.
    */
   const runGatedLifecycle = async (
     unlockGate: UnlockGate,
@@ -1062,8 +1061,8 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * `data-pulsar-composition-target` stays set so external
    * observers (agents, screenshot tooling) see the URL-addressed
    * composition even when only the head scene executes. Pure
-   * function — no closure captures — hoisted out of `runTarget` so
-   * the latter stays within Sonar's cognitive-complexity budget.
+   * function — no closure captures — so the single-scene slice
+   * transform is one isolated, testable unit separate from `runTarget`.
    */
   const applySingleSceneSlice = (
     resolved: SceneNavigationTarget,
@@ -1100,11 +1099,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
    * and, when the renderer returned a {@link PrompterDispose}
    * callback, park until abort and then run the callback.
    *
-   * Hoisted out of `buildPrompterLoad` so the IIFE chain stays under
-   * Sonar's nested-function limit (S2004): the inline addEventListener
-   * arrow inside an IIFE inside an arrow function inside an arrow
-   * function would put the listener at level 5; pulling the work
-   * into a top-level helper keeps every callback at level ≤ 2.
+   * Owns the render-then-park-until-abort-then-dispose sequence as one
+   * named step, so `buildPrompterLoad` wires it in flat rather than
+   * nesting the abort-wait and dispose call inline.
    */
   const dispatchPrompter = async (
     renderer: PrompterRenderer,

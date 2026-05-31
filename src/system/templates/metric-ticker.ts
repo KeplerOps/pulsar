@@ -39,8 +39,8 @@ const format = (m: MetricSpec, n: number): string => {
 
 /**
  * Update every `[data-metric]` cell in the ticker scene root with its
- * new computed value. Hoisted out of the setInterval callback so the
- * latter stays within Biome's cognitive-complexity gate.
+ * new computed value. The per-tick DOM update lives in one named
+ * helper so the interval callback just schedules it.
  */
 const applyTickerFrame = (
   ctx: unknown,

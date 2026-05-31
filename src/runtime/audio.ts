@@ -992,9 +992,9 @@ function assertPlayOptions(
  *     runtime audio-source allowlist agree, and what keeps the bed
  *     source out of the scene-facing `ctx.audio.load()` allowlist.
  *
- * Hoisted to module scope (pure — no closure captures) so
- * `normalizeSources` stays within Sonar's / Biome's cognitive-
- * complexity budget (the per-URL branching is the bulk of it).
+ * Module-scope and pure (no closure captures): owns the per-URL
+ * allowlist/policy decision for one source so `normalizeSources` maps
+ * over its inputs without inlining the branching.
  */
 function normalizeAudioUrl(
   soundId: string,
@@ -1049,8 +1049,8 @@ function describeRawOption(value: unknown): string {
 /**
  * Build the `play` rehearsal-cue payload (PUL-F026): the soundId plus
  * every play option the scene actually supplied, with NO source URL.
- * Hoisted out of `play()` so that function stays within Sonar's
- * cognitive-complexity budget (S3776).
+ * A separate pure builder so the cue-shape (which options are forwarded,
+ * and the no-URL guarantee) lives in one place.
  */
 function buildPlayCue(soundId: string, opts: PlayOptions): Omit<AudioCueLogPlay, 'sequence'> {
   return {
@@ -1067,9 +1067,9 @@ function buildPlayCue(soundId: string, opts: PlayOptions): Omit<AudioCueLogPlay,
 /**
  * Start one play instance on `handle` and apply the per-play options
  * (loop / volume / rate) keyed to the returned `playId`. Returns that
- * `playId` so the caller can register it in a group. Hoisted out of
- * `play()` so that method stays within the cognitive-complexity budget;
- * pure delegation to the engine handle, no service state.
+ * `playId` so the caller can register it in a group. Pure delegation to
+ * the engine handle — no service state — so the per-playId option
+ * application is one self-contained unit.
  */
 function applyPlayToHandle(handle: AudioSoundHandle, opts: PlayOptions): number {
   const playId = handle.play(opts.sprite);
@@ -1085,9 +1085,9 @@ function applyPlayToHandle(handle: AudioSoundHandle, opts: PlayOptions): number 
  * separate engine call, no separate allowlist apparatus. The bed's
  * source allowlist is its OWN declared `src`, so routing it through the
  * shared core can never leak the bed URL into the scene-facing
- * `ctx.audio.load()` allowlist. Hoisted out of `createAudioService` so
- * that factory stays within the cognitive-complexity budget; the caller
- * already screened `bedSuppressed` / abort. `register` returns the
+ * `ctx.audio.load()` allowlist. A separate helper so the bed-registration
+ * path is one named step; the caller already screened `bedSuppressed` /
+ * abort. `register` returns the
  * handle, or `undefined` for an idempotent re-registration (the bed is
  * registered once per service, so this only no-ops a duplicate src).
  */

@@ -709,9 +709,9 @@ export async function loadSceneNavigationTarget(
  * `headScreenshot`); `audioCueGate` / `onSceneCleaned` / `onSceneFailed`
  * pass through unchanged. Absent keys are dropped so a resolver that
  * branches on `'<key>' in opts` sees absent rather than `undefined`
- * (and to keep the forwarded object minimal). Hoisted out of
- * `loadSceneNavigationTarget` so the latter stays within Sonar's
- * cognitive-complexity budget (S3776). `onBeatMissing` / `onPresenterError`
+ * (and to keep the forwarded object minimal). A separate builder so the
+ * bridge-name-to-resolver-name mapping and the absent-key rules live in
+ * one place. `onBeatMissing` / `onPresenterError`
  * are paired surfaces — meaningless without `beat` / `presenter` — so
  * each is dropped when its partner is absent (the resolver also rejects
  * `beat` without `onBeatMissing`, but the bridge must not forward an

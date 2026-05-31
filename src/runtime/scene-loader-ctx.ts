@@ -4,9 +4,9 @@
 // and stage-attr envelope. This module owns the cohesive sub-concern it
 // delegates to: building the per-navigation audio service, presenter
 // pipe, deterministic RNG seed, and the per-occurrence `ctx` factory —
-// the work `createSceneLoader.buildLoad` used to inline. Pulling it here
-// keeps `buildLoad` within the cognitive-complexity budget and gives the
-// ctx-assembly seam a single home.
+// the work `createSceneLoader.buildLoad` used to inline. Gathering it
+// here gives the ctx-assembly seam a single home, separate from the
+// navigation-queue orchestration in `scene-loader.ts`.
 //
 // References:
 //  - PUL-F018 / ADR-021 — deterministic per-navigation RNG seed.

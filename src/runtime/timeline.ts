@@ -632,8 +632,8 @@ export interface ComposeMasterTimelineOptions {
  * Copy a scene's child-timeline labels onto the master under the
  * namespaced `sceneTimelineLabel(...)` name, and emit a
  * `master.addPause(...)` at any label that opts into the advance-gate
- * convention. Hoisted out of `composeMasterTimeline` so the latter
- * stays within the cognitive-complexity gate.
+ * convention. Owns the per-segment label-copy + advance-gate emission
+ * so `composeMasterTimeline` drives it once per segment.
  */
 function copyChildLabelsAndAdvanceGates(
   master: GsapTimeline,

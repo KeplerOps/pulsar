@@ -105,9 +105,10 @@ export interface DomAudioUnlockHost {
  */
 /**
  * Per-invocation state the gate keeps so the click/abort race stays
- * coherent across the async `gate.unlock()` await. Hoisted to module
- * scope so the gate adapter's nested-function depth stays under
- * Sonar's S2004 4-level limit.
+ * coherent across the async `gate.unlock()` await. A single named
+ * struct collects the button, resolvers, listeners, and `settled` flag
+ * the click/abort handlers share, instead of threading them through
+ * separate captures.
  */
 interface GateState {
   readonly button: UnlockButtonElement;

@@ -1,7 +1,7 @@
 // Scene-loader navigation guards — PUL-F008.
 //
-// Pure / near-pure decision helpers `createSceneLoader` delegates to so
-// `runTarget` and `enqueue` stay within the cognitive-complexity budget:
+// Pure / near-pure decision helpers `createSceneLoader` delegates to,
+// keeping each navigation policy in one isolated, testable place:
 //  - the present-mode audio unlock-gate predicate + builder (PUL-F030);
 //  - the composition-scoped chrome dispatch policy (PUL-F031).
 //

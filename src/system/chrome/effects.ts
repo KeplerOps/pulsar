@@ -26,9 +26,9 @@ const actWrapper = (slots: ChromeSlots): HTMLElement => {
 export const shake = (slots: ChromeSlots): void => {
   slots.stage.classList.remove('shake');
   // Force a reflow so the next class-add is observed as a state
-  // change. getBoundingClientRect() triggers layout flush the same
-  // way offsetWidth read does, without the discarded-expression lint
-  // (Sonar typescript:S3735).
+  // change. getBoundingClientRect() flushes layout the same way an
+  // `offsetWidth` read does, but as a method call rather than a
+  // discarded property-access expression.
   slots.stage.getBoundingClientRect();
   slots.stage.classList.add('shake');
 };
