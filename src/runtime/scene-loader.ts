@@ -54,11 +54,7 @@ import {
   validateBeatGrammar,
   validateModeGrammar,
 } from './navigation';
-import {
-  type PresenterCommandSource,
-  type PresenterController,
-  createPresenterController,
-} from './presenter';
+import type { PresenterCommandSource, PresenterController } from './presenter';
 import {
   type PrompterDispose,
   type PrompterRenderer,

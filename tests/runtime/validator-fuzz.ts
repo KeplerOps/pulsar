@@ -174,9 +174,17 @@ export function runValidatorFuzz<T>(opts: {
       message = error instanceof Error ? error.message : String(error);
     }
     expect(message, `expected rejection for ${detail}`).not.toBeNull();
-    // The validator must name the offending field so an author can find
-    // the broken declaration.
-    expect(message, `rejection for ${detail} must name "${field}"`).toContain(field);
+    if (message === null) return;
+    // The validator must name the offending field as a DISTINCT token, not
+    // merely contain its letters: a bare substring check for a short field
+    // like "id" is satisfied by "invalid"/"identifier", so a regression to a
+    // generic "... is invalid" message with no field name would pass. Require
+    // the field bounded by non-identifier characters (or string ends).
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namedToken = new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}([^\\p{L}\\p{N}_]|$)`, 'u');
+    expect(message, `rejection for ${detail} must name "${field}" as a distinct token`).toMatch(
+      namedToken,
+    );
   };
 
   for (const field of fields) {

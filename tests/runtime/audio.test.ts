@@ -588,9 +588,9 @@ describe('createAudioService — master mute (ADR-004)', () => {
   it('rejects a non-boolean mute argument at the runtime boundary', () => {
     const { service } = buildService();
     const muteUnchecked = service.mute as (value: unknown) => void;
-    expect(() => muteUnchecked('on')).toThrow(AudioError);
-    expect(() => muteUnchecked(1)).toThrow(AudioError);
-    expect(() => muteUnchecked(undefined)).toThrow(AudioError);
+    expectAudioError(() => muteUnchecked('on'), 'option');
+    expectAudioError(() => muteUnchecked(1), 'option');
+    expectAudioError(() => muteUnchecked(undefined), 'option');
   });
 
   it('persists master mute across services backed by the same engine', () => {
@@ -1178,9 +1178,9 @@ describe('createAudioService — legacy silent option rejection (codex review, c
         const opts = { signal: liveSignal(), silent: silentValue } as unknown as Opts;
         createAudioService(fake.engine, opts);
       };
-    expect(buildWithSilent(true)).toThrow(AudioError);
-    expect(buildWithSilent(false)).toThrow(AudioError);
-    expect(buildWithSilent(undefined)).toThrow(AudioError);
+    expectAudioError(buildWithSilent(true), 'option');
+    expectAudioError(buildWithSilent(false), 'option');
+    expectAudioError(buildWithSilent(undefined), 'option');
   });
 });
 
@@ -1199,11 +1199,11 @@ describe('createAudioService — outputPolicy runtime validation', () => {
 
   it('rejects an unknown outputPolicy value at construction', () => {
     const fake = fakeEngine();
-    expect(buildBadPolicy(fake, 'log-cue')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, 'SILENT')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, '')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, true)).toThrow(AudioError);
-    expect(buildBadPolicy(fake, null)).toThrow(AudioError);
+    expectAudioError(buildBadPolicy(fake, 'log-cue'), 'option');
+    expectAudioError(buildBadPolicy(fake, 'SILENT'), 'option');
+    expectAudioError(buildBadPolicy(fake, ''), 'option');
+    expectAudioError(buildBadPolicy(fake, true), 'option');
+    expectAudioError(buildBadPolicy(fake, null), 'option');
   });
 
   it('does NOT throw a TypeError on values JSON.stringify cannot encode (codex review, cycle 2)', () => {
@@ -1249,11 +1249,11 @@ describe('createAudioService — onCue runtime validation (codex review, cycle 2
     // here; without boundary validation, the misuse would be silently
     // swallowed inside the non-fatal `emitCue` try/catch and rehearsal
     // would see an empty cue stream.
-    expect(buildBadOnCue(fake, true)).toThrow(AudioError);
-    expect(buildBadOnCue(fake, 42)).toThrow(AudioError);
-    expect(buildBadOnCue(fake, {})).toThrow(AudioError);
-    expect(buildBadOnCue(fake, 'cue-log')).toThrow(AudioError);
-    expect(buildBadOnCue(fake, null)).toThrow(AudioError);
+    expectAudioError(buildBadOnCue(fake, true), 'option');
+    expectAudioError(buildBadOnCue(fake, 42), 'option');
+    expectAudioError(buildBadOnCue(fake, {}), 'option');
+    expectAudioError(buildBadOnCue(fake, 'cue-log'), 'option');
+    expectAudioError(buildBadOnCue(fake, null), 'option');
   });
 
   it('accepts an omitted onCue (workbench without a cue UI)', () => {
@@ -1494,9 +1494,9 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
           bedSuppressed: value as boolean,
         });
     };
-    expect(build('yes')).toThrow(AudioError);
-    expect(build(1)).toThrow(AudioError);
-    expect(build(null)).toThrow(AudioError);
+    expectAudioError(build('yes'), 'option');
+    expectAudioError(build(1), 'option');
+    expectAudioError(build(null), 'option');
   });
 });
 
@@ -1581,8 +1581,8 @@ describe('assertAudioBedDeclaration (PUL-F014)', () => {
   });
 
   it('rejects a non-object declaration', () => {
-    expect(() => assertAudioBedDeclaration('oops')).toThrow(AudioError);
-    expect(() => assertAudioBedDeclaration(null)).toThrow(AudioError);
+    expectAudioError(() => assertAudioBedDeclaration('oops'), 'option');
+    expectAudioError(() => assertAudioBedDeclaration(null), 'option');
   });
 
   it('rejects a missing src field', () => {
