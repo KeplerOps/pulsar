@@ -66,28 +66,46 @@ import { deepFreeze, isPlainRecord } from './object';
  *  Errors
  * ------------------------------------------------------------------ */
 
-/** Base class for every error the audio service raises. */
-export class AudioError extends Error {}
+/**
+ * Which failure mode an {@link AudioError} represents. No `src/` caller
+ * branches on the error type, so the service carries this discriminant
+ * instead of a subclass-per-mode hierarchy; callers/tests tell a bad
+ * group from a bad volume range by reading `.category`.
+ *
+ *  - `sound`  — bad/unknown/re-registered sound id or unknown sprite.
+ *  - `group`  — group name is not a kebab-case identifier.
+ *  - `source` — bad scheme/URL, or a source not in `scene.audio`
+ *    (PUL-F030 / ADR-029 — the audio-source allowlist).
+ *  - `range`  — volume / fade endpoint / rate / sprite or fade duration
+ *    out of its allowed numeric range.
+ *  - `option` — a service / play option has the wrong type or shape.
+ */
+export type AudioErrorCategory = 'sound' | 'group' | 'source' | 'range' | 'option';
 
 /**
- * A sound id is malformed, refers to a sound that was never registered,
- * is being registered twice, or names a sprite the sound does not have.
+ * Every error the audio service raises. `category` is the failure-mode
+ * discriminant (the role the former per-mode subclasses played);
+ * `name` is the stable `'AudioError'`.
  */
-export class AudioSoundError extends AudioError {}
+export class AudioError extends Error {
+  readonly category: AudioErrorCategory;
 
-/** A group name is not a valid kebab-case identifier. */
-export class AudioGroupError extends AudioError {}
+  constructor(category: AudioErrorCategory, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AudioError';
+    this.category = category;
+  }
+}
 
-/**
- * A sound source URL has a disallowed scheme, is malformed, or was not
- * declared in `scene.audio` (PUL-F030 / ADR-029 — the audio-source
- * allowlist; every entry must also be in `scene.assets` so the
- * preloader warms it).
- */
-export class AudioSourceError extends AudioError {}
-
-/** A volume, fade endpoint, or duration is outside its allowed numeric range. */
-export class AudioRangeError extends AudioError {}
+// Terse per-category constructors so throw sites read as one line
+// (`throw soundError(...)`) instead of a wrapped two-argument call.
+const soundError = (message: string, options?: ErrorOptions): AudioError =>
+  new AudioError('sound', message, options);
+const groupError = (message: string): AudioError => new AudioError('group', message);
+const sourceError = (message: string, options?: ErrorOptions): AudioError =>
+  new AudioError('source', message, options);
+const rangeError = (message: string): AudioError => new AudioError('range', message);
+const optionError = (message: string): AudioError => new AudioError('option', message);
 
 /* ------------------------------------------------------------------ *
  *  Engine port — the Howler boundary
@@ -408,7 +426,7 @@ export interface SoundDefinition {
    * Re-registering an id with the same definition (same `src` list,
    * same `sprite` map) is idempotent — e.g. a shared transition SFX two
    * scenes both `load`; re-registering it with a different definition
-   * is an {@link AudioSoundError}.
+   * is an {@link AudioError} (`category: 'sound'`).
    */
   readonly src: string | readonly string[];
   /** Optional sprite definitions (offsets/durations in ms; optional third element marks a sprite looping). */
@@ -728,32 +746,32 @@ export interface AudioServiceOptions {
  */
 export interface AudioService {
   /**
-   * Register a sound under `soundId` (kebab-case). Throws
-   * {@link AudioSoundError} on a malformed or already-used id and
-   * {@link AudioSourceError} when a `src` URL has a disallowed scheme,
-   * is malformed, or is not in `allowedSources`.
+   * Register a sound under `soundId` (kebab-case). Throws an
+   * {@link AudioError} with `category: 'sound'` on a malformed or
+   * already-used id and `category: 'source'` when a `src` URL has a
+   * disallowed scheme, is malformed, or is not in `allowedSources`.
    */
   load(soundId: string, definition: SoundDefinition): void;
   /**
-   * Play a registered sound. Throws {@link AudioSoundError} on an
-   * unknown sound id or sprite name, {@link AudioGroupError} on a
-   * malformed group name, {@link AudioRangeError} on an out-of-range
-   * volume.
+   * Play a registered sound. Throws an {@link AudioError} with
+   * `category: 'sound'` on an unknown sound id or sprite name,
+   * `category: 'group'` on a malformed group name, `category: 'range'`
+   * on an out-of-range volume.
    */
   play(soundId: string, options?: PlayOptions): void;
   /**
    * Fade every playing instance of `soundId` from `from` to `to` over
-   * `durationMs` milliseconds. Throws {@link AudioSoundError} on an
-   * unknown sound and {@link AudioRangeError} on an out-of-range
-   * endpoint or duration.
+   * `durationMs` milliseconds. Throws an {@link AudioError} with
+   * `category: 'sound'` on an unknown sound and `category: 'range'` on
+   * an out-of-range endpoint or duration.
    */
   fade(soundId: string, from: number, to: number, durationMs: number): void;
-  /** Stop every playing instance of `soundId`. Throws {@link AudioSoundError} on an unknown sound. */
+  /** Stop every playing instance of `soundId`. Throws {@link AudioError} (`category: 'sound'`) on an unknown sound. */
   stop(soundId: string): void;
   /**
-   * Stop every play instance tagged with `group`. Throws
-   * {@link AudioGroupError} on a malformed group name; an unknown or
-   * already-emptied group is a no-op.
+   * Stop every play instance tagged with `group`. Throws an
+   * {@link AudioError} with `category: 'group'` on a malformed group
+   * name; an unknown or already-emptied group is a no-op.
    */
   stopGroup(group: string): void;
   /** Set master mute (persistent runtime state on the engine). */
@@ -827,20 +845,20 @@ const sameSpriteMap = (a: AudioSpriteMap | undefined, b: AudioSpriteMap | undefi
  */
 function assertSpriteEntry(soundId: string, name: string, def: unknown): void {
   if (name === '') {
-    throw new AudioSoundError(`audio sound "${soundId}" has a sprite with an empty name`);
+    throw soundError(`audio sound "${soundId}" has a sprite with an empty name`);
   }
   if (!Array.isArray(def) || (def.length !== 2 && def.length !== 3)) {
-    throw new AudioSoundError(
+    throw soundError(
       `audio sound "${soundId}" sprite "${name}" must be [startMs, durationMs] or [startMs, durationMs, loop]`,
     );
   }
   if (!isFiniteNumber(def[0]) || def[0] < 0 || !isFiniteNumber(def[1]) || def[1] < 0) {
-    throw new AudioRangeError(
+    throw rangeError(
       `audio sound "${soundId}" sprite "${name}" offset and duration must be finite, non-negative milliseconds; got [${def[0]}, ${def[1]}]`,
     );
   }
   if (def.length === 3 && typeof def[2] !== 'boolean') {
-    throw new AudioSoundError(
+    throw soundError(
       `audio sound "${soundId}" sprite "${name}" loop flag must be a boolean; got ${typeof def[2]}`,
     );
   }
@@ -858,20 +876,18 @@ function assertSoundDefinition(
   definition: unknown,
 ): asserts definition is SoundDefinition {
   if (!isPlainRecord(definition)) {
-    throw new AudioSoundError(
+    throw soundError(
       `audio sound "${soundId}" definition must be an object with at least a "src" field`,
     );
   }
   const src = (definition as { src?: unknown }).src;
   if (typeof src !== 'string' && !Array.isArray(src)) {
-    throw new AudioSourceError(
-      `audio sound "${soundId}" "src" must be a string or array of strings`,
-    );
+    throw sourceError(`audio sound "${soundId}" "src" must be a string or array of strings`);
   }
   const sprite = (definition as { sprite?: unknown }).sprite;
   if (sprite === undefined) return;
   if (!isPlainRecord(sprite)) {
-    throw new AudioSoundError(
+    throw soundError(
       `audio sound "${soundId}" sprite map must be an object of name → [startMs, durationMs] or [startMs, durationMs, loop]`,
     );
   }
@@ -892,34 +908,34 @@ function assertSoundDefinition(
  */
 export function assertAudioBedDeclaration(value: unknown): asserts value is AudioBedDeclaration {
   if (!isPlainRecord(value)) {
-    throw new AudioError('audio bed declaration must be an object with at least a "src" field');
+    throw optionError('audio bed declaration must be an object with at least a "src" field');
   }
   const src = (value as { src?: unknown }).src;
   if (typeof src !== 'string' && !Array.isArray(src)) {
-    throw new AudioSourceError('audio bed "src" must be a string or array of strings');
+    throw sourceError('audio bed "src" must be a string or array of strings');
   }
   const volume = (value as { volume?: unknown }).volume;
   if (volume !== undefined && typeof volume !== 'number') {
-    throw new AudioRangeError(`audio bed "volume" must be a number; got ${typeof volume}`);
+    throw rangeError(`audio bed "volume" must be a number; got ${typeof volume}`);
   }
 }
 
 /**
- * The simple-typed {@link PlayOptions} fields and the error class each
- * raises on a type mismatch. `sprite` / `loop` are `AudioSoundError`,
- * `group` is `AudioGroupError`, `volume` is `AudioRangeError` (its range
+ * The simple-typed {@link PlayOptions} fields and the {@link AudioError}
+ * category each raises on a type mismatch. `sprite` / `loop` are
+ * `sound`, `group` is `group`, `volume` is `range` (its numeric range
  * is checked later by `assertGain`); `rate` is validated separately
  * because it is range-bounded, not just typed.
  */
 const PLAY_OPTION_TYPES: readonly {
   readonly name: keyof PlayOptions;
   readonly type: 'string' | 'boolean' | 'number';
-  readonly Error: new (message: string) => Error;
+  readonly category: AudioErrorCategory;
 }[] = [
-  { name: 'sprite', type: 'string', Error: AudioSoundError },
-  { name: 'loop', type: 'boolean', Error: AudioSoundError },
-  { name: 'group', type: 'string', Error: AudioGroupError },
-  { name: 'volume', type: 'number', Error: AudioRangeError },
+  { name: 'sprite', type: 'string', category: 'sound' },
+  { name: 'loop', type: 'boolean', category: 'sound' },
+  { name: 'group', type: 'string', category: 'group' },
+  { name: 'volume', type: 'number', category: 'range' },
 ];
 
 /**
@@ -934,21 +950,22 @@ function assertPlayOptions(
 ): asserts options is PlayOptions | undefined {
   if (options === undefined) return;
   if (!isPlainRecord(options)) {
-    throw new AudioSoundError(`audio sound "${soundId}" play options must be an object or omitted`);
+    throw soundError(`audio sound "${soundId}" play options must be an object or omitted`);
   }
   const opts = options as Record<string, unknown>;
-  for (const { name, type, Error: ErrorCtor } of PLAY_OPTION_TYPES) {
+  for (const { name, type, category } of PLAY_OPTION_TYPES) {
     const value = opts[name];
     const actual = typeof value;
     if (value !== undefined && actual !== type) {
-      throw new ErrorCtor(
+      throw new AudioError(
+        category,
         `audio sound "${soundId}" play option "${name}" must be a ${type}; got ${actual}`,
       );
     }
   }
   const rate = opts.rate;
   if (rate !== undefined && (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0)) {
-    throw new AudioRangeError(
+    throw rangeError(
       `audio sound "${soundId}" play option "rate" must be a finite number > 0; got ${typeof rate === 'number' ? rate : typeof rate}`,
     );
   }
@@ -986,7 +1003,7 @@ function normalizeAudioUrl(
   assetPolicy: AssetUrlPolicy | undefined,
 ): string {
   if (typeof url !== 'string' || url === '') {
-    throw new AudioSourceError(`audio sound "${soundId}" source must be a non-empty URL string`);
+    throw sourceError(`audio sound "${soundId}" source must be a non-empty URL string`);
   }
   let resolved: string;
   try {
@@ -996,13 +1013,13 @@ function normalizeAudioUrl(
       assetPolicy?.allowedSchemes ?? DEFAULT_ALLOWED_SCHEMES,
     );
   } catch (cause) {
-    throw new AudioSourceError(
+    throw sourceError(
       `audio sound "${soundId}" source "${url}" is invalid: ${describeError(cause)}`,
       { cause },
     );
   }
   if (allowedForSource !== null && !allowedForSource.has(url)) {
-    throw new AudioSourceError(
+    throw sourceError(
       `audio sound "${soundId}" source "${url}" is not a declared audio source — list it in scene.audio (and ensure it is also in scene.assets so the preloader warms it) per PUL-F030 / ADR-029`,
     );
   }
@@ -1104,7 +1121,7 @@ export function createAudioService(
   // — the worst possible migration failure for an audio-suppression
   // option. Fail loud at the boundary instead.
   if ('silent' in options) {
-    throw new AudioError(
+    throw optionError(
       "audio 'silent' option was replaced by outputPolicy in PUL-F026 / ADR-004 — pass outputPolicy: 'silent' / 'log-cues' / 'audible' instead",
     );
   }
@@ -1131,7 +1148,7 @@ export function createAudioService(
     !(AUDIO_OUTPUT_POLICIES as readonly unknown[]).includes(policyArg)
   ) {
     const quotedPolicies = AUDIO_OUTPUT_POLICIES.map((p) => `'${p}'`).join(' / ');
-    throw new AudioError(
+    throw optionError(
       `audio outputPolicy must be one of ${quotedPolicies}; got ${describeRawOption(policyArg)}`,
     );
   }
@@ -1146,7 +1163,7 @@ export function createAudioService(
   // non-fatal `emitCue` try/catch — which would leave rehearsal with
   // an empty cue stream and no diagnostic.
   if (options.onCue !== undefined && typeof options.onCue !== 'function') {
-    throw new AudioError(
+    throw optionError(
       `audio onCue must be a function or omitted; got ${describeRawOption(options.onCue)}`,
     );
   }
@@ -1160,7 +1177,7 @@ export function createAudioService(
     assertAudioBedDeclaration(options.bed);
   }
   if (options.bedSuppressed !== undefined && typeof options.bedSuppressed !== 'boolean') {
-    throw new AudioError(
+    throw optionError(
       `audio bedSuppressed must be a boolean or omitted; got ${describeRawOption(
         options.bedSuppressed,
       )}`,
@@ -1245,7 +1262,7 @@ export function createAudioService(
 
   const assertSoundId = (soundId: string): void => {
     if (!isKebabIdentifier(soundId)) {
-      throw new AudioSoundError(
+      throw soundError(
         `audio sound id "${soundId}" is invalid: sound ids must be lowercase kebab-case identifiers (${KEBAB_IDENTIFIER_FORM})`,
       );
     }
@@ -1253,7 +1270,7 @@ export function createAudioService(
 
   const assertGroupName = (group: string): void => {
     if (!isKebabIdentifier(group)) {
-      throw new AudioGroupError(
+      throw groupError(
         `audio group name "${group}" is invalid: group names must be lowercase kebab-case identifiers (${KEBAB_IDENTIFIER_FORM})`,
       );
     }
@@ -1261,7 +1278,7 @@ export function createAudioService(
 
   const assertGain = (value: number, what: string): void => {
     if (!isFiniteNumber(value) || value < GAIN_MIN || value > GAIN_MAX) {
-      throw new AudioRangeError(
+      throw rangeError(
         `audio ${what} must be a finite number in [${GAIN_MIN}, ${GAIN_MAX}]; got ${value}`,
       );
     }
@@ -1271,7 +1288,7 @@ export function createAudioService(
     assertSoundId(soundId);
     const sound = sounds.get(soundId);
     if (sound === undefined) {
-      throw new AudioSoundError(
+      throw soundError(
         `audio sound "${soundId}" is not registered — call ctx.audio.load("${soundId}", ...) first`,
       );
     }
@@ -1287,7 +1304,7 @@ export function createAudioService(
    */
   const validatePlay = (soundId: string, sound: RegisteredSound, opts: PlayOptions): void => {
     if (opts.sprite !== undefined && !sound.spriteNames.has(opts.sprite)) {
-      throw new AudioSoundError(unknownSpriteMessage(soundId, opts.sprite, sound.spriteNames));
+      throw soundError(unknownSpriteMessage(soundId, opts.sprite, sound.spriteNames));
     }
     if (opts.group !== undefined) assertGroupName(opts.group);
     if (opts.volume !== undefined) assertGain(opts.volume, 'volume');
@@ -1303,7 +1320,9 @@ export function createAudioService(
   const reportCleanupError = (where: string, target: string, cause: unknown): void => {
     try {
       onError(
-        new AudioError(`audio ${where}("${target}") failed: ${describeError(cause)}`, { cause }),
+        soundError(`audio ${where}("${target}") failed: ${describeError(cause)}`, {
+          cause,
+        }),
       );
     } catch {
       // Intentionally empty: the diagnostic sink is non-fatal.
@@ -1329,9 +1348,7 @@ export function createAudioService(
   ): string[] => {
     const list = typeof src === 'string' ? [src] : [...src];
     if (list.length === 0) {
-      throw new AudioSourceError(
-        `audio sound "${soundId}" has no source — provide at least one URL`,
-      );
+      throw sourceError(`audio sound "${soundId}" has no source — provide at least one URL`);
     }
     return list.map((url) => normalizeAudioUrl(soundId, url, allowedForSource, assetPolicy));
   };
@@ -1357,7 +1374,7 @@ export function createAudioService(
    * set — NOT the scene-facing `allowedSources` — so routing the bed
    * through the scene allowlist can never leak the bed URL into
    * `ctx.audio.load()` (codex review, cycle 1). A re-`load` with a
-   * different definition is an {@link AudioSoundError}.
+   * different definition is an {@link AudioError} (`category: 'sound'`).
    */
   const registerSound = (
     key: string,
@@ -1378,9 +1395,7 @@ export function createAudioService(
       if (sameSourceList(existing.src, src) && sameSpriteMap(existing.sprite, definition.sprite)) {
         return undefined;
       }
-      throw new AudioSoundError(
-        `audio sound "${key}" is already registered with a different definition`,
-      );
+      throw soundError(`audio sound "${key}" is already registered with a different definition`);
     }
     const spriteNames: ReadonlySet<string> = new Set(
       definition.sprite === undefined ? [] : Object.keys(definition.sprite),
@@ -1397,7 +1412,7 @@ export function createAudioService(
         // callback.
         if (disposed()) return;
         try {
-          onError(new AudioError(`audio sound "${key}": ${describeError(err)}`, { cause: err }));
+          onError(soundError(`audio sound "${key}": ${describeError(err)}`, { cause: err }));
         } catch {
           // Intentionally empty: the diagnostic sink is non-fatal.
         }
@@ -1453,7 +1468,7 @@ export function createAudioService(
       assertGain(from, 'fade start volume');
       assertGain(to, 'fade end volume');
       if (!isFiniteNumber(durationMs) || durationMs < 0) {
-        throw new AudioRangeError(
+        throw rangeError(
           `audio fade duration must be a finite, non-negative number of milliseconds; got ${durationMs}`,
         );
       }
@@ -1506,7 +1521,7 @@ export function createAudioService(
       // Runtime boundary: scenes can be plain JS, so the boolean type
       // does not hold (codex review, cycle 4).
       if (typeof muted !== 'boolean') {
-        throw new AudioError(`audio mute argument must be a boolean; got ${typeof muted}`);
+        throw optionError(`audio mute argument must be a boolean; got ${typeof muted}`);
       }
       engine.setMasterMute(muted);
     },

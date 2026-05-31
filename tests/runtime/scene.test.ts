@@ -7,6 +7,7 @@ import {
   isSceneModule,
   sceneDeclaresAudio,
 } from '../../src/runtime/scene';
+import { type FuzzField, runValidatorFuzz } from './validator-fuzz';
 
 const validScene = (): SceneModule => ({
   id: 'scene-a',
@@ -24,22 +25,6 @@ const validScene = (): SceneModule => ({
   cleanup: () => undefined,
 });
 
-const REQUIRED_FIELDS = [
-  'id',
-  'title',
-  'duration',
-  'tags',
-  'assets',
-  'captions',
-  'audio',
-  'defaultNext',
-  'standalone',
-  'trailerSafe',
-  'create',
-  'timeline',
-  'cleanup',
-] as const;
-
 const omitField = <K extends keyof SceneModule>(field: K): Record<string, unknown> => {
   const scene: Record<string, unknown> = { ...validScene() };
   delete scene[field as string];
@@ -54,159 +39,68 @@ const withField = (field: string, value: unknown): Record<string, unknown> => ({
 const withDuration = (duration: unknown): Record<string, unknown> =>
   withField('duration', duration);
 
+// Every required field and its expected kind, driving the property
+// fuzz below. `captions` and `audio` are validated by the dedicated
+// indexed-message / cross-field suites, so they are fuzzed there.
+const SCENE_FIELDS: readonly FuzzField[] = [
+  { name: 'id', kind: 'kebab-id', omittable: true },
+  { name: 'title', kind: 'string', omittable: true },
+  { name: 'duration', kind: 'nonneg-int-or-null', omittable: true },
+  { name: 'tags', kind: 'string-array', omittable: true },
+  { name: 'assets', kind: 'string-array', omittable: true },
+  { name: 'defaultNext', kind: 'kebab-id-or-null', omittable: true },
+  { name: 'standalone', kind: 'boolean', omittable: true },
+  { name: 'trailerSafe', kind: 'boolean', omittable: true },
+  { name: 'create', kind: 'function', omittable: true },
+  { name: 'timeline', kind: 'function', omittable: true },
+  { name: 'cleanup', kind: 'function', omittable: true },
+];
+
 describe('SceneModule contract (PUL-F001)', () => {
-  describe('required fields are present', () => {
-    it('accepts a valid minimal scene module', () => {
-      expect(() => assertSceneModule(validScene())).not.toThrow();
-    });
+  it('accepts a valid minimal scene module', () => {
+    expect(() => assertSceneModule(validScene())).not.toThrow();
+  });
 
-    it.each(REQUIRED_FIELDS)('rejects when "%s" is missing', (field) => {
-      expect(() => assertSceneModule(omitField(field))).toThrow(new RegExp(`\\b${field}\\b`));
-    });
-
-    it('rejects null input', () => {
-      expect(() => assertSceneModule(null)).toThrow(/object/i);
-    });
-
-    it('rejects undefined input', () => {
-      expect(() => assertSceneModule(undefined)).toThrow(/object/i);
-    });
-
-    it('rejects a string input', () => {
-      expect(() => assertSceneModule('not an object')).toThrow(/object/i);
-    });
-
-    it('rejects a number input', () => {
-      expect(() => assertSceneModule(42)).toThrow(/object/i);
-    });
-
-    it('rejects an array input', () => {
-      expect(() => assertSceneModule([])).toThrow(/object/i);
+  describe('top-level shape', () => {
+    it.each<[string, unknown]>([
+      ['null', null],
+      ['undefined', undefined],
+      ['a string', 'not an object'],
+      ['a number', 42],
+      ['an array', []],
+    ])('rejects %s (must be a non-null object)', (_label, value) => {
+      expect(() => assertSceneModule(value)).toThrow(/object/i);
     });
   });
 
-  describe('duration rules', () => {
-    it('accepts 0', () => {
+  // Property fuzz over every required field and the four malformed-
+  // input classes (omission, wrong type, out-of-range number, non-
+  // kebab id), replacing the former per-value `it.each` enumerations.
+  // Each draw is guaranteed-invalid for its field kind and the
+  // validator must name the offending field. Seeded so a failure
+  // reproduces.
+  it('rejects every required field across the malformed-input space (property fuzz)', () => {
+    runValidatorFuzz({
+      seed: 'scene-module',
+      valid: () => ({ ...validScene() }),
+      fields: SCENE_FIELDS,
+      assert: assertSceneModule,
+    });
+  });
+
+  describe('field-value boundaries (representative asserts)', () => {
+    it('accepts duration 0, a positive integer, and null', () => {
       expect(() => assertSceneModule(withDuration(0))).not.toThrow();
-    });
-
-    it('accepts a positive integer (5000)', () => {
       expect(() => assertSceneModule(withDuration(5000))).not.toThrow();
-    });
-
-    it('accepts null (open-ended / interrupt-driven)', () => {
       expect(() => assertSceneModule(withDuration(null))).not.toThrow();
     });
 
-    it('rejects a negative integer', () => {
-      expect(() => assertSceneModule(withDuration(-1))).toThrow(/duration/);
-    });
-
-    it('rejects a float', () => {
-      expect(() => assertSceneModule(withDuration(1.5))).toThrow(/duration/);
-    });
-
-    it('rejects NaN', () => {
-      expect(() => assertSceneModule(withDuration(Number.NaN))).toThrow(/duration/);
-    });
-
-    it('rejects Infinity', () => {
-      expect(() => assertSceneModule(withDuration(Number.POSITIVE_INFINITY))).toThrow(/duration/);
-    });
-
-    it('rejects -Infinity', () => {
-      expect(() => assertSceneModule(withDuration(Number.NEGATIVE_INFINITY))).toThrow(/duration/);
-    });
-
-    it('rejects undefined value', () => {
-      expect(() => assertSceneModule(withDuration(undefined))).toThrow(/duration/);
-    });
-
-    it('rejects a string', () => {
-      expect(() => assertSceneModule(withDuration('5000'))).toThrow(/duration/);
-    });
-
-    it('rejects boolean', () => {
-      expect(() => assertSceneModule(withDuration(true))).toThrow(/duration/);
-    });
-  });
-
-  describe('field types', () => {
-    it('rejects non-string id', () => {
-      expect(() => assertSceneModule(withField('id', 42))).toThrow(/id/);
-    });
-
-    it('rejects non-string title', () => {
-      expect(() => assertSceneModule(withField('title', 42))).toThrow(/title/);
-    });
-
-    it('rejects non-array tags', () => {
-      expect(() => assertSceneModule(withField('tags', 'not-an-array'))).toThrow(/tags/);
-    });
-
-    it('rejects non-string elements in tags', () => {
-      expect(() => assertSceneModule(withField('tags', [42]))).toThrow(/tags/);
-    });
-
-    it('rejects non-array assets', () => {
-      expect(() => assertSceneModule(withField('assets', 'not-an-array'))).toThrow(/assets/);
-    });
-
-    it('rejects non-string elements in assets', () => {
-      expect(() => assertSceneModule(withField('assets', [42]))).toThrow(/assets/);
-    });
-
-    it('rejects non-array captions', () => {
-      expect(() => assertSceneModule(withField('captions', 'not-an-array'))).toThrow(/captions/);
-    });
-
-    it('rejects non-(string|null) defaultNext (number)', () => {
-      expect(() => assertSceneModule(withField('defaultNext', 42))).toThrow(/defaultNext/);
-    });
-
-    it('rejects non-(string|null) defaultNext (undefined value)', () => {
-      expect(() => assertSceneModule(withField('defaultNext', undefined))).toThrow(/defaultNext/);
-    });
-
-    it('accepts kebab-case string defaultNext', () => {
+    it('accepts a kebab-case string defaultNext', () => {
       expect(() => assertSceneModule(withField('defaultNext', 'next-scene'))).not.toThrow();
     });
 
-    it.each<[string, string]>([
-      ['empty string', ''],
-      ['uppercase', 'Scene-B'],
-      ['underscore', 'scene_b'],
-      ['leading hyphen', '-scene-b'],
-      ['trailing hyphen', 'scene-b-'],
-      ['consecutive hyphens', 'scene--b'],
-      ['whitespace', 'scene b'],
-      ['punctuation', 'scene.b'],
-      ['non-ASCII', 'séance'],
-    ])(
-      'rejects non-kebab-case defaultNext (%s) — defaultNext is a scene id reference (PUL-A007)',
-      (_label, value) => {
-        expect(() => assertSceneModule(withField('defaultNext', value))).toThrow(/defaultNext/);
-      },
-    );
-
-    it('rejects non-boolean standalone', () => {
-      expect(() => assertSceneModule(withField('standalone', 'yes'))).toThrow(/standalone/);
-    });
-
-    it('rejects non-boolean trailerSafe', () => {
-      expect(() => assertSceneModule(withField('trailerSafe', 1))).toThrow(/trailerSafe/);
-    });
-
-    it('rejects non-function create', () => {
-      expect(() => assertSceneModule(withField('create', null))).toThrow(/create/);
-    });
-
-    it('rejects non-function timeline', () => {
-      expect(() => assertSceneModule(withField('timeline', null))).toThrow(/timeline/);
-    });
-
-    it('rejects non-function cleanup', () => {
-      expect(() => assertSceneModule(withField('cleanup', null))).toThrow(/cleanup/);
+    it('rejects a non-array captions field, naming captions', () => {
+      expect(() => assertSceneModule(withField('captions', 'not-an-array'))).toThrow(/captions/);
     });
   });
 

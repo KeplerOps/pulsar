@@ -7,8 +7,8 @@
 //
 // Every audio source URL the deck plays MUST also appear in the
 // scene's `audio` declaration (which the loader passes as
-// `allowedSources` to the service). Otherwise `load` throws
-// `AudioSourceError`.
+// `allowedSources` to the service). Otherwise `load` throws an
+// `AudioError` with `category: 'source'`.
 
 import type { AudioService, AudioSpriteMap, PlayOptions } from '../../runtime/audio';
 
