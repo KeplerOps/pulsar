@@ -62,3 +62,14 @@ repos:
         language: system
         pass_filenames: false
         files: ^(src/.*\.ts|tests/.*\.ts|vitest\.config\.ts|package\.json)$
+
+      # Structural code-shape audits, relocated out of the behavior
+      # suite into their own vitest project (vitest.policy.config.ts).
+      # Blocking — same enforcement set as before, just no longer mixed
+      # into `pnpm test`. Mirrored by the CI `policy` job.
+      - id: policy
+        name: pnpm policy (source-policy gate)
+        entry: bash -c 'pnpm policy'
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.ts|tests/.*\.ts|biome\.json|vitest\.policy\.config\.ts|package\.json)$

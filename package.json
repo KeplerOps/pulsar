@@ -15,6 +15,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "policy": "vitest run --config vitest.policy.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:browsers": "playwright test",

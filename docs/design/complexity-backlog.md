@@ -111,6 +111,17 @@ targets at all, by design. The override allowlist is enforced by
 `tests/runtime/policy-biome-complexity-gate.test.ts` so the cluster
 cannot be quietly widened.
 
+This policy-scanner cluster (`policy-*.test.ts`, `source-policy.ts`,
+`screenshot-determinism-source.test.ts`) does **not** run in the
+default behavior suite (`pnpm test`). It is a separate, still-blocking
+gate run via `pnpm policy` (`vitest.policy.config.ts`), wired into both
+CI (the `policy` job) and the `policy` pre-commit hook. Its whole-tree
+AST scans starved under the behavior suite's parallel load and
+intermittently timed out, so the gate was relocated — the enforcement
+set is unchanged. The Biome override above stays regardless of where
+the suite runs; `biome.json` remains the canonical complexity-gate
+declaration.
+
 ## Ratchet plan
 
 The intent of the gate is to lower `maxAllowedComplexity` as the
