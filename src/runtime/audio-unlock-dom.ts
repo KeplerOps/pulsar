@@ -1,38 +1,13 @@
 // DOM-backed workbench audio-unlock adapter — PUL-F030 / ADR-029.
 //
-// `src/main.ts` (the production browser bootstrap) wires the
-// `AudioUnlockAdapter` the loader invokes BEFORE preload + scene
-// `create(ctx)` + scene `timeline(ctx)` + master timeline playback
-// for present-mode compositions that declare audio. The adapter mounts
-// a single button on the workbench stage, awaits the user's click,
-// calls `gate.unlock()` to satisfy the browser autoplay policy through
-// the audio engine, removes the button, and resolves the promise. On
-// navigation supersession / dispose / popstate, the gate's signal
-// aborts: the adapter rejects, removes the button, and the loader's
-// existing catch-and-surface path runs.
-//
-// The factory shape (rather than an inline function in `main.ts`) is
-// what makes the workbench DOM behaviors actually testable — the
-// `cycle-3 codex review` flagged that the inline adapter in
-// `src/main.ts` was not covered by the gate test suite. Injecting
-// `mount` (the stage) and `createButton` (the gesture surface) keeps
-// the adapter logic — click wiring, abort race, button removal,
-// failure-path cleanup — testable against fakes while production
-// `main.ts` supplies real `document.createElement` and the `#stage`
-// element.
-//
-// Layering note: this adapter is deliberately NOT folded into the
-// `audio.ts` engine factory. `audio.ts` is the Howler PORT (a sound
-// factory + master-mute + `engine.unlock()`), the lowest audio layer,
-// with no DOM or navigation dependencies. This module is a
-// workbench-LAYER concern: it speaks `HTMLElement`/click gestures and
-// the loader's `AudioUnlockAdapter` / `AudioUnlockContext` navigation
-// types (defined in `scene-loader-guard.ts`). Folding it into the port
-// would pull DOM-gesture and loader-navigation types down into the
-// Howler boundary and couple `audio.ts` to `scene-loader-guard.ts` — a
-// layering inversion. The engine already exposes the only audio-port
-// primitive the gate needs (`unlock()`); the gesture choreography that
-// drives it belongs at the workbench layer next to the chrome adapter.
+// The workbench-layer `AudioUnlockAdapter` the loader invokes before
+// preload + scene lifecycle for present-mode compositions that declare
+// audio. Mounts a gesture button on the stage, awaits the click, calls
+// `gate.unlock()` to satisfy autoplay policy through the audio engine,
+// removes the button, and resolves. On navigation abort it rejects and
+// removes the button. `mount` / `createButton` are injected so the DOM
+// choreography is testable against fakes; production `main.ts` supplies
+// the real `#stage` and `document.createElement`.
 
 import type { AudioUnlockAdapter, AudioUnlockContext } from './scene-loader';
 
@@ -81,34 +56,9 @@ export interface DomAudioUnlockHost {
 }
 
 /**
- * Build a {@link AudioUnlockAdapter} that collects an explicit user
- * click through the workbench DOM, satisfies the autoplay policy via
- * `gate.unlock()`, and resolves so the present-mode composition can
- * proceed.
- *
- * Contract (verified by `tests/runtime/audio-unlock-dom.test.ts`):
- *
- *  - `mount === null` → reject immediately with a clear error.
- *  - Signal already aborted on entry → reject immediately, no button
- *    mounted.
- *  - Otherwise → mount the button, install one click listener
- *    (`{ once: true }`) and one signal-abort listener. On click,
- *    call `gate.unlock()`; on the unlock's resolve, remove the
- *    button and resolve the adapter; on the unlock's reject or on
- *    a signal-abort, remove the button and reject the adapter.
- *  - The `settled` flag is set only AFTER `gate.unlock()` settles,
- *    so a supersession during `AudioContext.resume()` propagates
- *    promptly (cycle-1 review fix). The unlock then-callback bails
- *    on `settled` if abort ran first.
- *  - The adapter never receives raw scene objects, source URLs, or
- *    Howler handles — only the bounded {@link AudioUnlockContext}.
- */
-/**
- * Per-invocation state the gate keeps so the click/abort race stays
- * coherent across the async `gate.unlock()` await. A single named
- * struct collects the button, resolvers, listeners, and `settled` flag
- * the click/abort handlers share, instead of threading them through
- * separate captures.
+ * Per-invocation state the click/abort handlers share across the async
+ * `gate.unlock()` await: the button, resolvers, listeners, and the
+ * `settled` once-guard.
  */
 interface GateState {
   readonly button: UnlockButtonElement;
@@ -147,12 +97,9 @@ function onAbortFired(state: GateState): void {
   state.reject(new Error('audio unlock gate: navigation aborted before unlock completed'));
 }
 
-// Codex review cycle 1 (one-off "abort after the click no longer
-// cancels the unlock adapter"): do NOT set `settled = true` inside
-// `onClick` — keep the abort race active across the `gate.unlock()`
-// await so a supersession during `AudioContext.resume()` rejects
-// promptly. The unlock resolution callback bails on `settled` and
-// never resolves the navigation that has already been superseded.
+// Do NOT set `settled` here: the abort race must stay live across the
+// `gate.unlock()` await so a supersession during `AudioContext.resume()`
+// still rejects promptly. The unlock callbacks bail on `settled`.
 function onClickFired(state: GateState): void {
   if (state.settled) return;
   state.gate.unlock().then(
@@ -161,6 +108,14 @@ function onClickFired(state: GateState): void {
   );
 }
 
+/**
+ * Build an {@link AudioUnlockAdapter} that collects a user click, calls
+ * `gate.unlock()`, and resolves. `mount === null` or an already-aborted
+ * signal rejects immediately (no button mounted); otherwise a click
+ * triggers `gate.unlock()` whose settlement removes the button and
+ * resolves/rejects. A signal abort before settlement rejects.
+ * Contract verified by `tests/runtime/audio-unlock-dom.test.ts`.
+ */
 export function createDomAudioUnlockAdapter(host: DomAudioUnlockHost): AudioUnlockAdapter {
   return (gate: AudioUnlockContext) =>
     new Promise<void>((resolve, reject) => {

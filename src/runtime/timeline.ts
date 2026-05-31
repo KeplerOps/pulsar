@@ -324,21 +324,6 @@ export interface MasterTimeline {
   kill(): void;
 }
 
-const validateSpeed = (multiplier: number): void => {
-  if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier <= 0) {
-    const got = typeof multiplier === 'number' ? `${multiplier}` : typeof multiplier;
-    throw new TimelineSpeedError(
-      `timeline speed must be a finite number greater than 0; got ${got}`,
-    );
-  }
-};
-
-const validateRepeat = (count: number): void => {
-  if (!Number.isInteger(count) || count < -1) {
-    throw new TimelineSpeedError(`timeline repeat count must be an integer >= -1; got ${count}`);
-  }
-};
-
 class GsapMasterTimeline implements MasterTimeline {
   readonly #tl: GsapTimeline;
   /**
@@ -392,7 +377,12 @@ class GsapMasterTimeline implements MasterTimeline {
   }
 
   setSpeed(multiplier: number): void {
-    validateSpeed(multiplier);
+    if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier <= 0) {
+      const got = typeof multiplier === 'number' ? `${multiplier}` : typeof multiplier;
+      throw new TimelineSpeedError(
+        `timeline speed must be a finite number greater than 0; got ${got}`,
+      );
+    }
     this.#tl.timeScale(multiplier);
   }
 
@@ -401,7 +391,9 @@ class GsapMasterTimeline implements MasterTimeline {
   }
 
   repeat(count: number): void {
-    validateRepeat(count);
+    if (!Number.isInteger(count) || count < -1) {
+      throw new TimelineSpeedError(`timeline repeat count must be an integer >= -1; got ${count}`);
+    }
     this.#tl.repeat(count);
   }
 
@@ -886,25 +878,17 @@ const buildRunComposeOptions = (
   opts: CompositionTimelineRunOptions,
   options: GsapCompositionTimelineOptions,
   reporter: SegmentReporter,
-): ComposeMasterTimelineOptions => {
-  const composeOpts: ComposeMasterTimelineOptions = {};
-  if (options.transitions !== undefined) {
-    (composeOpts as { transitions?: TransitionRegistry }).transitions = options.transitions;
-  }
-  if (options.transitionOverlay !== undefined) {
-    (composeOpts as { transitionOverlay?: HTMLElement | null }).transitionOverlay =
-      options.transitionOverlay;
-  }
-  if (options.onSegmentChange !== undefined) {
-    (composeOpts as { onSegmentStart?: (segment: MasterSegment) => void }).onSegmentStart = (
-      segment,
-    ) => reporter.report(segment);
-  }
-  if (opts.headCueGate === 'monotonic-forward' && opts.audioCueGate !== undefined) {
-    (composeOpts as { audioCueGate?: CueGateControl }).audioCueGate = opts.audioCueGate;
-  }
-  return composeOpts;
-};
+): ComposeMasterTimelineOptions => ({
+  ...(options.transitions !== undefined && { transitions: options.transitions }),
+  ...(options.transitionOverlay !== undefined && {
+    transitionOverlay: options.transitionOverlay,
+  }),
+  ...(options.onSegmentChange !== undefined && {
+    onSegmentStart: (segment: MasterSegment) => reporter.report(segment),
+  }),
+  ...(opts.headCueGate === 'monotonic-forward' &&
+    opts.audioCueGate !== undefined && { audioCueGate: opts.audioCueGate }),
+});
 
 /**
  * Build the GSAP-backed {@link CompositionTimelineAdapter} the resolver

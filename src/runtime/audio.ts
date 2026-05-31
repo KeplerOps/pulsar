@@ -264,8 +264,8 @@ export function createHowlerAudioEngine(): AudioEngine {
         // The runtime's `AudioSpriteMap` widens to Howler's mutable
         // `SoundSpriteDefinitions` at this one boundary; Howler reads it
         // at construction. Scenes pass the readonly shape.
-        ...(config.sprite === undefined ? {} : { sprite: config.sprite as SoundSpriteDefinitions }),
-        ...(config.muted ? { mute: true } : {}),
+        ...(config.sprite && { sprite: config.sprite as SoundSpriteDefinitions }),
+        ...(config.muted && { mute: true }),
         onloaderror: (_id, err) => {
           config.onError(err);
         },
