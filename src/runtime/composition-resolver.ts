@@ -518,13 +518,12 @@ async function composeSegments(
       );
       continue;
     }
-    const segment: { -readonly [K in keyof SceneTimelineSegment]: SceneTimelineSegment[K] } = {
+    segments.push({
       id: step.scene.id,
       timeline,
-    };
-    if (step.range !== undefined) segment.range = step.range;
-    if (step.behavior !== undefined) segment.behavior = step.behavior;
-    segments.push(segment);
+      ...(step.range !== undefined ? { range: step.range } : {}),
+      ...(step.behavior !== undefined ? { behavior: step.behavior } : {}),
+    });
   }
   return segments;
 }

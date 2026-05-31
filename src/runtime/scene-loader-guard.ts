@@ -71,20 +71,19 @@ export interface ChromeResolveDeps {
   readonly compositions: CompositionRegistry;
 }
 
-function chromeBehaviorFromResolved(resolved: SceneNavigationTarget | null): unknown {
-  const head = resolved?.composition?.manifestSlice[0];
-  if (head === null || typeof head !== 'object') return undefined;
-  return (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior?.chrome;
-}
-
 function chromeBehaviorForTarget(deps: ChromeResolveDeps, target: NavigationTarget): unknown {
+  let head: unknown;
   try {
-    return chromeBehaviorFromResolved(
-      resolveSceneNavigation(target, { scenes: deps.scenes, compositions: deps.compositions }),
-    );
+    const resolved = resolveSceneNavigation(target, {
+      scenes: deps.scenes,
+      compositions: deps.compositions,
+    });
+    head = resolved?.composition?.manifestSlice[0];
   } catch {
     return undefined;
   }
+  if (head === null || typeof head !== 'object') return undefined;
+  return (head as { readonly behavior?: { readonly chrome?: unknown } }).behavior?.chrome;
 }
 
 /**

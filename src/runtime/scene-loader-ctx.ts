@@ -9,7 +9,6 @@ import type { AssetUrlPolicy } from './asset-preloader';
 import {
   type AudioCueLogEntry,
   type AudioEngine,
-  type AudioOutputPolicy,
   type AudioService,
   type AudioServiceOptions,
   type CueGateControl,
@@ -53,11 +52,6 @@ export function countSceneOccurrences(target: SceneNavigationTarget): Map<string
     counts.set(scene.id, (counts.get(scene.id) ?? 0) + 1);
   }
   return counts;
-}
-
-/** Mode → per-navigation {@link AudioOutputPolicy} via the mode profile. */
-function audioOutputPolicyFor(mode: NavigationMode): AudioOutputPolicy {
-  return profileFor(mode).audioPolicy;
 }
 
 /**
@@ -172,30 +166,6 @@ function buildPresenterPipe(
   return { presenter, presenterAbort };
 }
 
-/** Build the per-navigation {@link AudioService} options. */
-function audioServiceOptions(
-  deps: NavigationServicesDeps,
-  resolved: SceneNavigationTarget,
-  signal: AbortSignal,
-  outputPolicy: AudioOutputPolicy,
-  suppressBed: boolean,
-  audioCueGate: CueGateControl | undefined,
-): AudioServiceOptions {
-  return {
-    signal,
-    outputPolicy,
-    allowedSources: collectAudioSources(resolved),
-    ...(deps.assetPolicy === undefined ? {} : { assetPolicy: deps.assetPolicy }),
-    onError: deps.onError,
-    ...(deps.onAudioCue === undefined ? {} : { onCue: deps.onAudioCue }),
-    // PUL-F014 / ADR-004: composition audio bed, suppressed under standalone.
-    ...(resolved.composition?.audioBed === undefined ? {} : { bed: resolved.composition.audioBed }),
-    bedSuppressed: suppressBed,
-    // PUL-F017 / ADR-020: shared scrub cue gate (audio consults, timeline toggles).
-    ...(audioCueGate === undefined ? {} : { cueGate: audioCueGate }),
-  };
-}
-
 /**
  * Build the per-navigation audio service, presenter pipe, and
  * per-occurrence ctx factory (PUL-F024 / PUL-F025 / PUL-F018). Audio is
@@ -211,17 +181,21 @@ export function buildNavigationServices(
   controller: AbortController,
   audioCueGate: CueGateControl | undefined,
 ): NavigationServices {
-  const audio = createAudioService(
-    deps.audioEngine,
-    audioServiceOptions(
-      deps,
-      resolved,
-      controller.signal,
-      audioOutputPolicyFor(mode),
-      profileFor(mode).suppressBed,
-      audioCueGate,
-    ),
-  );
+  const profile = profileFor(mode);
+  const audioOptions: AudioServiceOptions = {
+    signal: controller.signal,
+    outputPolicy: profile.audioPolicy,
+    allowedSources: collectAudioSources(resolved),
+    ...(deps.assetPolicy ? { assetPolicy: deps.assetPolicy } : {}),
+    onError: deps.onError,
+    ...(deps.onAudioCue ? { onCue: deps.onAudioCue } : {}),
+    // PUL-F014 / ADR-004: composition audio bed, suppressed under standalone.
+    ...(resolved.composition?.audioBed ? { bed: resolved.composition.audioBed } : {}),
+    bedSuppressed: profile.suppressBed,
+    // PUL-F017 / ADR-020: shared scrub cue gate (audio consults, timeline toggles).
+    ...(audioCueGate ? { cueGate: audioCueGate } : {}),
+  };
+  const audio = createAudioService(deps.audioEngine, audioOptions);
   const { presenter, presenterAbort } = buildPresenterPipe(deps, mode, controller, audio);
   const baseCtx = deps.buildCtx(mode, audio, presenter);
   const navigationSeed = deriveNavigationSeed(target);

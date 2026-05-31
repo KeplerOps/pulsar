@@ -203,7 +203,7 @@ function buildCompositionContext(
     manifestSlice,
     sceneSlice,
     startIndex,
-    ...(audioBed === undefined ? {} : { audioBed }),
+    ...(audioBed ? { audioBed } : {}),
   };
 }
 
@@ -300,9 +300,7 @@ function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): Scene
       id: target.composition.id,
       manifestSlice: Object.freeze([headEntry]),
       sceneSlice: Object.freeze([headScene]),
-      ...(target.composition.audioBed === undefined
-        ? {}
-        : { audioBed: target.composition.audioBed }),
+      ...(target.composition.audioBed ? { audioBed: target.composition.audioBed } : {}),
       // PUL-F029 / ADR-028: preserve the absolute start index so a failure
       // diagnostic still names the right manifest entry after truncation.
       startIndex: target.composition.startIndex,

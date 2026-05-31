@@ -302,17 +302,11 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   // without overlapping stage mutations.
   let pending: Promise<void> = Promise.resolve();
 
-  const setStageAttr = (name: string, value: string): void => {
-    stage?.setAttribute(name, value);
-  };
-  const clearStageAttr = (name: string): void => {
-    stage?.removeAttribute(name);
-  };
   const resetStageAttrs = (): void => {
-    clearStageAttr(ATTR_SCENE);
-    clearStageAttr(ATTR_COMPOSITION);
-    clearStageAttr(ATTR_ERROR);
-    clearStageAttr(ATTR_SCENE_FAILURES);
+    stage?.removeAttribute(ATTR_SCENE);
+    stage?.removeAttribute(ATTR_COMPOSITION);
+    stage?.removeAttribute(ATTR_ERROR);
+    stage?.removeAttribute(ATTR_SCENE_FAILURES);
   };
 
   /**
@@ -359,7 +353,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         if (!seen.has(key)) {
           seen.add(key);
           entries.push(key);
-          setStageAttr(ATTR_SCENE_FAILURES, entries.join(','));
+          stage?.setAttribute(ATTR_SCENE_FAILURES, entries.join(','));
         }
       }
       try {
@@ -393,7 +387,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
     const surfaced =
       err instanceof Error && err.message === rendered ? err : new Error(rendered, { cause: err });
     onError(surfaced);
-    setStageAttr(ATTR_ERROR, rendered);
+    stage?.setAttribute(ATTR_ERROR, rendered);
   };
 
   /**
@@ -434,11 +428,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
   // bound once and reused per navigation.
   const navigationServicesDeps = {
     audioEngine,
-    ...(options.assetPolicy === undefined ? {} : { assetPolicy: options.assetPolicy }),
-    ...(options.onAudioCue === undefined ? {} : { onAudioCue: options.onAudioCue }),
-    ...(options.presenterCommands === undefined
-      ? {}
-      : { presenterCommands: options.presenterCommands }),
+    ...(options.assetPolicy ? { assetPolicy: options.assetPolicy } : {}),
+    ...(options.onAudioCue ? { onAudioCue: options.onAudioCue } : {}),
+    ...(options.presenterCommands ? { presenterCommands: options.presenterCommands } : {}),
     onError,
     buildCtx: options.buildCtx,
   };
@@ -496,14 +488,12 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
       timeline: options.timeline,
       signal,
       ...(beat === undefined ? {} : { beat }),
-      ...(onBeatMissing === undefined ? {} : { onBeatMissing }),
+      ...(onBeatMissing ? { onBeatMissing } : {}),
       // Head-scene runner hints from the mode profile; empty for modes
       // that set none.
       ...profileFor(mode).runnerHints,
-      ...(audioCueGate === undefined ? {} : { audioCueGate }),
-      ...(services.presenter === undefined
-        ? {}
-        : { presenter: services.presenter, onPresenterError: onError }),
+      ...(audioCueGate ? { audioCueGate } : {}),
+      ...(services.presenter ? { presenter: services.presenter, onPresenterError: onError } : {}),
       onSceneCleaned,
       onSceneFailed,
     };
@@ -622,9 +612,7 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
         id: resolved.composition.id,
         manifestSlice: Object.freeze([headEntry]),
         sceneSlice: Object.freeze([headScene]),
-        ...(resolved.composition.audioBed === undefined
-          ? {}
-          : { audioBed: resolved.composition.audioBed }),
+        ...(resolved.composition.audioBed ? { audioBed: resolved.composition.audioBed } : {}),
         // PUL-F029 / ADR-028: preserve the absolute composition start
         // index even when the slice is truncated to its head, so a
         // failure diagnostic names the right manifest entry.
@@ -752,9 +740,9 @@ export function createSceneLoader(options: SceneLoaderOptions): SceneLoader {
 
     if (resolved === null) return;
 
-    setStageAttr(ATTR_SCENE, resolved.scene.id);
+    stage?.setAttribute(ATTR_SCENE, resolved.scene.id);
     if (resolved.composition !== undefined) {
-      setStageAttr(ATTR_COMPOSITION, resolved.composition.id);
+      stage?.setAttribute(ATTR_COMPOSITION, resolved.composition.id);
     }
 
     // PUL-F019 / ADR-022: `mode=prompter` bypasses the resolver lifecycle

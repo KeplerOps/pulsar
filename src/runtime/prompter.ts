@@ -77,25 +77,22 @@ export function buildPrompterScript(target: SceneNavigationTarget): PrompterScri
   const manifestSlice = target.composition?.manifestSlice;
   const entries: PrompterScriptEntry[] = scenes.map((scene, index) => {
     const captions = scene.captions.map((c) => ({ ...c }));
-    const entry: { -readonly [K in keyof PrompterScriptEntry]: PrompterScriptEntry[K] } = {
+    // Carry the manifest entry's `range` / `behavior` as optional metadata
+    // for a captions UI; they do not alter caption content (runner-side
+    // knobs). Bare-string entries and direct-scene targets leave both absent.
+    const manifestEntry = manifestSlice?.[index];
+    const overrides = typeof manifestEntry === 'object' ? manifestEntry : undefined;
+    return {
       sceneId: scene.id,
       title: scene.title,
       captions,
+      ...(overrides?.range !== undefined ? { range: overrides.range } : {}),
+      ...(overrides?.behavior !== undefined ? { behavior: overrides.behavior } : {}),
     };
-    // Carry the manifest entry's `range` / `behavior` as optional metadata
-    // for a captions UI; they do not alter caption content (runner-side
-    // knobs). Bare-string entries leave both absent.
-    const manifestEntry = manifestSlice?.[index];
-    if (typeof manifestEntry === 'object') {
-      if (manifestEntry.range !== undefined) entry.range = manifestEntry.range;
-      if (manifestEntry.behavior !== undefined) entry.behavior = manifestEntry.behavior;
-    }
-    return entry;
   });
 
-  const script: { -readonly [K in keyof PrompterScript]: PrompterScript[K] } = { entries };
-  if (target.composition !== undefined) {
-    script.composition = { id: target.composition.id };
-  }
-  return deepFreeze(script) as PrompterScript;
+  return deepFreeze({
+    entries,
+    ...(target.composition !== undefined ? { composition: { id: target.composition.id } } : {}),
+  }) as PrompterScript;
 }

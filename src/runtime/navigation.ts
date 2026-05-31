@@ -223,10 +223,11 @@ export function parseNavigationSearch(input: URLSearchParams | string): Navigati
   const beat = beatRaw ?? undefined;
   ensureBeatHasSceneLikeTarget(beat, locator);
 
-  const target: { -readonly [K in keyof NavigationTarget]: NavigationTarget[K] } = { locator };
-  if (beat !== undefined) target.beat = beat;
-  if (mode !== undefined) target.mode = mode;
-  return Object.freeze(target);
+  return Object.freeze({
+    locator,
+    ...(beat !== undefined ? { beat } : {}),
+    ...(mode !== undefined ? { mode } : {}),
+  });
 }
 
 /**
