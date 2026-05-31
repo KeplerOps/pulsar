@@ -1,66 +1,25 @@
-// Timeline orchestration — PUL-F022 / PUL-F023. The GSAP timeline adapter.
+// Timeline orchestration — PUL-F022 / PUL-F023. The GSAP timeline adapter
+// (ADR-003 / ADR-025) and canonical home of the named-beat grammar
+// (ADR-008 #1 / ADR-026):
 //
-// This module is the GSAP boundary for the runtime (ADR-003, ADR-025)
-// and the canonical home of the named-beat grammar (ADR-008 #1, ADR-026):
+//  - Scenes get GSAP as `ctx.gsap` and author their own timeline; they do
+//    not import GSAP. A scene timeline's labels ARE its beats — kebab-case
+//    at a finite time ≤ duration, enforced by `assertSceneTimeline` when a
+//    scene timeline first enters the runtime. The labels are the single
+//    source of truth — there is no `SceneModule.beats` field (ADR-015).
+//  - `composeMasterTimeline` nests the slice's scene timelines into one
+//    master, namespacing each scene's labels so a repeated scene id
+//    (ADR-002) keeps an unambiguous label space.
+//  - `MasterTimeline` is the PUL-F022 transport + PUL-F023 beat-query
+//    surface (play / pause / seek / validated positive speed / `labels` /
+//    `hasLabel` / `labelFor` / `beats`). `sceneTimelineLabel` builds a
+//    master beat name; `parseSceneTimelineLabel` is the one inverse.
+//  - `createGsapCompositionTimeline` is the composition adapter the
+//    resolver drives (ADR-011 / ADR-025): compose the master, apply head
+//    hints, play, resolve on natural completion or abort.
 //
-//  - Scenes receive the GSAP instance as `ctx.gsap` (via
-//    `createTimelineEngine`) and construct their own timeline in
-//    `timeline(ctx)`; they do not import GSAP directly.
-//  - A scene's GSAP timeline labels ARE its beats (PUL-F023 / ADR-026):
-//    the agent-friendly time grammar from ADR-008. An authored beat must
-//    be a kebab-case identifier (the same rule scenes, compositions, and
-//    assets obey — ADR-008 #1; the kebab-only URL `beat=` grammar could
-//    never address anything else) at a finite, non-negative time no
-//    later than the scene timeline's duration (a beat outside the
-//    scene's content is not a usable moment). `assertSceneTimeline`
-//    enforces both when a scene timeline first enters the runtime, so a
-//    bad beat fails loudly instead of silently. There is no `beats`
-//    field on `SceneModule` — the labels in the returned timeline are
-//    the single source of truth (ADR-015).
-//  - `composeMasterTimeline` nests the scene timelines of an active
-//    composition slice into a single master GSAP timeline, copying each
-//    scene's labels into the master under a deterministic namespace so a
-//    composition that reuses the same scene id more than once (ADR-002)
-//    keeps an unambiguous label space.
-//  - `MasterTimeline` is the transport surface PUL-F022 mandates: play,
-//    pause, seek (by time or named label), speed change (a validated
-//    positive multiplier — zero / negative / NaN / Infinity / non-number
-//    are rejected), named labels. It is also the canonical beat-query
-//    surface PUL-F023 requires every runtime subsystem to reference
-//    beats through: `labels` (every master label), `hasLabel`, `seek`,
-//    `labelFor` (the master name for a scene-local beat), and `beats`
-//    (just the scene-authored beats, in playhead order). `labelFor` /
-//    `sceneTimelineLabel` build a master beat name; `parseSceneTimelineLabel`
-//    is the one inverse — no subsystem reparses namespaced label strings.
-//  - `createGsapCompositionTimeline` is the composition-level timeline
-//    adapter the workbench wires onto the composition resolver (ADR-011
-//    + ADR-025): the resolver mounts every scene in the slice, hands the
-//    adapter their timeline values, the adapter composes the master,
-//    applies the URL/runner-input head hints, plays the master, and
-//    resolves on the master's natural completion (so the resolver tears
-//    every scene down) or on navigation abort.
-//
-// Scenes that don't author a timeline return `null` (the placeholder
-// scene does this); the adapter composes such a scene as a
-// zero-duration segment rather than rejecting it.
-//
-// References:
-//  - ADR-003 — GSAP as the timeline engine; `ctx.gsap`; labels + seeking.
-//  - ADR-008 — agent-native authoring; #1 makes kebab-case binding on
-//    scenes, compositions, beats, and assets.
-//  - ADR-011 — composition resolver as a pure orchestrator with an
-//    injected timeline adapter; this module is that adapter.
-//  - ADR-025 — timeline adapter + composition master + the revised
-//    resolution lifecycle (mount-all → compose-master → play →
-//    cleanup-all) superseding ADR-002 §Resolution / ADR-011 ordering.
-//  - ADR-026 — named timeline beats: beats are scene-local kebab GSAP
-//    labels, validated at compose time, namespaced into the master, and
-//    referenced by URL / presenter / scrub through the `MasterTimeline`
-//    beat-query surface.
-//  - ADR-002 — the composition the master is built for.
-//  - ADR-015 / ADR-018 / ADR-019 / ADR-021 — the URL beat / loop /
-//    paused / screenshot head hints the adapter honors via the master's
-//    transport API.
+// A scene that authors no timeline returns `null`; the adapter composes it
+// as a zero-duration segment rather than rejecting it.
 
 import { gsap } from 'gsap';
 import type { CueGateControl } from './audio';
@@ -494,45 +453,11 @@ class GsapMasterTimeline implements MasterTimeline {
 }
 
 /**
- * Compose `segments` into a single master GSAP timeline (PUL-F022 C2).
- *
- * Each segment's timeline is appended after the previous one. Every
- * segment gets a master label at its start (`sceneSegmentLabel`), and
- * every scene-local label is copied into the master under the
- * namespaced form (`sceneTimelineLabel`), so a composition that reuses
- * a scene id keeps an unambiguous label space (ADR-002 allows repeated
- * entries). A `null` / `undefined` segment timeline contributes a
- * zero-duration segment. A scene timeline built with `{ paused: true }`
- * (the GSAP "construct to nest" idiom) is un-paused once nested so the
- * master drives it; the master itself stays paused at time 0 —
- * positioning and playback are the caller's (the adapter's) job.
- *
- * Throws {@link SceneTimelineTypeError} (a non-GSAP-timeline segment
- * value) or {@link SceneTimelineLabelError} (a malformed beat) — in
- * both cases before any timeline is nested. The resolver has already
- * called every scene's `timeline(ctx)` by the time this runs, so on
- * rejection this kills every GSAP timeline it was handed: a scene that
- * returned a default-playing or repeating timeline must not keep
- * ticking on the GSAP root after the resolver unmounts the scenes.
- * (A timeline already nested into a partial master is killed redundantly
- * — GSAP's `kill()` is idempotent.)
- */
-/**
- * Inter-scene transition contract (L2-owned implementations live in
- * `src/system/transitions/`; the runtime carries the type so the
- * timeline composer can invoke them).
- *
- * A transition is invoked between two scene segments in a composition
- * slice. It receives the live master GSAP timeline, the master-time
- * position where the transition should land (the current end of the
- * master), an optional overlay element it can mutate, and the
- * caller-requested duration in milliseconds (overriding the
- * transition's own default if supplied).
- *
- * The transition returns the master-time duration its insertion
- * consumed (in seconds). The composer uses the return value to know
- * how far the master has advanced before adding the next scene.
- * `cut`-style transitions return 0 (no master-time consumed).
+ * Inter-scene transition contract (L2 implementations in
+ * `src/system/transitions/`; the runtime carries the type so the composer
+ * can invoke them). Invoked between two segments with the live master, the
+ * master-time `insertAt`, an optional overlay, and an override duration;
+ * returns the master-time seconds consumed (`cut`-style returns 0).
  */
 export interface TransitionContext {
   readonly master: GsapTimeline;
@@ -602,12 +527,7 @@ function applySegmentTransition(
   t.insert({ master, insertAt: master.duration(), overlay, durationMs: dur });
 }
 
-/**
- * Compose options for {@link composeMasterTimeline}. Lifted into a
- * dedicated interface so the optional transitions registry + overlay
- * element can be added without breaking the existing positional-
- * arguments callers (the function still accepts the old signature).
- */
+/** Compose options for {@link composeMasterTimeline}. */
 export interface ComposeMasterTimelineOptions {
   /** Transition implementations available to manifest entries. Absent = transitions ignored. */
   readonly transitions?: TransitionRegistry;
@@ -629,11 +549,9 @@ export interface ComposeMasterTimelineOptions {
 }
 
 /**
- * Copy a scene's child-timeline labels onto the master under the
- * namespaced `sceneTimelineLabel(...)` name, and emit a
- * `master.addPause(...)` at any label that opts into the advance-gate
- * convention. Owns the per-segment label-copy + advance-gate emission
- * so `composeMasterTimeline` drives it once per segment.
+ * Copy a scene's labels onto the master under the namespaced
+ * `sceneTimelineLabel(...)` name, adding a `master.addPause(...)` at any
+ * advance-gate label.
  */
 function copyChildLabelsAndAdvanceGates(
   master: GsapTimeline,
@@ -650,6 +568,15 @@ function copyChildLabelsAndAdvanceGates(
   }
 }
 
+/**
+ * Compose `segments` into one master GSAP timeline (PUL-F022 C2),
+ * appending each in order with namespaced labels so a repeated scene id
+ * (ADR-002) keeps an unambiguous label space. `null` segments contribute
+ * zero duration; nested `{ paused: true }` scene timelines are un-paused,
+ * the master itself stays paused at 0. Throws (before nesting any
+ * timeline) on a non-GSAP value or a malformed beat, killing every
+ * timeline it was handed so none keeps ticking after unmount.
+ */
 export function composeMasterTimeline(
   engine: TimelineEngine,
   segments: readonly SceneTimelineSegment[],
@@ -788,36 +715,11 @@ function resolveHeadBeatLabel(
 type MasterRunMode = 'hold' | 'loop' | 'play' | 'scrub';
 
 /**
- * Apply the URL/runner-input head hints to the freshly-composed master
- * (seeks / pauses / sets repeat) and report how it should run.
- *
- *  - `headHold: 'first-frame'` (PUL-F016 / ADR-019): hold at frame 0;
- *    wins over `headBeat` and `headRepeat`; attempts no beat lookup —
- *    `mode=paused` is first-frame inspection. → `'hold'`.
- *  - `headScreenshot: 'capture'` (PUL-F018 / ADR-021): freeze at the
- *    addressed beat, or frame 0, with no playback (beat IS the anchor).
- *    → `'hold'`.
- *  - `headBeat` (PUL-F011 / ADR-015): seek to the head scene's named
- *    label (a missing label reports via `onBeatMissing` and stays at
- *    frame 0), then play forward. → `'play'`.
- *  - `headRepeat: 'until-aborted'` (PUL-F015 / ADR-018): loop the master
- *    forever. → `'loop'`.
- *  - `headCueGate: 'monotonic-forward'` (PUL-F017 / ADR-020): the scrub
- *    run mode. Seek to the addressed beat (the initial cursor — ADR-020
- *    §Beat semantics) or frame 0, then hold the master live so the
- *    workbench scrub controls can drive it. The initial seek is a
- *    direct seek, not monotonic forward play, so no cue fires for it.
- *    → `'scrub'`.
- *  - default: → `'play'`.
- */
-/**
- * The head hints that freeze the master at the addressed beat (or frame
- * 0) and never play, in precedence order. Each shares the same
- * positioning — `seek(beatLabel ?? 0); pause()` — differing only in the
- * run mode it reports, so the branch is table-driven rather than a chain
- * of near-identical `if` blocks. `headHold` is NOT in this table: it
- * holds at frame 0 unconditionally and must run before the beat lookup
- * (`mode=paused` is first-frame inspection, never a beat seek).
+ * Head hints that freeze the master at the addressed beat (or frame 0)
+ * and never play, in precedence order — same positioning
+ * (`seek(beat ?? 0); pause()`), differing only in run mode (so the branch
+ * is table-driven). `headHold` is excluded: it holds at frame 0 before any
+ * beat lookup (`mode=paused` is first-frame inspection).
  */
 const PAUSE_AT_BEAT_HINTS: readonly {
   readonly engaged: (opts: CompositionTimelineRunOptions) => boolean;
@@ -827,6 +729,13 @@ const PAUSE_AT_BEAT_HINTS: readonly {
   { engaged: (o) => o.headCueGate === 'monotonic-forward', mode: 'scrub' },
 ];
 
+/**
+ * Apply the head hints to the composed master (seek / pause / repeat) and
+ * report its run mode: `headHold` → `'hold'` at frame 0 (wins over all);
+ * `headScreenshot` → `'hold'` at the beat; `headRepeat` → `'loop'`;
+ * `headCueGate` → `'scrub'` (held live for the scrub controls); else
+ * seek any `headBeat` and `'play'`.
+ */
 function positionMaster(
   master: MasterTimeline,
   headSceneId: string | undefined,
@@ -855,10 +764,8 @@ function positionMaster(
 }
 
 /**
- * Per-segment occurrence counter used to compute the master label name
- * that anchors each segment. Mirrors the counting `composeMasterTimeline`
- * does when it adds `sceneSegmentLabel` markers so navigation handlers
- * can locate the same label after the fact.
+ * Compute each segment's anchoring master label, mirroring the occurrence
+ * counting `composeMasterTimeline` does so handlers can locate the labels.
  */
 function buildSegmentLabelMap(
   segments: readonly SceneTimelineSegment[],
@@ -895,30 +802,14 @@ export const segmentIndexAtTime = (segments: readonly MasterSegment[], time: num
 };
 
 /**
- * Run the positioned master and resolve when the composition activation
- * is done — the master reached its natural end (so the resolver tears
- * every scene down — ADR-002's "advance" becomes "the composition
- * ended") or the navigation aborted — killing the master so the GSAP
- * ticker can idle.
- *
- *  - `'play'`: play and resolve on natural completion, regardless of
- *    whether a cancellation signal is wired (a caller without a signal
- *    still gets playback and completion — the export pipeline before it
- *    owns abort, a test harness). If positioning already left the master
- *    at (or past) its finite end — e.g. `headBeat` seeked to a beat the
- *    scene authored at its own end and that scene is the composition's
- *    tail — `play()` would not re-fire `onComplete`, so resolve right
- *    away instead of parking the resolver until an abort that may never
- *    come.
- *  - `'loop'`: start (infinite) playback; only abort resolves it. With
- *    no signal there is nothing to wait for, so resolve immediately —
- *    a loop cannot be observed without cancellation.
- *  - `'hold'` / `'scrub'`: the master is already paused; only abort
- *    resolves it. With no signal, resolve immediately — the held frame
- *    has been rendered. Under `'scrub'` the master is additionally left
- *    live for the workbench scrub controls to drive between now and
- *    abort; the run does not arm a completion handler, so playing the
- *    scrub master to its natural end does not tear the scene down.
+ * Run the positioned master and resolve when the activation is done —
+ * natural end (so the resolver tears scenes down) or abort — killing the
+ * master so the GSAP ticker idles.
+ *  - `'play'`: resolve on completion (or immediately if already at a
+ *    finite end, since `play()` would not re-fire `onComplete`).
+ *  - `'loop'`: only abort resolves it (immediate without a signal).
+ *  - `'hold'` / `'scrub'`: already paused; only abort resolves it. `'scrub'`
+ *    is left live for the scrub controls and arms no completion handler.
  */
 function runMasterUntilDone(
   master: MasterTimeline,
@@ -943,13 +834,11 @@ function runMasterUntilDone(
     if (mode === 'play') {
       const duration = master.duration();
       if (Number.isFinite(duration) && duration > 0 && master.time() >= duration) {
-        // Already at the end after positioning — playing from progress 1
-        // does not re-fire `onComplete` in GSAP. Treat it as completed.
+        // Already at the end — `play()` from progress 1 won't re-fire `onComplete`.
         finish();
         return;
       }
-      // Arm the completion handler BEFORE play() so a very short master
-      // cannot complete before the waiter is installed.
+      // Arm `onComplete` BEFORE play() so a very short master cannot complete first.
       master.onComplete(finish);
       master.play();
       return;
@@ -964,12 +853,10 @@ function runMasterUntilDone(
 }
 
 /**
- * The per-activation observability seam: the single sink the run loop
- * (and the composer's segment-start callbacks, and the present-mode
- * transport) push active-segment changes through. `report` de-duplicates
- * consecutive identical segments so a GSAP segment-start callback that
- * lands on the segment a direct seek already reported does not double-
- * fire; `reportInitial` seeds it from the positioned playhead.
+ * Per-activation observability sink for active-segment changes. `report`
+ * de-duplicates consecutive identical segments (so a segment-start callback
+ * landing where a seek already reported does not double-fire);
+ * `reportInitial` seeds it from the positioned playhead.
  */
 interface SegmentReporter {
   report(segment: MasterSegment): void;
@@ -1020,27 +907,13 @@ const buildRunComposeOptions = (
 };
 
 /**
- * Build the GSAP-backed {@link CompositionTimelineAdapter} the
- * workbench wires onto the composition resolver. Each
- * `run(segments, opts)` call: composes `segments` (the
- * active composition slice's scene timeline values, in manifest order)
- * into one master GSAP timeline; applies the head hints; reports the
- * live master to `onMaster`; then plays the master, resolving on its
- * natural completion (so the resolver runs `cleanup(ctx)` for every
- * scene) or on `opts.signal` abort. A non-timeline scene value rejects
- * (the resolver wraps it with `composition resolution failed:` and
- * tears every scene down).
- *
- * `opts.presenter` (the per-navigation presenter command controller) is
- * the opt-in present-mode seam: when supplied,
- * {@link import('./presenter-transport').wirePresenterCommands} subscribes
- * it and translates each presenter command into a master transport
- * action (PUL-F020 advance / hold / skip-forward / skip-backward;
- * PUL-F021 pause / resume). A non-present navigation supplies no
- * `presenter`, so the transport state machine is never instantiated. A
- * segment's `range` (per-entry composition override) is still not
- * interpreted — sub-range cuts are PUL-F003's and extend this adapter's
- * `MasterTimeline` transport seam when that requirement is implemented.
+ * Build the GSAP-backed {@link CompositionTimelineAdapter} the resolver
+ * drives. Each `run(segments, opts)` composes the master, applies head
+ * hints, reports it via `onMaster`, then plays — resolving on natural
+ * completion or `opts.signal` abort. A non-timeline value rejects.
+ * `opts.presenter` is the opt-in present-mode seam:
+ * {@link import('./presenter-transport').wirePresenterCommands} translates
+ * commands to transport (never instantiated for non-present navigations).
  */
 export function createGsapCompositionTimeline(
   options: GsapCompositionTimelineOptions,
@@ -1069,12 +942,8 @@ export function createGsapCompositionTimeline(
         master.kill();
         return Promise.reject(err);
       }
-      // Wire the per-navigation presenter controller to master-timeline
-      // transport — ONLY when `opts.presenter` is set (present mode). A
-      // non-present navigation never instantiates the transport state
-      // machine in `presenter-transport.ts`. The controller is
-      // signal-bound (per-handler auto-detach on navigation abort), so
-      // subscriptions never accumulate across activations.
+      // Wire the presenter controller to master transport — only when
+      // `opts.presenter` is set; signal-bound, so subscriptions never leak.
       wirePresenterCommands(master, segmentAnchors, opts, (segment) => reporter.report(segment));
       return runMasterUntilDone(master, mode, opts.signal);
     },

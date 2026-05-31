@@ -1,16 +1,9 @@
 // Scene-loader navigation guards — PUL-F008.
 //
-// Pure / near-pure decision helpers `createSceneLoader` delegates to,
-// keeping each navigation policy in one isolated, testable place:
-//  - the present-mode audio unlock-gate predicate + builder (PUL-F030);
-//  - the composition-scoped chrome dispatch policy (PUL-F031).
-//
-// These are the navigation "trust seams" — they re-derive their inputs
-// from the resolved target rather than trusting cached state.
-//
-// References:
-//  - PUL-F030 / ADR-029 — present-mode audio unlock gate.
-//  - PUL-F031 / ADR-031 — composition-scoped chrome dispatch.
+// Navigation trust seams the loader delegates to, re-deriving inputs from
+// the resolved target rather than cached state:
+//  - present-mode audio unlock-gate predicate + builder (PUL-F030 / ADR-029);
+//  - composition-scoped chrome dispatch policy (PUL-F031 / ADR-031).
 
 import type { CompositionRegistry } from './composition-registry';
 import { type NavigationMode, effectiveMode } from './navigation';
@@ -20,22 +13,16 @@ import { sceneDeclaresAudio } from './scene';
 import { type SceneNavigationTarget, resolveSceneNavigation } from './scene-navigation';
 
 /**
- * PUL-F030 / ADR-029: the internal gate-prelude callback the loader
- * awaits BEFORE the resolver lifecycle. The public-facing
- * `AudioUnlockAdapter` receives the semantic composition context; this
- * helper closes over that context, leaving only the navigation-bound
- * `signal` + engine-bound `unlock` supplied at gate-invocation time.
+ * PUL-F030 / ADR-029: internal gate-prelude the loader awaits BEFORE the
+ * lifecycle. Closes over the semantic composition context, leaving only
+ * `signal` + `unlock` supplied at invocation.
  */
 export type UnlockGate = (env: {
   readonly signal: AbortSignal;
   readonly unlock: () => Promise<void>;
 }) => Promise<void>;
 
-/**
- * PUL-F030 / ADR-029: the workbench-supplied unlock adapter's bounded
- * semantic context. Declared here (and re-exported from `scene-loader.ts`)
- * so the gate predicate and the adapter signature share one definition.
- */
+/** PUL-F030 / ADR-029: the unlock adapter's bounded semantic context. */
 export interface AudioUnlockContext {
   readonly compositionId: string;
   readonly sceneIds: readonly string[];
@@ -47,17 +34,11 @@ export interface AudioUnlockContext {
 export type AudioUnlockAdapter = (gate: AudioUnlockContext) => Promise<void>;
 
 /**
- * PUL-F030 / ADR-029: decide whether the present-mode audio unlock gate
- * applies to this navigation, and if so build it. Returns:
- *  - `null` — the gate does not apply (mode is not present, no
- *    composition slice, or no scene in the slice declares audio).
- *  - `'fail-loud'` — the gate applies but no adapter is supplied
- *    (workbench-bootstrap defect; the gate IS the structural defense).
- *  - `UnlockGate` — a closure that invokes the adapter with the
- *    bounded composition context (id, scene ids, signal, unlock); the
- *    lifecycle awaits it before preload / `create` / `timeline` /
- *    master playback. The adapter receives no scene objects, source
- *    URLs, asset payloads, or Howler handles (ADR-029 guardrail).
+ * PUL-F030 / ADR-029: decide whether the present-mode unlock gate applies
+ * and, if so, build it. `null` = does not apply (not present / no
+ * composition / no audio); `'fail-loud'` = applies but no adapter (the gate
+ * IS the defense); `UnlockGate` = a closure giving the adapter bounded
+ * context only (ids, signal, unlock — never scene objects or URLs).
  */
 export function resolveUnlockGate(
   adapter: AudioUnlockAdapter | undefined,
@@ -108,12 +89,10 @@ function chromeBehaviorForTarget(deps: ChromeResolveDeps, target: NavigationTarg
 
 /**
  * Composition-level chrome policy: the head manifest entry's
- * `behavior.chrome` can force visibility hidden or opt into cinematic
- * atmosphere. The default is explicit reset (`forcedVisibility=null`,
- * `atmosphere=null`) so a navigation away from an atmospheric deck
- * clears that state immediately, before serialized scene cleanup. The
- * forced-visibility application precedes `applyMode` so chrome hides
- * before any cleanup drains (codex review, cycle 1).
+ * `behavior.chrome` may force visibility hidden or opt into cinematic
+ * atmosphere. Defaults reset explicitly (`null`/`null`) so navigating
+ * away clears state immediately. Forced visibility is applied BEFORE
+ * `applyMode` so chrome hides before serialized scene cleanup drains.
  */
 export function applyChromeForTarget(
   chrome: WorkbenchChromeAdapter,

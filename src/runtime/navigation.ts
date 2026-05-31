@@ -1,54 +1,22 @@
-// URL navigation grammar — PUL-F007.
+// URL navigation grammar — PUL-F007 (ADR-013).
 //
-// Boundary adapter from `URLSearchParams` to a plain navigation
-// target. Per ADR-013 the parser does NOT resolve scenes, inspect
-// composition manifests, run timelines, load assets, or mutate
-// browser history — those concerns live in the runtime orchestration
-// layer this module hands off to.
+// Boundary adapter from `URLSearchParams` to a plain navigation target;
+// it does NOT resolve scenes, run timelines, load assets, or mutate
+// history. Accepts only the five grammar keys (`scene`, `composition`,
+// `index`, `beat`, `mode`); repeated keys are invalid, unknown keys
+// ignored. The URL search string is the source of truth on `popstate`
+// (never `history.state` / storage / cookies).
 //
-// The parser accepts only the five grammar keys named by PUL-F007
-// (`scene`, `composition`, `index`, `beat`, `mode`). Repeated grammar
-// keys are invalid because `URLSearchParams.get()` would otherwise
-// make ambiguous input look deterministic. Unknown query keys are
-// ignored.
-//
-// Identifier validation reuses the shared kebab-case predicate in
-// `./identifier.ts` per ADR-013 / ADR-008 #1: there is one identifier
-// rule for scenes, compositions, beats, and assets.
-//
-// Mode is validated against the ADR-007 workbench mode set, exported
-// here as the frozen tuple {@link NAVIGATION_MODES}.
-//
-// Index is base-10, zero-based, non-negative, and a JS safe integer
-// (`Number.isSafeInteger`). It is composition-scoped — `index`
-// without `composition` is invalid; `scene` + `index` is invalid.
-//
-// Combination shapes (per ADR-013) — exactly five accepted:
-//
-//   1. no explicit target              + optional mode
-//   2. scene                           + optional beat + optional mode
-//   3. composition                     + optional mode
-//   4. composition + scene             + optional beat + optional mode
-//   5. composition + index             + optional beat + optional mode
-//
-// {@link subscribeNavigation} wires startup parsing + `popstate`
-// through the same parser path so error semantics match. Per ADR-013,
-// the URL search string is the source of truth on `popstate` —
-// `history.state`, localStorage, cookies, and cached runtime state
-// must not redefine the target.
+// Combination shapes (ADR-013) — exactly five accepted:
+//   1. no explicit target          + optional mode
+//   2. scene                       + optional beat + optional mode
+//   3. composition                 + optional mode
+//   4. composition + scene         + optional beat + optional mode
+//   5. composition + index         + optional beat + optional mode
 
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 
-/**
- * Workbench mode set per ADR-007. The eight modes are the only values
- * accepted for `mode=` URL parameters. Frozen so consumers cannot
- * mutate the public allowlist in place.
- *
- * `rehearsal` (PUL-F026 / ADR-004) is the only mode whose contract
- * lives entirely on the per-navigation audio service rather than at
- * a head-only timeline-runner seam — see `audio.ts` `outputPolicy`
- * and `scene-loader.ts` `buildLoad`.
- */
+/** Workbench mode set (ADR-007); the only accepted `mode=` values. Frozen. */
 export const NAVIGATION_MODES = Object.freeze([
   'present',
   'standalone',
@@ -60,25 +28,19 @@ export const NAVIGATION_MODES = Object.freeze([
   'rehearsal',
 ] as const);
 
-/**
- * One of the eight {@link NAVIGATION_MODES} values.
- */
+/** One of the {@link NAVIGATION_MODES} values. */
 export type NavigationMode = (typeof NAVIGATION_MODES)[number];
 
 /**
- * The locator portion of a {@link NavigationTarget}. Discriminated by
- * `kind` so callers pattern-match against ADR-013's five accepted
- * target shapes without re-deriving them from optional fields:
+ * The locator portion of a {@link NavigationTarget}, discriminated by
+ * `kind` (ADR-013's five target shapes). Existence / uniqueness checks
+ * are the resolution layer's, not the grammar's.
  *
  *  - `none`              — no explicit target; bootstrap chooses default.
  *  - `scene`             — single scene by id.
  *  - `composition`       — composition by id, no in-composition jump.
- *  - `composition-scene` — composition + scene id (id-based locator).
- *  - `composition-index` — composition + zero-based index (positional).
- *
- * `composition-scene` and `composition-index` are both id-based at the
- * grammar layer. The composition resolution layer is responsible for
- * existence and uniqueness checks per ADR-013.
+ *  - `composition-scene` — composition + scene id.
+ *  - `composition-index` — composition + zero-based index.
  */
 export type NavigationLocator =
   | { readonly kind: 'none' }
@@ -92,11 +54,9 @@ export type NavigationLocator =
     };
 
 /**
- * The result of {@link parseNavigationSearch}. The locator captures
- * the addressed scene/composition/index target (or `none`); `beat` and
- * `mode` are absent when the URL did not specify them. The bootstrap
- * layer is responsible for substituting any defaults (e.g. mapping
- * `mode === undefined` to `'present'`).
+ * Result of {@link parseNavigationSearch}. `beat` / `mode` are absent
+ * when the URL omitted them; the bootstrap layer substitutes defaults
+ * (e.g. `mode === undefined` → `'present'`).
  */
 export interface NavigationTarget {
   readonly locator: NavigationLocator;
@@ -122,13 +82,10 @@ function isSceneLikeLocator(locator: NavigationLocator): boolean {
 }
 
 /**
- * The single source of truth for ADR-013's `beat` / `mode` grammar
- * rules. Both {@link parseNavigationSearch} (URL boundary) and the
- * scene loader's defense-in-depth re-check (programmatic / forged
- * `NavigationTarget`s) consume these predicates + condition messages
- * so the rules — and their exact diagnostic wording — live in one
- * place. The condition strings are the suffix after
- * {@link NAVIGATION_GRAMMAR_PREFIX}; consumers prepend the prefix.
+ * Single source of truth for ADR-013's `beat` / `mode` grammar rules,
+ * shared by {@link parseNavigationSearch} and the loader's defense-in-depth
+ * re-check so rules and diagnostic wording stay identical. The condition
+ * strings are the suffix after {@link NAVIGATION_GRAMMAR_PREFIX}.
  */
 export const NAVIGATION_GRAMMAR = Object.freeze({
   beatKebab: Object.freeze({
@@ -147,11 +104,8 @@ export const NAVIGATION_GRAMMAR = Object.freeze({
   }),
 });
 
-// ADR-013 defines `index` as "base-10, zero-based, non-negative safe
-// integer." The pattern enforces only the base-10 digit set; leading
-// zeros (e.g. `01`) are accepted because the ADR does not forbid
-// them. Negatives, signs, decimals, exponents, and non-decimal
-// notations are all rejected.
+// ADR-013 `index`: base-10 digits only (leading zeros allowed); signs,
+// decimals, exponents, and non-decimal notations rejected.
 const INDEX_PATTERN = /^\d+$/;
 
 /**
@@ -187,19 +141,12 @@ function validateKebab(field: string, value: string): void {
   }
 }
 
-// `beat` is the only kebab field whose diagnostic is shared verbatim
-// with the loader's defense-in-depth re-check, so its rule lives in
-// `NAVIGATION_GRAMMAR`; `scene` / `composition` reuse `validateKebab`
-// (same wording, parser-only) to avoid widening the shared source.
-
 function parseIndex(raw: string): number {
   if (!INDEX_PATTERN.test(raw)) {
     fail('"index" must be a base-10 non-negative integer (e.g. 0, 1, 12)');
   }
-  // The regex excludes negatives, signs, decimals, and exponents, so
-  // `parseInt` always returns a non-negative number here. Only the
-  // safe-integer bound needs a runtime check (very long digit strings
-  // can overflow `Number.MAX_SAFE_INTEGER`).
+  // The regex already excludes negatives/decimals; only the safe-integer
+  // bound needs a runtime check (long digit strings can overflow).
   const value = Number.parseInt(raw, 10);
   if (!Number.isSafeInteger(value)) {
     fail('"index" must be a non-negative safe integer');
@@ -208,8 +155,6 @@ function parseIndex(raw: string): number {
 }
 
 function parseMode(raw: string): NavigationMode {
-  // The membership check is the shared `NAVIGATION_GRAMMAR.mode` rule;
-  // the type assertion documents that callers receive a typed mode.
   if (NAVIGATION_GRAMMAR.mode.valid(raw)) {
     return raw as NavigationMode;
   }
@@ -222,10 +167,8 @@ function buildLocator(
   index: number | undefined,
 ): NavigationLocator {
   if (index !== undefined) {
-    // Order matters: "scene + index" is the more semantically
-    // informative violation, so it wins over the "index requires
-    // composition" message when both are technically true (e.g.
-    // `?scene=x&index=0`).
+    // "scene + index" wins over "index requires composition" when both
+    // hold (e.g. `?scene=x&index=0`) — the more informative violation.
     if (scene !== undefined) {
       fail('"scene" and "index" cannot be used together — use one locator');
     }
@@ -253,27 +196,12 @@ function ensureBeatHasSceneLikeTarget(beat: string | undefined, locator: Navigat
 }
 
 /**
- * Parse a URL search string (or `URLSearchParams` instance) into a
- * {@link NavigationTarget} per PUL-F007 / ADR-013.
- *
- * Accepts:
- *  - the empty string and `'?'` (no explicit target).
- *  - either `'?key=value'` or `'key=value'` form.
- *  - a `URLSearchParams` instance (passed through unchanged).
- *
- * Throws an `Error` with the prefix `"navigation grammar is invalid: "`
- * on:
- *  - any repeated grammar key (`scene`, `composition`, `index`, `beat`,
- *    `mode`).
- *  - a malformed identifier (non-kebab-case `scene` / `composition` /
- *    `beat`).
- *  - a malformed `index` (not base-10, leading zero, negative,
- *    decimal, exponent, hex, etc.).
- *  - an unknown `mode`.
- *  - any of the four invalid combination shapes ADR-013 names.
- *
- * Unknown query keys are ignored — the parser is a grammar boundary,
- * not a filter.
+ * Parse a URL search string or `URLSearchParams` into a
+ * {@link NavigationTarget} (PUL-F007 / ADR-013). Accepts the empty
+ * string / `'?'`, `'?k=v'` or `'k=v'` form, or a params instance.
+ * Throws (prefix `"navigation grammar is invalid: "`) on repeated keys,
+ * malformed identifiers/index, unknown mode, or an invalid combination
+ * shape. Unknown query keys are ignored.
  */
 export function parseNavigationSearch(input: URLSearchParams | string): NavigationTarget {
   const params = toSearchParams(input);
@@ -311,15 +239,10 @@ function grammarError(condition: string): Error {
 }
 
 /**
- * Defense-in-depth for ADR-013's `beat` grammar (PUL-F011).
- * {@link parseNavigationSearch} enforces these rules on URL input, but
- * `NavigationTarget` is an exported type that non-parser callers
- * (event-detail unmarshaling, programmatic navigation, test harnesses)
- * can construct directly. Re-checking at the loader boundary stops a
- * hand-built target with an invalid `beat` from reaching the runner.
- * Returns an `Error` carrying the parser's exact grammar message, or
- * `null` when no further check is needed. Consumes {@link NAVIGATION_GRAMMAR}
- * so the rule lives in one place yet the trust seam is preserved.
+ * Defense-in-depth for ADR-013's `beat` grammar (PUL-F011): re-check a
+ * directly-constructed `NavigationTarget` at the loader boundary so a
+ * hand-built invalid `beat` never reaches the runner. Returns an `Error`
+ * with the parser's exact message, or `null`.
  */
 export function validateBeatGrammar(target: NavigationTarget): Error | null {
   if (target.beat === undefined) return null;
@@ -333,11 +256,9 @@ export function validateBeatGrammar(target: NavigationTarget): Error | null {
 }
 
 /**
- * Defense-in-depth for ADR-007's mode allowlist (PUL-F012). Symmetric
- * to {@link validateBeatGrammar}: re-checks a programmatically-built
- * `target.mode` against {@link NAVIGATION_GRAMMAR} before it reaches
- * {@link effectiveMode} and the scene ctx. Returns an `Error` with the
- * parser's exact message, or `null` when no further check is needed.
+ * Defense-in-depth for ADR-007's mode allowlist (PUL-F012), symmetric to
+ * {@link validateBeatGrammar}: re-check a directly-built `target.mode`
+ * before it reaches {@link effectiveMode}. Returns an `Error` or `null`.
  */
 export function validateModeGrammar(target: NavigationTarget): Error | null {
   if (target.mode === undefined) return null;
@@ -348,38 +269,18 @@ export function validateModeGrammar(target: NavigationTarget): Error | null {
 }
 
 /**
- * Derive the effective workbench mode for the runtime/core dispatch
- * boundary (PUL-F012). When `target.mode` is present, that mode is
- * selected; when absent (or no target is supplied), the default
- * `'present'` is selected.
- *
- * Per ADR-007 the URL is the **only** source of mode: this helper
- * MUST NOT consult `localStorage`, `sessionStorage`, `document.cookie`,
- * `history.state`, or any cached in-memory navigation state. Per
- * ADR-013 the parser preserves absent `mode` as absent on the parsed
- * `NavigationTarget`, so the dispatch boundary can distinguish "URL
- * said `mode=present`" from "URL said nothing" if a future requirement
- * needs that distinction; today both collapse to the same effective
- * mode by design.
- *
- * Pure function — depends only on its argument. Adding a fallback that
- * reads any other source would violate ADR-007's "fresh `present`
- * selection on every startup and `popstate`" guarantee.
+ * Effective workbench mode for the dispatch boundary (PUL-F012):
+ * `target.mode` or `'present'`. Pure — the URL is the ONLY source of
+ * mode (ADR-007); never reads storage / cookies / `history.state`.
  */
 export function effectiveMode(target?: NavigationTarget | undefined): NavigationMode {
   return target?.mode ?? 'present';
 }
 
 /**
- * Minimal `Window`-like surface required by {@link subscribeNavigation}.
- * Defined as a narrow shape — rather than `Pick<Window, ...>` — so the
- * tests can inject a fake without standing up jsdom or pulling in DOM
- * lib types just for `popstate` wiring.
- *
- * The listener is typed as `(evt: Event) => void` so the actual browser
- * `window` is structurally assignable to this interface — DOM
- * `addEventListener` requires the listener to handle an `Event` arg.
- * The internal handler ignores the arg.
+ * Minimal `Window`-like surface for {@link subscribeNavigation}; a narrow
+ * shape so tests inject a fake without jsdom. The listener takes an
+ * `Event` so the browser `window` is structurally assignable.
  */
 export interface NavigationWindowLike {
   readonly addEventListener: (event: 'popstate', listener: (evt: Event) => void) => void;
@@ -388,44 +289,27 @@ export interface NavigationWindowLike {
 }
 
 /**
- * Inputs for {@link subscribeNavigation}. Both callbacks are required:
- * exactly one fires per parse — `onNavigate` on success, `onError` on
- * grammar failure.
- *
- * Grammar failures are routed to `onError` and never thrown out to the
- * caller. User-callback errors thrown from `onNavigate` / `onError`
- * propagate; in the synchronous-startup path the popstate listener is
- * removed first so a buggy startup callback does not leak the
- * listener.
+ * Inputs for {@link subscribeNavigation}. Exactly one callback fires per
+ * parse: `onNavigate` on success, `onError` on grammar failure (failures
+ * never throw out to the caller).
  */
 export interface NavigationSubscriptionOptions {
   readonly window: NavigationWindowLike;
   readonly onNavigate: (target: NavigationTarget) => void;
   readonly onError: (error: Error) => void;
   /**
-   * When `true`, the startup parse is deferred to a microtask
-   * (`queueMicrotask`) so synchronous module code that runs after
-   * {@link subscribeNavigation} returns has a chance to register
-   * additional subscribers before the first event fires. The popstate
-   * listener is registered synchronously either way. Default `false`
-   * — the startup parse runs inline.
+   * Defer the startup parse to a microtask so subscribers registered
+   * after {@link subscribeNavigation} returns see the first event. The
+   * popstate listener registers synchronously regardless. Default `false`.
    */
   readonly deferStartup?: boolean;
 }
 
 /**
- * Subscribe to URL navigation events.
- *
- * Wires the boundary parser to the two parsing triggers PUL-F007
- * names: `at startup` (one synchronous parse before this function
- * returns) and `on popstate` (one parse per `popstate` event,
- * reading the current `location.search` each time). Both go through
- * {@link parseNavigationSearch} so error semantics are identical.
- *
- * Returns a disposer that removes the `popstate` listener. The
- * disposer is idempotent at the wiring level — calling it more than
- * once is a no-op the underlying `removeEventListener` already
- * handles.
+ * Subscribe to URL navigation events: parse at startup and on each
+ * `popstate` (reading the current `location.search`), both via
+ * {@link parseNavigationSearch}. Returns an idempotent disposer that
+ * removes the `popstate` listener.
  */
 export function subscribeNavigation(options: NavigationSubscriptionOptions): () => void {
   const { window: win, onNavigate, onError, deferStartup = false } = options;
@@ -442,11 +326,8 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   };
 
   win.addEventListener('popstate', handle);
-  // The disposed flag is captured by the queued startup so a caller
-  // that disposes before the microtask runs cannot still observe the
-  // initial event. Without it, an aborted bootstrap (e.g. Vite HMR
-  // swapping the entry module synchronously) would dispatch a stale
-  // startup navigation/error after teardown.
+  // `disposed` lets a caller that disposes before the deferred startup
+  // runs suppress a stale initial event (e.g. Vite HMR swapping the entry).
   let disposed = false;
   const dispose = (): void => {
     if (disposed) return;
@@ -454,17 +335,9 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
     win.removeEventListener('popstate', handle);
   };
 
-  // If `onNavigate` / `onError` itself throws during the startup parse,
-  // remove the popstate listener before the exception escapes. Without
-  // this, the disposer never returns and the listener leaks across the
-  // entire window lifetime. Grammar failures during startup never reach
-  // this catch — those route through `onError` and return normally.
-  //
-  // Deferred path: the same cleanup-on-throw runs inside the
-  // microtask. The thrown exception surfaces via the platform's
-  // unhandled-error handler (the caller cannot catch it because
-  // `subscribeNavigation` has already returned), but the popstate
-  // listener is still removed.
+  // If a startup callback throws, remove the popstate listener before the
+  // exception escapes so it does not leak (grammar failures route through
+  // `onError` and never reach this catch).
   const startup = (): void => {
     if (disposed) return;
     try {
@@ -482,47 +355,25 @@ export function subscribeNavigation(options: NavigationSubscriptionOptions): () 
   return dispose;
 }
 
-/**
- * Event type for successful navigation parses, dispatched as a
- * `CustomEvent<NavigationTarget>` whose `detail` is the parsed target.
- * Workbench bootstrap layers subscribe to this type on `window` to
- * receive parsed targets without coupling to the runtime entry script.
- */
+/** Successful-parse event, a `CustomEvent<NavigationTarget>` on `window`. */
 export const PULSAR_NAVIGATE_EVENT_TYPE = 'pulsar:navigate';
 
-/**
- * Event type for parse failures, dispatched as a `CustomEvent<Error>`
- * whose `detail` is the grammar `Error`. Workbench bootstrap layers
- * subscribe to this type on `window` to surface malformed URLs to the
- * operator.
- */
+/** Parse-failure event, a `CustomEvent<Error>` on `window`. */
 export const PULSAR_NAVIGATE_ERROR_EVENT_TYPE = 'pulsar:navigate-error';
 
 /**
- * Browser-target shape required by {@link bootstrapNavigation}: every
- * member of {@link NavigationWindowLike} plus a DOM-shaped
- * `dispatchEvent` so the helper can publish parsed targets and parse
- * errors as events on the same target.
+ * Browser-target shape for {@link bootstrapNavigation}: {@link NavigationWindowLike}
+ * plus a `dispatchEvent` so the helper can publish events on it.
  */
 export interface NavigationEventTarget extends NavigationWindowLike {
   dispatchEvent(event: Event): boolean;
 }
 
 /**
- * Bootstrap navigation parsing for the runtime entry point.
- *
- * Subscribes the URL grammar parser to the supplied target's
- * `popstate` and schedules the startup parse as a microtask (so
- * synchronous module code that runs after `bootstrapNavigation`
- * returns has time to register subscribers before the first event
- * fires). PUL-F007 clause 2 — parsed at startup and on `popstate`.
- *
- * Every successful parse fires `'pulsar:navigate'` as a
- * `CustomEvent<NavigationTarget>`; every parse failure fires
- * `'pulsar:navigate-error'` as a `CustomEvent<Error>`. The standard
- * `event.detail` envelope is used so consumers can read the payload
- * with the platform-idiomatic API. Returns a disposer that removes
- * the listener.
+ * Bootstrap navigation parsing for the runtime entry (PUL-F007 clause 2):
+ * subscribe the parser to `popstate`, defer the startup parse to a
+ * microtask, and dispatch `pulsar:navigate` / `pulsar:navigate-error`
+ * `CustomEvent`s. Returns a disposer that removes the listener.
  */
 export function bootstrapNavigation(target: NavigationEventTarget): () => void {
   return subscribeNavigation({

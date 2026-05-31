@@ -1,55 +1,30 @@
-// Composition manifest format — PUL-F003.
+// Composition manifest format — PUL-F003 (ADR-002 / ADR-003 / ADR-008 #1).
 //
-// A composition manifest is a declarative ordered list of scene id
-// references. Each entry is either a bare scene id string or an
-// object carrying a scene id plus per-entry overrides. This module
-// owns the *format* — the data shape and the validator that rejects
-// malformed values. Resolution against a SceneRegistry (existence
-// checks, beat-label existence inside a scene's timeline, asset
-// preloading) belongs to a later requirement and is out of scope
-// here.
-//
-// References:
-//  - ADR-002 §Composition manifests — informal shape + canonical examples.
-//  - ADR-003 §Labels — sub-range labels addressed by name.
-//  - ADR-008 #1 — kebab-case ids for scenes, compositions, beats, assets.
-//  - PUL-A007 — scene id format (kebab-case).
-//
-// Per the codex architecture preflight (PUL-F003): the format is a
-// declarative data shape only. Override fields must not redefine,
-// inline, fork, or mutate the scene; unknown override keys are
-// rejected so typos surface immediately rather than silently
-// changing intent.
+// A declarative ordered list of scene-id references: each entry is a bare
+// kebab-case scene id or an object with the id plus per-entry overrides.
+// This module owns the FORMAT only — shape + validator; resolution against
+// a SceneRegistry is the resolver's. Unknown override keys are rejected so
+// typos surface immediately.
 
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { isPlainRecord } from './object';
 
 /**
- * A sub-range override referencing one or more beat labels inside the
- * referenced scene's timeline (ADR-003 §Labels).
- *
- *  - `string` — a single beat label.
- *  - `readonly [string, string]` — a `[start, end]` label pair.
- *
- * Beat labels share the kebab-case rule with scene ids per ADR-008 #1.
- * Existence of the labels inside the referenced scene's timeline is
- * NOT validated here — that is a resolution concern and requires the
- * scene timeline to be inspected.
+ * A sub-range override (ADR-003 §Labels): a single kebab-case beat label
+ * or a `[start, end]` pair. Label existence is a resolution concern, not
+ * validated here.
  */
 export type SubRange = string | readonly [string, string];
 
 /**
- * Per-entry behavior override blob. The format reserves this slot for
- * runtime-defined behavior keys; this module does not constrain keys
- * or values beyond "must be a plain object". Resolution layers that
- * consume specific behavior keys validate them.
+ * Per-entry behavior override blob — a plain object whose keys are the
+ * consuming resolution layer's contract; not constrained here.
  */
 export type BehaviorOverride = Readonly<Record<string, unknown>>;
 
 /**
- * Object form of a composition entry: a scene id reference plus
- * optional per-entry overrides for sub-range or behavior. Unknown
- * keys are rejected by the validator — see module comment.
+ * Object form of a composition entry: a scene id plus optional `range` /
+ * `behavior` overrides. Unknown keys are rejected by the validator.
  */
 export interface CompositionEntryOverride {
   readonly id: string;
@@ -78,21 +53,10 @@ const isValidSubRange = (v: unknown): v is SubRange => {
 };
 
 /**
- * Error thrown by {@link assertCompositionManifest}.
- *
- * Subclasses `Error` to keep the existing `<envelope> is invalid: ...`
- * message grammar (consumers pattern-match on `message`) while
- * exposing `entryIndex` as a structured field consumers can read
- * without parsing the message string. Manifest-shape failures (the
- * value isn't an array) carry `entryIndex: undefined`; per-entry
- * failures carry the offending entry's index.
- *
- * PUL-Q005 / PUL-F028: this is the canonical surface the validation
- * pass (`src/runtime/validation.ts`) narrows on via `instanceof` to
- * populate `Finding.entryIndex` on `composition-manifest-invalid`
- * findings. The PUL-Q005 preflight forbids parsing message strings
- * to recover structured fields — this error class IS the carry-
- * through path it requires.
+ * Error thrown by {@link assertCompositionManifest}. Carries `entryIndex`
+ * as a structured field (per-entry failures set it; shape failures leave
+ * it `undefined`) so PUL-Q005 / PUL-F028 validation can read it via
+ * `instanceof` without parsing the message string.
  */
 export class CompositionManifestError extends Error {
   readonly entryIndex?: number;
@@ -146,15 +110,9 @@ const validateObjectEntry = (index: number, entry: Record<string, unknown>): voi
 };
 
 /**
- * Validates that `value` is a well-formed {@link CompositionManifest}
- * per PUL-F003. Throws `Error` with a message identifying the offending
- * entry index and field/condition (matches the
- * `assertSceneModule` error grammar with an entry index prefix).
- *
- * Iterates entries in order and stops at the first failure. Existence
- * of referenced scene ids in the registry, and existence of referenced
- * beat labels inside a scene's timeline, are NOT checked here; they
- * belong to the resolution layer.
+ * Validate a well-formed {@link CompositionManifest} (PUL-F003), throwing
+ * with the offending entry index + field/condition and stopping at the
+ * first failure. Scene-id / beat-label existence is the resolution layer's.
  */
 export function assertCompositionManifest(value: unknown): asserts value is CompositionManifest {
   if (!Array.isArray(value)) {
@@ -182,10 +140,8 @@ export function assertCompositionManifest(value: unknown): asserts value is Comp
 }
 
 /**
- * Convenience type predicate. Returns `true` if `value` satisfies the
- * composition manifest contract; `false` otherwise. Use
- * {@link assertCompositionManifest} when the failure detail matters
- * to the caller.
+ * Type predicate for the composition manifest contract; use
+ * {@link assertCompositionManifest} when the failure detail matters.
  */
 export function isCompositionManifest(value: unknown): value is CompositionManifest {
   try {
@@ -196,37 +152,19 @@ export function isCompositionManifest(value: unknown): value is CompositionManif
   }
 }
 
-/**
- * Extract the scene id from a composition entry. Bare string entries
- * are the scene id verbatim; object entries carry the id under `id`.
- * Centralized so resolver, URL navigation, and any future consumer
- * read entry identity through one helper.
- */
+/** Extract the scene id from a composition entry (bare string, or `.id`). */
 export const entryId = (entry: CompositionEntry): string =>
   typeof entry === 'string' ? entry : entry.id;
 
-/**
- * One missing entry recorded by {@link findUnregisteredEntries}: the
- * entry's index in the manifest plus its scene id. Callers format
- * their own error messages from these tuples so subsystem-specific
- * grammar (composition resolver vs URL navigation) stays at the call
- * site.
- */
+/** One missing entry from {@link findUnregisteredEntries}: index + scene id. */
 export interface MissingEntry {
   readonly index: number;
   readonly id: string;
 }
 
 /**
- * Walk a composition manifest and aggregate every entry whose scene
- * id is not satisfied by `isPresent`. Returns the missing entries in
- * iteration order.
- *
- * Centralized so composition-resolver's preflight pass and URL
- * navigation's slice snapshot share the same "report every gap, not
- * just the first" behavior — a manifest author or composition
- * registrar fixes every typo in one pass rather than chasing a
- * sequence of "first miss" errors.
+ * Aggregate every entry whose scene id is not satisfied by `isPresent`,
+ * in iteration order — so callers report every gap in one pass.
  */
 export function findUnregisteredEntries(
   manifest: CompositionManifest,

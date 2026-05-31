@@ -1,29 +1,9 @@
-// Scene navigation dispatch — PUL-F008.
+// Scene navigation dispatch — PUL-F008 (ADR-014 / ADR-002 §Navigation).
 //
-// Turns a {@link NavigationTarget} (from PUL-F007's
-// `parseNavigationSearch` boundary parser, see ./navigation.ts) into a
-// running scene by way of the existing composition-resolver lifecycle
-// (PUL-F004). This module owns the dispatch step the grammar parser
-// deliberately does not: scene/composition existence, member /
-// index range, snapshotting the manifest slice, and routing through
-// the lifecycle bridge.
-//
-// PUL-F007 (`./navigation.ts`) is the URL parser. PUL-F004
-// (`./composition-resolver.ts`) is the lifecycle orchestrator.
-// PUL-F008 (this module) sits between them, with no overlap with
-// either.
-//
-// References:
-//  - PUL-F008 — when `scene` is present, load the addressed scene as
-//    the navigation target.
-//  - ADR-014 — scene navigation dispatch decisions: snapshot the
-//    slice, fail before lifecycle on missing/empty/out-of-bounds,
-//    reuse existing registries.
-//  - ADR-013 — URL navigation grammar boundary; this module consumes
-//    `NavigationTarget` from that boundary.
-//  - ADR-002 §Navigation — composition / scene addressability via id.
-//  - ADR-011 — composition resolver as pure orchestrator with
-//    injected adapters; reused via `loadSceneNavigationTarget`.
+// Turns a {@link NavigationTarget} (PUL-F007 parser) into a running scene
+// via the composition-resolver lifecycle (PUL-F004). Owns the dispatch
+// step the parser does not: scene/composition existence, member/index
+// range, snapshotting the manifest slice, and routing through the bridge.
 
 import type { AudioBedDeclaration, CueGateControl } from './audio';
 import {
@@ -47,65 +27,39 @@ import { type SceneRegistry, createSceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
 /**
- * Composition context carried by a {@link SceneNavigationTarget} when
- * the parsed locator addressed a composition (kinds `composition`,
- * `composition-scene`, `composition-index`).
- *
- * `manifestSlice` and `sceneSlice` are deep-frozen snapshots taken at
- * dispatch time: the bridge runs them as-is, with no further registry
- * lookups, so the lifecycle is guaranteed to play exactly the modules
- * the dispatcher verified existed in the registry. `sceneSlice[0]` is
- * always the addressed scene; subsequent entries are the composition
- * entries that follow it.
+ * Composition context on a {@link SceneNavigationTarget} when the locator
+ * addressed a composition. `manifestSlice` / `sceneSlice` are deep-frozen
+ * snapshots taken at dispatch, so the bridge plays exactly the verified
+ * modules with no further registry lookups; `sceneSlice[0]` is the head.
  */
 export interface SceneNavigationCompositionContext {
   /** Composition id from the locator. */
   readonly id: string;
   /**
-   * Manifest entries from the addressed scene onwards, preserving
-   * per-entry `range` / `behavior` overrides intact. Bare-string
-   * entries stay bare strings; object entries stay object entries.
-   * The array is frozen.
+   * Manifest entries from the addressed scene onwards, per-entry `range` /
+   * `behavior` overrides intact. Frozen.
    */
   readonly manifestSlice: CompositionManifest;
-  /**
-   * Scene modules referenced by `manifestSlice`, in the same order.
-   * Snapshotted at dispatch time so the bridge does not re-resolve by
-   * id (re-resolution would let a different registry substitute scenes
-   * mid-flight).
-   */
+  /** Scene modules for `manifestSlice`, in order; snapshotted so the bridge never re-resolves. */
   readonly sceneSlice: readonly SceneModule[];
   /**
-   * Index of `manifestSlice[0]` in the ORIGINAL composition manifest.
-   * Zero for `kind: 'composition'` (slice starts at index 0); for
-   * `composition-scene` and `composition-index` it is the absolute
-   * position of the addressed entry. PUL-F029 / ADR-028 needs this so
-   * a scene failure diagnostic can name the absolute composition
-   * entry the failed scene lives at, not a slice-relative index that
-   * would point operators at the wrong manifest entry. Single-scene
-   * mode truncation (`applySingleSceneSlice`) preserves it so the
-   * diagnostic stays accurate even when the slice is truncated to
-   * the head entry.
+   * Index of `manifestSlice[0]` in the ORIGINAL manifest (0 for
+   * `kind: 'composition'`). PUL-F029 / ADR-028 uses it so a failure
+   * diagnostic names the absolute entry, not a slice-relative index;
+   * single-scene truncation preserves it.
    */
   readonly startIndex: number;
   /**
-   * The composition-level audio bed (PUL-F014 / ADR-004), copied
-   * verbatim from the {@link RegisteredComposition}, when the
-   * composition declared one. The resolver snapshots it but makes no
-   * suppression decision — the loader selects bed playback vs
-   * suppression from the effective mode (`mode=standalone` suppresses
-   * it). `undefined` when the composition declared no bed.
+   * Composition-level audio bed (PUL-F014 / ADR-004), copied verbatim
+   * when declared. The resolver makes no suppression decision — the
+   * loader does (standalone suppresses). `undefined` when none declared.
    */
   readonly audioBed?: AudioBedDeclaration;
 }
 
 /**
- * The runtime's resolved view of "what scene the URL addresses." A
- * single-scene locator (`kind: 'scene'`) carries only `scene`;
- * composition locators (`kind: 'composition'`,
- * `kind: 'composition-scene'`, `kind: 'composition-index'`) carry both
- * `scene` (the head of the playback queue) and the `composition`
- * snapshot the bridge will play.
+ * The resolved view of "what scene the URL addresses": always a head
+ * `scene`, plus the `composition` snapshot when a composition was addressed.
  */
 export interface SceneNavigationTarget {
   /** The addressed scene module — head of the play queue. */
@@ -124,177 +78,65 @@ export interface ResolveSceneNavigationOptions {
 }
 
 /**
- * Inputs to {@link loadSceneNavigationTarget}: the lifecycle adapters
- * and ctx the resolver passes through. No scene/composition registry
- * is required — the bridge synthesizes one from the snapshot inside
- * `target` so the lifecycle is guaranteed to run the modules the
- * dispatcher verified.
+ * Inputs to {@link loadSceneNavigationTarget}: lifecycle adapters + ctx.
+ * No registry — the bridge synthesizes one from `target`'s snapshot.
  */
 export interface LoadSceneNavigationTargetOptions {
   /**
-   * Per-occurrence scene-context factory, forwarded to
-   * {@link resolveComposition} as `ctx` (issue #99). The resolver calls
-   * it once per composition entry with that entry's
-   * {@link SceneActivation}; a slice that repeats a scene id therefore
-   * gives each occurrence a distinct `ctx`. The resolver does not
-   * inspect the returned value (ADR-011).
+   * Per-occurrence scene-context factory (issue #99): called once per
+   * entry with its {@link SceneActivation}, so a repeated-id slice gives
+   * each occurrence a distinct `ctx`. The resolver never inspects it (ADR-011).
    */
   readonly ctx: (activation: SceneActivation) => unknown;
   /** Preload adapter — see {@link AssetPreloader}. */
   readonly preloadAssets: AssetPreloader;
   /** Timeline composition/playback adapter — see {@link CompositionTimelineAdapter}. */
   readonly timeline: CompositionTimelineAdapter;
-  /**
-   * Optional cancellation signal forwarded through to
-   * {@link resolveComposition}. Honors the same semantics PUL-F006
-   * defined for composition-level abort.
-   */
+  /** Cancellation signal forwarded to {@link resolveComposition} (PUL-F006). */
   readonly signal?: AbortSignal;
-  /**
-   * URL beat label (PUL-F011) the runner should seek to before
-   * playing the head scene's timeline. Forwarded to
-   * {@link resolveComposition} as `headBeat` — the resolver scopes
-   * delivery to the head scene's run input only, per ADR-015. Absent
-   * when the navigation target had no `beat=` URL parameter.
-   */
+  /** Beat label to seek before the head timeline (PUL-F011); head-only via `headBeat`. */
   readonly beat?: string;
   /**
-   * Non-fatal callback invoked by the runner when {@link beat} is
-   * supplied but the named timeline label does not exist (PUL-F011 /
-   * ADR-015). Forwarded to {@link resolveComposition} as
-   * `onBeatMissing`. The runner MUST NOT throw or reject in response
-   * to a missing label; the loader uses this hook to surface a
-   * navigation-positioning diagnostic without unmounting the active
-   * scene.
-   *
-   * REQUIRED whenever {@link beat} is supplied: a beat without a
-   * diagnostic surface would silently lose the missing-label error
-   * the runner reports — the bridge throws when this invariant is
-   * violated rather than letting the diagnostic vanish.
+   * Non-fatal missing-beat callback (PUL-F011 / ADR-015); the runner MUST
+   * NOT throw on a missing label. REQUIRED whenever {@link beat} is
+   * supplied — the bridge throws otherwise so the diagnostic cannot vanish.
    */
   readonly onBeatMissing?: () => void;
-  /**
-   * URL loop-mode repeat hint (PUL-F015 / ADR-018) the runner uses to
-   * decide whether to restart the addressed scene's timeline on
-   * completion. Forwarded to {@link resolveComposition} as `headRepeat`
-   * — the resolver scopes delivery to the head scene's run input only,
-   * so following composition entries never receive `repeat`. Absent
-   * when the navigation target had no `mode=loop` parameter.
-   */
+  /** Loop repeat hint (PUL-F015 / ADR-018); head-only via `headRepeat`. */
   readonly repeat?: 'until-aborted';
-  /**
-   * URL paused-mode hold hint (PUL-F016 / ADR-019) the runner uses to
-   * decide whether to hold the addressed scene's timeline at its
-   * first frame. Forwarded to {@link resolveComposition} as
-   * `headHold` — the resolver scopes delivery to the head scene's
-   * run input only, so following composition entries never receive
-   * `hold`. Absent when the navigation target had no `mode=paused`
-   * parameter.
-   */
+  /** Paused hold hint (PUL-F016 / ADR-019); head-only via `headHold`. */
   readonly hold?: 'first-frame';
-  /**
-   * URL scrub-mode cue-gate hint (PUL-F017 / ADR-020) the runner uses
-   * to decide whether to gate audio-cue firing to monotonic forward
-   * playback only. Forwarded to {@link resolveComposition} as
-   * `headCueGate` — the resolver scopes delivery to the head scene's
-   * run input only, so following composition entries never receive
-   * `cueGate`. Absent when the navigation target had no `mode=scrub`
-   * parameter.
-   */
+  /** Scrub cue-gate hint (PUL-F017 / ADR-020); head-only via `headCueGate`. */
   readonly cueGate?: 'monotonic-forward';
-  /**
-   * Dynamic audio cue-eligibility gate (PUL-F017 / ADR-020) paired with
-   * {@link cueGate}. Forwarded to {@link resolveComposition} as
-   * `audioCueGate`; the GSAP timeline adapter toggles it by playhead
-   * direction so the per-navigation audio service suppresses cues that
-   * are not produced by monotonic forward playback. Absent when the
-   * navigation target had no `mode=scrub` parameter.
-   */
+  /** Dynamic cue-eligibility gate paired with {@link cueGate} (PUL-F017 / ADR-020). */
   readonly audioCueGate?: CueGateControl;
   /**
-   * URL screenshot-mode capture-bundle hint (PUL-F018 / ADR-021) the
-   * runner uses to decide whether to render the addressed scene at
-   * the addressed beat (or first frame), hold the timeline still,
-   * and suppress all audio. Forwarded to {@link resolveComposition}
-   * as `headScreenshot` — the resolver scopes delivery to the head
-   * scene's run input only, so following composition entries never
-   * receive `screenshot`. Absent when the navigation target had no
-   * `mode=screenshot` parameter.
-   *
-   * Direct bridge callers (test harnesses, future export pipelines)
-   * supplying `screenshot: 'capture'` MUST also build {@link ctx}
-   * with `mode: 'screenshot'` — PUL-F018's "any randomness sourced
-   * from a deterministic seed" clause flows through the scene-side
-   * `ctx.mode === 'screenshot'` seam (PUL-F012 / ADR-007), not
-   * through the runner input, because scene `create(ctx)` and
-   * `timeline(ctx)` run before this option reaches the runner. The
-   * loader path always pairs the two seams from the same parsed
-   * `target.mode`, so production navigation is coherent by
-   * construction; the contract here is for direct bridge callers.
-   * The bridge does not (and cannot) inspect ctx to enforce
-   * coherence — ctx is opaque per ADR-011.
+   * Screenshot capture hint (PUL-F018 / ADR-021); head-only via
+   * `headScreenshot`. Direct callers supplying `'capture'` MUST also build
+   * {@link ctx} with `mode: 'screenshot'` — the deterministic-seed clause
+   * flows through `ctx.mode` (PUL-F012), not the runner input. The bridge
+   * cannot enforce this (ctx is opaque per ADR-011).
    */
   readonly screenshot?: 'capture';
   /**
-   * URL present-mode presenter controller (PUL-F020 / ADR-023; the
-   * command set is extended by PUL-F021 / ADR-024 with the `pause` /
-   * `resume` kinds — the bridge forwarding is unchanged). The
-   * loader builds a per-navigation
-   * {@link import('./presenter').PresenterController} bound to its
-   * `AbortController.signal` when `effectiveMode(target) === 'present'`
-   * AND the workbench supplied a `presenterCommands` source, then
-   * forwards it here. The bridge passes it to {@link resolveComposition}
-   * as `presenter`; the resolver hands it to EVERY scene's run input
-   * (NOT head-only) because mode=present runs the FULL composition
+   * Present-mode presenter controller (PUL-F020 / ADR-023; PUL-F021 /
+   * ADR-024 pause/resume). Forwarded to EVERY scene (not head-only), so
+   * the bridge does NOT truncate the slice — present-mode runs the full
    * slice and presenter commands act on whichever scene is active.
-   *
-   * The bridge does NOT truncate the slice when `presenter` is
-   * supplied — `presenter` is independent of the four head-only
-   * runner-input hints (`repeat` / `hold` / `cueGate` /
-   * `screenshot`), every one of which corresponds to a single-
-   * scene-execution mode where truncation enforces "no following
-   * entries run." Mode=present has no such promise; truncating
-   * would silently drop tail-scene presenter handling.
-   *
-   * Absent for every mode other than `present` because the loader
-   * scopes delivery (the bridge does not enforce mode coherence;
-   * mode dispatch is a loader concern per ADR-007). Direct bridge
-   * callers — outside the loader path — supplying `presenter` for
-   * a non-present-mode navigation will see the controller forwarded
-   * to every scene's run input, but production navigation through
-   * the loader cannot reach that state.
    */
   readonly presenter?: PresenterController;
-  /**
-   * Optional diagnostic sink for the per-scene presenter wrapper
-   * (PUL-F020 / ADR-023). Forwarded to {@link resolveComposition}
-   * as `onPresenterError`. The loader threads its own `onError`
-   * here so a runner-handler exception (or an unknown command kind
-   * that reaches a per-scene wrapper) surfaces through the same
-   * diagnostic channel as every other navigation-level error.
-   * Absent: the per-scene wrapper drops diagnostics silently.
-   */
+  /** Diagnostic sink for the per-scene presenter wrapper (PUL-F020 / ADR-023). */
   readonly onPresenterError?: (err: unknown) => void;
   /**
-   * Per-scene post-cleanup hook (PUL-F024 / ADR-004). Forwarded to
-   * {@link resolveComposition} as `onSceneCleaned`; the loader wires it
-   * to stop the audio group a scene scoped to itself when that scene's
-   * `cleanup(ctx)` runs. Receives the cleaned occurrence's
-   * {@link SceneActivation} identity so a slice that repeats a scene id
-   * can be torn down occurrence-safely (issue #99). Absent for callers
-   * that do not need it.
+   * Per-scene post-cleanup hook (PUL-F024 / ADR-004), receiving the
+   * cleaned occurrence's {@link SceneActivation} so a repeated-id slice
+   * tears down occurrence-safely (issue #99).
    */
   readonly onSceneCleaned?: (activation: SceneActivation) => void;
   /**
-   * Per-scene failure sink (PUL-F029 / ADR-028). Forwarded to
-   * {@link resolveComposition} as `onSceneFailed`; the loader wires it
-   * to (a) append `<sceneId>:<phase>` to the per-navigation stage
-   * attribute `data-pulsar-scene-failures` and (b) surface a public
-   * diagnostic through the loader's `onError` sink without serializing
-   * the raw cause (ADR-028: no raw causes, stacks, scene objects,
-   * DOM, captions, headers, cookies, env, auth values). Absent for
-   * direct bridge callers that do not need scene-level error
-   * isolation.
+   * Per-scene failure sink (PUL-F029 / ADR-028); the loader appends to
+   * `data-pulsar-scene-failures` and surfaces a public diagnostic without
+   * serializing the raw cause (ADR-028: no raw causes).
    */
   readonly onSceneFailed?: (event: import('./composition-resolver').SceneFailureEvent) => void;
 }
@@ -306,18 +148,9 @@ const fail = (detail: string): never => {
 };
 
 /**
- * Snapshot a manifest slice's scene modules from the input scene
- * registry. Pre-resolves every entry so the bridge does not re-resolve
- * by id later. Aggregates every missing scene id into a single error
- * so a manifest author / composition registrar fixes every gap in one
- * pass rather than chasing a sequence of "first miss" errors.
- *
- * Reported entry indices are ABSOLUTE positions in the original
- * composition manifest (`originalStartIndex + slice-relative-index`),
- * so the operator sees the same indices the composition author wrote.
- * Slice-relative indices would lie about which composition entry was
- * gone for `composition-scene` / `composition-index` targets where
- * the slice starts mid-manifest.
+ * Snapshot a manifest slice's scene modules, pre-resolving every entry so
+ * the bridge never re-resolves by id. Aggregates all missing ids into one
+ * error; reported indices are ABSOLUTE positions in the original manifest.
  */
 function snapshotSceneSlice(
   manifestSlice: CompositionManifest,
@@ -336,13 +169,8 @@ function snapshotSceneSlice(
 }
 
 /**
- * Slice the manifest from `startIndex` and deep-freeze the resulting
- * array — including object-form entries — so the dispatcher's snapshot
- * is immutable regardless of whether the source `CompositionRegistry`
- * implementation deep-froze its stored manifests. The
- * `CompositionRegistry` interface allows alternative implementations,
- * so the dispatcher does its own freezing rather than relying on a
- * specific registry's deep-freeze policy.
+ * Slice the manifest from `startIndex` and deep-freeze it, so the
+ * snapshot is immutable regardless of the registry's own freeze policy.
  */
 const sliceManifestFromIndex = (
   manifest: CompositionManifest,
@@ -360,11 +188,8 @@ function resolveRegisteredComposition(
 }
 
 /**
- * Build the {@link SceneNavigationCompositionContext}, attaching the
- * resolved composition's `audioBed` (PUL-F014) only when one was
- * declared. Centralized so all three locator kinds carry the bed
- * declaration identically; the conditional spread keeps `audioBed`
- * absent rather than `undefined` under `exactOptionalPropertyTypes`.
+ * Build the {@link SceneNavigationCompositionContext}, attaching `audioBed`
+ * (PUL-F014) only when declared (kept absent under `exactOptionalPropertyTypes`).
  */
 function buildCompositionContext(
   compositionId: string,
@@ -383,26 +208,12 @@ function buildCompositionContext(
 }
 
 /**
- * Locate the addressed entry's start index in `manifest` for the three
- * composition locator kinds, applying each kind's own validation
- * (ADR-013 / ADR-014). The three differ ONLY in how they choose the
- * slice start; the slice / snapshot / context-build that follows
- * (`resolveCompositionContext`) is shared.
- *
- *  - `from-start` — slice from index 0; an empty manifest has no scene
- *    to navigate to.
- *  - `scene` — the single unambiguous occurrence of `scene`. Zero
- *    occurrences is a non-member error; two or more make
- *    `composition+scene` ambiguous and require `composition+index`
- *    (without the count check `findIndex` would silently pick the first
- *    match, loading a slice that may not match what the URL named —
- *    especially when occurrences carry different `range` / `behavior`
- *    overrides).
- *  - `index` — re-validate the index invariants PUL-F007's parser
- *    already enforces. `NavigationTarget` is exported, so a non-parser
- *    caller could supply a negative / non-integer index; without this
- *    `manifest.slice(-1)` would silently load the last scene when the
- *    URL claimed `index=-1`.
+ * How to choose a composition slice's start index (ADR-013 / ADR-014):
+ *  - `from-start` — index 0; an empty manifest is a navigation error.
+ *  - `scene` — the single unambiguous occurrence; 0 = non-member error,
+ *    2+ = ambiguous, requiring composition+index.
+ *  - `index` — re-validate the parser's invariants (a forged target could
+ *    supply a negative / non-integer index).
  */
 type CompositionLocation =
   | { readonly kind: 'from-start' }
@@ -449,10 +260,9 @@ function findStartIndex(
 }
 
 /**
- * Resolve a composition locator into its {@link SceneNavigationCompositionContext}:
- * look the composition up, pick the addressed start index per
- * `location`, then snapshot the slice + scene modules. One path for all
- * three composition locator kinds.
+ * Resolve a composition locator into its
+ * {@link SceneNavigationCompositionContext}: look it up, pick the start
+ * index per `location`, snapshot the slice + scene modules.
  */
 function resolveCompositionContext(
   compositionId: string,
@@ -468,39 +278,12 @@ function resolveCompositionContext(
 }
 
 /**
- * Bridge-level structural defense for modes whose head-scene
- * timeline does not naturally advance to completion:
- *
- * - PUL-F015 / ADR-018 (`mode=loop`, `repeat: 'until-aborted'`): the
- *   head's timeline restarts on completion — by definition it never
- *   naturally completes, so following composition entries cannot
- *   run.
- * - PUL-F016 / ADR-019 (`mode=paused`, `hold: 'first-frame'`): the
- *   head's timeline holds at frame 0 and never advances, so
- *   following composition entries cannot run.
- * - PUL-F017 / ADR-020 (`mode=scrub`, `cueGate: 'monotonic-forward'`):
- *   the head's timeline is driven interactively by the future
- *   scrub-controls UI; following composition entries cannot run
- *   because there is no monotonic-forward completion to hand off
- *   on.
- * - PUL-F018 / ADR-021 (`mode=screenshot`, `screenshot: 'capture'`):
- *   the runtime renders one deterministic frame; the head's
- *   timeline is held at the addressed beat (or first frame) and
- *   does not advance, so following composition entries cannot run.
- *
- * Truncating the slice at the bridge guarantees that structural
- * promise without depending on the runner's adapter conformance to
- * `input.repeat` / `input.hold` / `input.cueGate` /
- * `input.screenshot`. A direct bridge caller (test harness, future
- * export pipeline, etc.) gets the same guarantee the loader's
- * `applySingleSceneSlice` provides on the loader→bridge path; the
- * two truncations are idempotent (truncating a single-entry slice
- * is a no-op).
- *
- * Pure function — no closure captures. Returns the input unchanged
- * when `headOnly` is `false`, when there is no composition slice, or
- * when the slice is already empty (the bridge would surface that as
- * a navigation error elsewhere).
+ * Bridge-level slice truncation for single-scene modes (loop / paused /
+ * scrub / screenshot — PUL-F015..F018), whose head timeline never
+ * naturally completes. Guarantees "no following entries run" independent
+ * of runner conformance, mirroring (and idempotent with) the loader's
+ * `applySingleSceneSlice`. Returns the input unchanged when `headOnly` is
+ * false or there is no composition slice.
  */
 function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): SceneNavigationTarget {
   if (!headOnly || target.composition === undefined) {
@@ -520,35 +303,21 @@ function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): Scene
       ...(target.composition.audioBed === undefined
         ? {}
         : { audioBed: target.composition.audioBed }),
-      // PUL-F029 / ADR-028: preserve the absolute composition start
-      // index so a failure diagnostic still points operators at the
-      // right manifest entry even after the slice was truncated to
-      // its head by `mode=standalone|loop|paused|scrub|screenshot`.
+      // PUL-F029 / ADR-028: preserve the absolute start index so a failure
+      // diagnostic still names the right manifest entry after truncation.
       startIndex: target.composition.startIndex,
     },
   };
 }
 
 /**
- * Resolves a {@link NavigationTarget} (from PUL-F007's parser) against
- * the runtime registries and returns a {@link SceneNavigationTarget}
- * the bridge can run, or `null` when the locator is `kind: 'none'`
- * (no explicit target — the caller falls back to whatever default the
- * workbench owns).
- *
- * Throws an `Error` whose message starts with `scene navigation
- * failed:` for any of:
- *  - unregistered scene (`kind: 'scene'`)
- *  - unregistered composition (any composition kind)
- *  - scene not a member of the named composition
- *    (`kind: 'composition-scene'`)
- *  - index out of range (`kind: 'composition-index'`)
- *  - empty composition (any composition kind targeting it from start)
- *  - composition references a scene id not in the scene registry
- *
- * No lifecycle hook is invoked on any error path; identifier-shape
- * validation is already done by PUL-F007's parser, so this layer
- * only does existence/membership checks.
+ * Resolve a {@link NavigationTarget} against the registries into a
+ * runnable {@link SceneNavigationTarget}, or `null` for `kind: 'none'`.
+ * Throws (`scene navigation failed: ...`) on existence / membership
+ * failures: unregistered scene/composition, non-member scene, index out
+ * of range, empty composition, or a slice scene id absent from the
+ * registry. No lifecycle hook runs on any error path; shape validation
+ * is already the parser's.
  */
 export function resolveSceneNavigation(
   target: NavigationTarget,
@@ -596,62 +365,24 @@ export function resolveSceneNavigation(
 }
 
 /**
- * Drives the addressed scene (or composition slice, when present)
- * through the existing composition resolver lifecycle so the URL
- * navigation path inherits PUL-F004's preload → create → timeline →
- * cleanup ordering and PUL-F006's mandatory-cleanup invariant.
+ * Drive the addressed scene (or composition slice) through the
+ * composition resolver lifecycle, so URL navigation inherits PUL-F004's
+ * preload → create → timeline → cleanup ordering and PUL-F006's
+ * mandatory cleanup. Synthesizes a fresh registry from `target`'s
+ * snapshot so no outside registry can substitute scenes at the same ids.
  *
- * Synthesizes a fresh scene registry from the snapshot inside
- * `target` so the lifecycle is guaranteed to run that exact module
- * sequence, removing any chance for an outside registry to substitute
- * scenes at the same ids.
- *
- *  - For a single-scene target (`target.composition === undefined`):
- *    runs a one-entry manifest containing just the addressed scene.
- *  - For a composition target: runs `target.composition.manifestSlice`
- *    against a registry built from `target.composition.sceneSlice`.
- *    Per-entry `range` and `behavior` overrides are preserved and
- *    forwarded to the runner adapter unchanged (ADR-011).
- *
- * Resolves when the lifecycle has run end-to-end. Per PUL-F029 /
- * ADR-028, per-scene `create(ctx)` / `timeline(ctx)` / `cleanup(ctx)`
- * throws are SCENE failures: when `onSceneFailed` is wired they
- * isolate (the failing scene is eagerly cleaned up and dropped, the
- * composition keeps playing through the surviving scenes) and the
- * bridge resolves normally; when it is not wired they aggregate into
- * an `AggregateError` at the end so direct callers don't lose the
- * signal. Composition-wide failures (preload, manifest invalid,
- * registry miss, timeline-adapter `run` rejection, signal-abort)
- * still reject the bridge with the resolver's wrapping error
- * (`composition resolution failed: ...`). Cleanup runs whenever the
- * scene was touched, matching the resolver's own invariants.
+ * Per PUL-F029 / ADR-028, per-scene phase throws are SCENE failures:
+ * with `onSceneFailed` wired they isolate (the composition plays on);
+ * without it they aggregate into an `AggregateError`. Composition-wide
+ * failures still reject (`composition resolution failed: ...`).
  */
 export async function loadSceneNavigationTarget(
   target: SceneNavigationTarget,
   options: LoadSceneNavigationTargetOptions,
 ): Promise<void> {
-  // PUL-F015 / ADR-018 + PUL-F016 / ADR-019 + PUL-F017 / ADR-020 +
-  // PUL-F018 / ADR-021: under `repeat: 'until-aborted'` the head's
-  // timeline restarts on completion (loop), under
-  // `hold: 'first-frame'` the head's timeline never advances
-  // (paused), under `cueGate: 'monotonic-forward'` the head's
-  // timeline is driven interactively by the future scrub-controls UI
-  // (scrub), and under `screenshot: 'capture'` the head's timeline
-  // is held at the addressed beat (or first frame) for a
-  // deterministic frame capture (screenshot). All four modes share
-  // the same structural promise: following composition entries
-  // cannot run. Truncating the slice at the bridge layer makes "no
-  // following entries run" a structural guarantee that does not
-  // depend on the runner honoring `input.repeat` / `input.hold` /
-  // `input.cueGate` / `input.screenshot` (codex pre-push review):
-  // a runner bug or no-op runner under any of the four modes MUST
-  // NOT silently degrade into normal composition playback. The
-  // truncation is layered with the loader's `applySingleSceneSlice`
-  // (which already truncates for `mode=standalone`, `mode=loop`,
-  // `mode=paused`, `mode=scrub`, and `mode=screenshot`) so direct
-  // bridge callers — outside the loader path — still benefit from
-  // the structural guarantee. Truncating an already-single-entry
-  // slice is a no-op, so the layering is idempotent.
+  // Truncate to head for single-scene modes (PUL-F015..F018) so "no
+  // following entries run" holds independent of runner conformance;
+  // idempotent with the loader's `applySingleSceneSlice`.
   const effectiveTarget = truncateToHead(
     target,
     options.repeat !== undefined ||
@@ -660,9 +391,7 @@ export async function loadSceneNavigationTarget(
       options.screenshot !== undefined,
   );
   const composition = effectiveTarget.composition;
-  // Collapse the single-scene vs composition-slice paths into one
-  // assignment so the two values cannot drift (e.g. picking
-  // composition manifest with single-scene registry, or vice versa).
+  // One assignment for both paths so manifest and registry cannot drift.
   let scenes: readonly SceneModule[];
   let manifest: CompositionManifest;
   if (composition === undefined) {
@@ -673,23 +402,13 @@ export async function loadSceneNavigationTarget(
     manifest = composition.manifestSlice;
   }
 
-  // De-duplicate scene modules by id so a manifest slice with
-  // repeated scene ids (which `resolveComposition` legitimately
-  // supports per PUL-F004) does not crash the synthesized registry's
-  // duplicate-id guard. Same id always resolves to the same module
-  // because `snapshotSceneSlice` pulled both from the same scene
-  // registry, so dedupe is identity-preserving.
+  // Dedupe by id (identity-preserving — same id is the same module) so a
+  // repeated-id slice does not trip the synthesized registry's dup guard.
   const uniqueScenes = Array.from(new Map(scenes.map((s) => [s.id, s])).values());
 
-  // PUL-F011 / ADR-015: a `beat` without an `onBeatMissing` would
-  // silently lose the missing-label diagnostic the runner is
-  // contracted to surface. Mirror the resolver's check at this
-  // boundary so the bridge's direct callers fail at construction
-  // time, not after the lifecycle started. Routed through the
-  // module's `fail(...)` helper so the error carries the documented
-  // `scene navigation failed:` envelope — same prefix as every
-  // other navigation-level failure (unknown scene, out-of-range
-  // index, etc.).
+  // PUL-F011 / ADR-015: fail at construction if `beat` lacks
+  // `onBeatMissing`, mirroring the resolver, so direct callers cannot
+  // silently lose the missing-label diagnostic.
   if (options.beat !== undefined && options.onBeatMissing === undefined) {
     fail(
       '"onBeatMissing" is required when "beat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
@@ -702,20 +421,12 @@ export async function loadSceneNavigationTarget(
 }
 
 /**
- * Build the {@link ResolveCompositionOptions} the bridge hands to the
- * resolver. The bridge's input names (`beat` / `repeat` / `hold` /
- * `cueGate` / `screenshot`) map onto the resolver's head-scoped names
- * (`headBeat` / `headRepeat` / `headHold` / `headCueGate` /
- * `headScreenshot`); `audioCueGate` / `onSceneCleaned` / `onSceneFailed`
- * pass through unchanged. Absent keys are dropped so a resolver that
- * branches on `'<key>' in opts` sees absent rather than `undefined`
- * (and to keep the forwarded object minimal). A separate builder so the
- * bridge-name-to-resolver-name mapping and the absent-key rules live in
- * one place. `onBeatMissing` / `onPresenterError`
- * are paired surfaces — meaningless without `beat` / `presenter` — so
- * each is dropped when its partner is absent (the resolver also rejects
- * `beat` without `onBeatMissing`, but the bridge must not forward an
- * orphaned `onBeatMissing` either).
+ * Build the {@link ResolveCompositionOptions} the bridge hands the
+ * resolver: map the bridge's input names onto the resolver's head-scoped
+ * names (`beat`→`headBeat`, etc.) and drop absent keys so the resolver's
+ * `'<key>' in opts` checks see absent rather than `undefined`. Paired
+ * surfaces (`onBeatMissing` / `onPresenterError`) are dropped when their
+ * partner (`beat` / `presenter`) is absent.
  */
 function buildResolverOptions(
   registry: ReturnType<typeof createSceneRegistry>,

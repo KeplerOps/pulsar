@@ -1,53 +1,26 @@
-// Scene module contract — PUL-F001 + PUL-A007.
+// Scene module contract — PUL-F001 + PUL-A007 (ADR-002 / ADR-008).
 //
-// Single source of truth for the shape every scene module exports.
-// Per ADR-002 the scene/composition model treats this object as the
-// scene's canonical metadata; per ADR-008 the runtime validates the
-// shape before mounting so cleanup leaks, dangling assets, and id
-// collisions surface loudly.
-//
-// Scene id format is enforced here (PUL-A007): kebab-case lowercase
-// ASCII (`[a-z0-9]+(-[a-z0-9]+)*`). The regex itself lives in
-// ./identifier.ts because ADR-008 #1 makes the same rule binding on
-// scenes, compositions, beats, and assets — see `isKebabIdentifier`.
-// Id reuse across scenes is enforced by the registry (PUL-F002) —
-// the two clauses of PUL-A007 are split across this file (format)
-// and ./registry.ts (uniqueness).
-//
-// Downstream consumers (registry, composition resolver, exporter)
-// must call assertSceneModule rather than re-implementing checks.
+// Single source of truth for the shape every scene module exports;
+// validated before mount so leaks, dangling assets, and id collisions
+// surface loudly. Scene id format (PUL-A007 clause C1) is the shared
+// kebab-case rule in ./identifier.ts (ADR-008 #1); id uniqueness is the
+// registry's (PUL-F002). Downstream consumers call assertSceneModule.
 
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 import { isPlainRecord } from './object';
 
 /**
- * Caption metadata. ADR-002 / ADR-008 / PUL-F027: `{ at, text }` where
- * `at` is EITHER a finite non-negative integer (millisecond offset
- * from scene start) OR a kebab-case beat label sharing the same
- * identifier grammar as scene ids, composition ids, timeline labels,
- * and asset ids (ADR-008 #1 — `isKebabIdentifier`). The prompter, the
- * live runtime, and the export pipeline all consume this same
- * structure (PUL-A009 / PUL-F019).
- *
- * Beat-label `at` values are scene-local — they refer to a label
- * registered on the scene's own timeline (ADR-026 named beats). The
- * scene-schema validator does NOT walk the timeline to verify the
- * label exists; lifecycle side effects do not belong in metadata
- * validation. A future authoring lint MAY cross-check caption beat
- * labels against `MasterTimeline.beats()`.
+ * Caption metadata (PUL-F027 / PUL-A009): `{ at, text }` where `at` is a
+ * finite non-negative integer ms offset OR a scene-local kebab-case beat
+ * label (ADR-008 #1, ADR-026 named beats). The validator does not walk the
+ * timeline to verify the label exists. Shared by prompter, runtime, export.
  */
 export interface Caption {
   at: number | string;
   text: string;
 }
 
-/**
- * Lifecycle function signature. The `ctx` argument is opaque here and
- * refined by PUL-F002 (registry lifecycle) plus ADR-003 / ADR-004
- * (timeline + audio surface via `ctx.gsap`, `ctx.audio`). Until then,
- * lifecycle implementations should treat the value as opaque and
- * route through whatever helpers the runtime exposes when they land.
- */
+/** Lifecycle function signature; `ctx` is opaque here, refined by the loader. */
 export type SceneLifecycleFn = (ctx: unknown) => unknown;
 
 /**
@@ -76,23 +49,10 @@ export interface SceneModule {
   assets: readonly string[];
   captions: readonly Caption[];
   /**
-   * Static audio-declaration list (PUL-F030 / ADR-029). Names the
-   * subset of `assets` that are audio sources. An empty array means
-   * "this scene declares no audio" — the loader/workbench unlock
-   * gate, the validation pass (PUL-F028), and future authoring lints
-   * all consult the same {@link sceneDeclaresAudio} predicate built
-   * over this field, so "declares audio" never depends on file
-   * extension sniffing, MIME guesses, asset URL substrings, or
-   * runtime observation of `ctx.audio.load()`.
-   *
-   * Every entry MUST be a member of `assets` so the preloader
-   * (PUL-F005) warms it. `scene.audio` itself IS the runtime
-   * audio-source allowlist for `ctx.audio.load()` — a scene cannot
-   * register audio it did not declare here. ADR-008 #5 keeps
-   * `scene.assets` as the canonical asset inventory; PUL-F030 /
-   * ADR-029 narrows audio to this `scene.audio` subset so the
-   * present-mode unlock-gate predicate and the runtime allowlist
-   * agree on one source of truth.
+   * Static audio-declaration list (PUL-F030 / ADR-029): the subset of
+   * `assets` that are audio sources. IS the runtime audio-source allowlist
+   * for `ctx.audio.load()` and drives the {@link sceneDeclaresAudio}
+   * unlock-gate predicate — every entry MUST be a member of `assets`.
    */
   audio: readonly string[];
   defaultNext: string | null;
@@ -126,20 +86,9 @@ const isValidDuration = (v: unknown): v is number | null =>
   v === null || (typeof v === 'number' && Number.isInteger(v) && Number.isFinite(v) && v >= 0);
 
 /**
- * PUL-F027: a caption's `at` field is either a millisecond offset
- * (finite non-negative integer) OR a beat label string sharing the
- * one identifier grammar ADR-008 #1 reserves for scenes, compositions,
- * beats, and assets — `isKebabIdentifier`. Floats, negatives, NaN,
- * ±Infinity, empty strings, and non-kebab labels are rejected at
- * this boundary. A purely-digit label like `"1000"` IS valid (the
- * shared kebab regex accepts it), the same as it is for a timeline
- * label, a URL `beat=` parameter, and a composition `range` endpoint
- * — caption labels do not invent a stricter sub-grammar (codex
- * review, cycle 1).
- *
- * Hoisted to module scope (pure, no closure captures) so the same
- * predicate covers `describeCaptionFault` and any future
- * caption-time classifier the preflight reserves.
+ * PUL-F027: a caption `at` is a finite non-negative integer ms offset OR a
+ * kebab-case beat label (ADR-008 #1). A purely-digit label like `"1000"`
+ * is valid; caption labels do not invent a stricter sub-grammar.
  */
 const isCaptionAt = (v: unknown): v is number | string => {
   if (typeof v === 'number') {
@@ -149,13 +98,8 @@ const isCaptionAt = (v: unknown): v is number | string => {
 };
 
 /**
- * Describe why a caption is malformed, indexed by position so the
- * scene author can find the offending entry directly (codex review,
- * cycle 1 — adjacent composition-manifest validator does the same).
- * Returns the message the scene-schema error envelope will report,
- * or `null` when the caption is well-formed. Caption text is NEVER
- * echoed in the message (preflight: avoid leaking full caption
- * content through diagnostics).
+ * Describe why a caption is malformed, indexed by position; `null` when
+ * well-formed. Caption text is NEVER echoed (avoid leaking content).
  */
 const describeCaptionFault = (cap: unknown, index: number): string | null => {
   if (!isPlainRecord(cap)) {
@@ -170,10 +114,7 @@ const describeCaptionFault = (cap: unknown, index: number): string | null => {
   return null;
 };
 
-// Scene ids share the kebab-case rule with all other Pulsar
-// identifiers per ADR-008 #1; the predicate lives in ./identifier.ts
-// so composition entries, beat labels, and future asset ids do not
-// each carry their own copy of the regex (PUL-A007 clause C1).
+// Scene ids share the kebab-case rule (ADR-008 #1; PUL-A007 clause C1).
 const isSceneId = isKebabIdentifier;
 
 const isSceneIdOrNull = (v: unknown): v is string | null => v === null || isSceneId(v);
@@ -250,23 +191,16 @@ const FIELD_GUARDS: readonly FieldGuard[] = [
 ];
 
 /**
- * Validates that `value` satisfies the {@link SceneModule} contract.
- * Throws `Error` with a message identifying the offending field and
- * condition.
- *
- * Per the codex preflight guardrails, this is the single source of
- * truth for scene shape. Downstream consumers (registry, composition
- * resolver, exporter) call this once at the boundary rather than
- * re-validating piecemeal.
+ * Validate that `value` satisfies the {@link SceneModule} contract,
+ * throwing with the offending field + condition. Single source of truth
+ * for scene shape — downstream consumers call this at the boundary.
  */
 export function assertSceneModule(value: unknown): asserts value is SceneModule {
   if (!isPlainRecord(value)) {
     throw new Error('scene ? is invalid: value must be a non-null object');
   }
 
-  // Capture id for error messages when present and a string. If id is
-  // missing or wrong-typed, the corresponding guard below raises with
-  // `?` as the entity label.
+  // Id for error messages; the id guard below raises with `?` if absent.
   const id = typeof value.id === 'string' ? value.id : undefined;
 
   for (const field of REQUIRED_FIELDS) {
@@ -281,14 +215,8 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
     }
   }
 
-  // Indexed caption validation (codex review, cycle 1): the
-  // FIELD_GUARDS pass above only verifies `captions` is an array.
-  // Per-element validation runs here so a bad caption in a
-  // multi-caption scene surfaces with its index and the failing
-  // field, matching the adjacent composition-manifest validator's
-  // `composition entry [N] is invalid: ...` envelope. Caption text
-  // is never echoed in the message (preflight: avoid leaking full
-  // caption content).
+  // Per-element caption validation (FIELD_GUARDS only checks array-ness),
+  // surfacing the index + failing field; caption text is never echoed.
   const idLabel = id === undefined ? '?' : `"${id}"`;
   for (let i = 0; i < (value.captions as readonly unknown[]).length; i++) {
     const fault = describeCaptionFault((value.captions as readonly unknown[])[i], i);
@@ -297,14 +225,8 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
     }
   }
 
-  // PUL-F030 / ADR-029 cross-field invariant: every `audio` entry must
-  // be a member of `assets`. The shape guard above accepts an
-  // arbitrary string array; this loop enforces the "audio sources
-  // reference scene.assets" rule the preflight names, so the
-  // preloader (PUL-F005) warms every declared audio URL and the audio
-  // service's allowlist accepts it (ADR-008 #5). Reported by index so
-  // a multi-entry scene's bad declaration is locatable, mirroring the
-  // caption validator's `captions[N]` envelope.
+  // PUL-F030 / ADR-029 cross-field invariant: every `audio` entry must be
+  // a member of `assets` so the preloader warms it (ADR-008 #5).
   const assetsSet = new Set(value.assets as readonly string[]);
   const audioList = value.audio as readonly string[];
   for (let i = 0; i < audioList.length; i++) {
@@ -318,11 +240,8 @@ export function assertSceneModule(value: unknown): asserts value is SceneModule 
 }
 
 /**
- * Author-facing scene input. Only identity (`id`, `title`) and the two
- * lifecycle hooks that actually do work (`create`, `timeline`) are
- * required; every other field defaults. {@link defineScene} normalizes
- * this into the canonical {@link SceneModule} the runtime consumes, so
- * authoring a scene is a plain object literal — not a 13-field ritual.
+ * Author-facing scene input: only `id`, `title`, `create`, `timeline`
+ * are required; every other field defaults via {@link defineScene}.
  */
 export interface SceneInput {
   id: string;
@@ -344,11 +263,8 @@ export interface SceneInput {
 const NOOP_CLEANUP: SceneLifecycleFn = () => {};
 
 /**
- * The single source of scene defaulting. Fills the optional metadata
- * fields, then asserts the result against the {@link SceneModule}
- * contract so a malformed input fails loudly at authoring time rather
- * than at mount time. Template factories and decks both route through
- * here — there is exactly one place defaults live.
+ * Single source of scene defaulting: fill optional fields, then assert
+ * the {@link SceneModule} contract so malformed input fails at authoring.
  */
 export function defineScene(input: SceneInput): SceneModule {
   const scene: SceneModule = {
@@ -371,23 +287,16 @@ export function defineScene(input: SceneInput): SceneModule {
 }
 
 /**
- * PUL-F030 / ADR-029: predicate the loader/workbench unlock gate, the
- * validation pass, and future authoring lints all consult so "this
- * scene declares audio" has one source of truth. True when the
- * scene's static {@link SceneModule.audio} list has at least one
- * entry. The shape and membership invariants of `audio` are
- * established by {@link assertSceneModule} — this predicate only
- * reads the field length, so it is safe to call on any
- * already-validated scene module.
+ * PUL-F030 / ADR-029: single source of truth for "this scene declares
+ * audio" — true when the static {@link SceneModule.audio} list is non-empty.
  */
 export function sceneDeclaresAudio(scene: SceneModule): boolean {
   return scene.audio.length > 0;
 }
 
 /**
- * Convenience type predicate. Returns `true` if `value` satisfies the
- * scene module contract; `false` otherwise. Use {@link assertSceneModule}
- * when the failure detail matters to the caller.
+ * Type predicate for the scene module contract; use {@link assertSceneModule}
+ * when the failure detail matters.
  */
 export function isSceneModule(value: unknown): value is SceneModule {
   try {
