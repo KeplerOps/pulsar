@@ -15,69 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { pausedFixtureScene } from '../../src/scenes/paused-fixture';
-
-interface FakeStage {
-  readonly children: { attrs: Map<string, string> }[];
-  readonly element: {
-    setAttribute(name: string, value: string): void;
-    removeAttribute(name: string): void;
-    appendChild(node: unknown): unknown;
-    querySelector(selector: string): {
-      setAttribute(name: string, value: string): void;
-      remove(): void;
-    } | null;
-    ownerDocument: {
-      createElement(tag: string): { setAttribute(name: string, value: string): void };
-    };
-  };
-}
-
-// Stage stub mirroring `loop-fixture.test.ts`: `appendChild` records
-// children, `querySelector` looks them up by the attribute name in the
-// `[<attr>]` selector, and `ownerDocument.createElement` returns a
-// recording stub. The fixture allocates DOM through the stage's owner
-// document rather than an ambient `document` global (ADR-008 #2), so
-// the stub mirrors that seam.
-const buildStage = (): FakeStage => {
-  const children: { attrs: Map<string, string> }[] = [];
-  return {
-    children,
-    element: {
-      setAttribute: () => undefined,
-      removeAttribute: () => undefined,
-      appendChild: (node: unknown) => {
-        children.push(node as { attrs: Map<string, string> });
-        return node;
-      },
-      querySelector: (selector: string) => {
-        const attr = selector.replace(/^\[|\]$/g, '').split('=')[0];
-        if (attr === undefined) return null;
-        for (let i = 0; i < children.length; i += 1) {
-          const child = children[i];
-          if (child === undefined) continue;
-          if (child.attrs.has(attr)) {
-            return {
-              setAttribute: (name: string, value: string) => child.attrs.set(name, value),
-              remove: () => {
-                children.splice(i, 1);
-              },
-            };
-          }
-        }
-        return null;
-      },
-      ownerDocument: {
-        createElement: () => {
-          const attrs = new Map<string, string>();
-          return {
-            attrs,
-            setAttribute: (name: string, value: string) => attrs.set(name, value),
-          };
-        },
-      },
-    },
-  };
-};
+import { buildSceneFixtureStage as buildStage } from '../support/fakes';
 
 describe('pausedFixtureScene', () => {
   it('declares the PUL-F001 contract fields with kebab-case id', () => {

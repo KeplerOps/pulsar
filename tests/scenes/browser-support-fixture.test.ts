@@ -10,70 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { browserSupportFixtureScene } from '../../src/scenes/browser-support-fixture';
-
-interface FakeStage {
-  readonly children: { attrs: Map<string, string> }[];
-  readonly element: {
-    setAttribute(name: string, value: string): void;
-    removeAttribute(name: string): void;
-    appendChild(node: unknown): unknown;
-    querySelector(selector: string): {
-      setAttribute(name: string, value: string): void;
-      remove(): void;
-    } | null;
-    ownerDocument: {
-      createElement(tag: string): { setAttribute(name: string, value: string): void };
-    };
-  };
-}
-
-// Constructs a stage stub whose `appendChild` records children, whose
-// `querySelector` looks them up by attribute name (matching the CSS
-// attribute-selector shape the scene uses: `[<attr>]`), and whose
-// `ownerDocument.createElement` returns a recording stub. The fixture
-// allocates DOM through the stage's owner document rather than an
-// ambient `document` global (codex pre-push review, cycle 2), so the
-// stub mirrors that seam.
-const buildStage = (): FakeStage => {
-  const children: { attrs: Map<string, string> }[] = [];
-  return {
-    children,
-    element: {
-      setAttribute: () => undefined,
-      removeAttribute: () => undefined,
-      appendChild: (node: unknown) => {
-        children.push(node as { attrs: Map<string, string> });
-        return node;
-      },
-      querySelector: (selector: string) => {
-        const attr = selector.replace(/^\[|\]$/g, '').split('=')[0];
-        if (attr === undefined) return null;
-        for (let i = 0; i < children.length; i += 1) {
-          const child = children[i];
-          if (child === undefined) continue;
-          if (child.attrs.has(attr)) {
-            return {
-              setAttribute: (name: string, value: string) => child.attrs.set(name, value),
-              remove: () => {
-                children.splice(i, 1);
-              },
-            };
-          }
-        }
-        return null;
-      },
-      ownerDocument: {
-        createElement: () => {
-          const attrs = new Map<string, string>();
-          return {
-            attrs,
-            setAttribute: (name: string, value: string) => attrs.set(name, value),
-          };
-        },
-      },
-    },
-  };
-};
+import { buildSceneFixtureStage as buildStage } from '../support/fakes';
 
 describe('browserSupportFixtureScene', () => {
   it('declares the PUL-F001 contract fields with kebab-case id', () => {
