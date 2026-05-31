@@ -19,7 +19,11 @@ import {
 } from './runtime/navigation';
 import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
-import { type WorkbenchSceneCtx, createSceneLoader } from './runtime/scene-loader';
+import {
+  type WorkbenchChromeSlots,
+  type WorkbenchSceneCtx,
+  createSceneLoader,
+} from './runtime/scene-loader';
 import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { createDomWorkbenchChrome } from './runtime/workbench-chrome';
@@ -152,7 +156,8 @@ const buildCtx = (
     ...(presenter === undefined ? {} : { presenter }),
   };
   if (chromeSlots === undefined) return base;
-  return { ...base, chrome: chromeSlots as unknown as Readonly<Record<string, unknown>> };
+  // L2 `ChromeSlots` → the L1-agnostic ctx slot (named-prop shape vs. index type).
+  return { ...base, chrome: chromeSlots as unknown as WorkbenchChromeSlots };
 };
 
 // Prompter renderer (PUL-F019 / ADR-022): paints the captions script into
@@ -167,7 +172,7 @@ const renderPrompter: PrompterRenderer = createChromePrompterRenderer(
 // composition declares audio. The factory owns the click / abort / cleanup
 // contract; this wiring supplies the stage and the `<button>`.
 const audioUnlockAdapter = createDomAudioUnlockAdapter({
-  mount: stage === null ? null : (button) => stage.appendChild(button as unknown as Node),
+  mount: stage === null ? null : (button) => stage.appendChild(button),
   createButton: () => {
     const button = document.createElement('button');
     button.type = 'button';
@@ -204,7 +209,7 @@ const audioUnlockAdapter = createDomAudioUnlockAdapter({
 // visibility per navigation. ARIA `role="complementary"` keeps it announced
 // without disturbing scene focus order (PUL-Q008).
 const chrome = createDomWorkbenchChrome({
-  mount: (element) => document.body.appendChild(element as unknown as Node),
+  mount: (element) => document.body.appendChild(element),
   createSurface: () => {
     const surface = document.createElement('div');
     surface.dataset.pulsarChrome = 'surface';

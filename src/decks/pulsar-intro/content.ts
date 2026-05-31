@@ -27,21 +27,13 @@ interface SceneSpec {
   readonly build: (root: HTMLElement, ownerDoc: Document) => void;
   readonly beats: (tl: TemplateTimeline, rootValue: string) => void;
   /**
-   * When true, the L2 envelope's trailing tween is extended to an
-   * effectively-indefinite duration. The composition master never
-   * reaches its natural end, so the resolver does not tear scenes
-   * down — reverse-navigation (`skip-backward`) keeps working from
-   * the end-of-deck state. Used only by the final scene of the
-   * composition.
+   * Extend the trailing tween to an indefinite hold so the master never
+   * ends and `skip-backward` keeps working past the deck's last scene.
+   * Only the final scene sets it.
    */
   readonly holdForever?: boolean;
 }
 
-// Build a Pulsar-deck scene. Mounts a scene root that carries the
-// runtime's activation envelope plus the `.pulsar-intro` and surface
-// classes the deck CSS keys on. The build callback authors the scene
-// DOM; the beats callback authors the GSAP timeline within the
-// runtime's standard activate-then-deactivate envelope.
 const buildScene = (spec: SceneSpec): SceneModule =>
   buildTemplateScene({
     id: spec.id,
@@ -64,10 +56,7 @@ const buildScene = (spec: SceneSpec): SceneModule =>
       buildTemplateTimeline({
         ctx,
         rootValue: spec.id,
-        // 1 hour effectively means "until the user navigates away".
-        // The runtime's natural-end teardown is the only thing that
-        // prevents `skip-backward` from working past the last scene;
-        // an indefinite trailing tween keeps the master alive.
+        // 3600s ≈ "until the user navigates away" (see holdForever).
         suffixDurationSeconds: spec.holdForever === true ? 3600 : 0.8,
         buildSegments: (tl) => {
           spec.beats(tl, spec.id);
@@ -110,6 +99,27 @@ const appendFolio = (root: HTMLElement, doc: Document, spec: SceneSpec): void =>
 
 const sel = (sceneId: string, cls: string): string => `[data-pulsar-template="${sceneId}"] ${cls}`;
 
+// Every beat is the same reveal: fade up from a small offset on `expo.out`.
+// `y`/`x` pick the offset axis (omit both for an opacity-only fade); `stagger`
+// is included only when given so multi-element selectors cascade.
+const reveal = (
+  tl: TemplateTimeline,
+  id: string,
+  cls: string,
+  at: number,
+  opts: { duration: number; y?: number; x?: number; stagger?: number },
+): void => {
+  const offset = opts.x !== undefined ? { x: opts.x } : opts.y !== undefined ? { y: opts.y } : {};
+  const land = opts.x !== undefined ? { x: 0 } : opts.y !== undefined ? { y: 0 } : {};
+  const stagger = opts.stagger === undefined ? {} : { stagger: opts.stagger };
+  tl.fromTo(
+    sel(id, cls),
+    { opacity: 0, ...offset },
+    { opacity: 1, ...land, duration: opts.duration, ...stagger, ease: 'expo.out' },
+    at,
+  );
+};
+
 // ----------------------------------------------------------------------
 // Scene 01 — Title
 // ----------------------------------------------------------------------
@@ -148,25 +158,10 @@ const titleScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('title-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-title__a'),
-      { opacity: 0, y: 22 },
-      { opacity: 1, y: 0, duration: 0.6, stagger: 0.035, ease: 'expo.out' },
-      0,
-    );
-    tl.fromTo(
-      sel(id, '.pi-title__dot'),
-      { opacity: 0, y: 22 },
-      { opacity: 1, y: 0, duration: 0.6, ease: 'expo.out' },
-      0.32,
-    );
+    reveal(tl, id, '.pi-title__a', 0, { y: 22, duration: 0.6, stagger: 0.035 });
+    reveal(tl, id, '.pi-title__dot', 0.32, { y: 22, duration: 0.6 });
     tl.addLabel('subtitle-in', 0.9);
-    tl.fromTo(
-      sel(id, '.pi-subtitle'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.9,
-    );
+    reveal(tl, id, '.pi-subtitle', 0.9, { y: 10, duration: 0.5 });
     tl.to({}, { duration: 1.2 });
   },
 });
@@ -201,12 +196,7 @@ const thesisScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('display-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-display__w'),
-      { opacity: 0, y: 18 },
-      { opacity: 1, y: 0, duration: 0.7, stagger: 0.06, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-display__w', 0, { y: 18, duration: 0.7, stagger: 0.06 });
     tl.to({}, { duration: 2.0 });
   },
 });
@@ -262,33 +252,13 @@ const sceneScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('body-in', 0.6);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.6,
-    );
+    reveal(tl, id, '.pi-body', 0.6, { y: 10, duration: 0.5 });
     tl.addLabel('shape-in', 1.0);
-    tl.fromTo(
-      sel(id, '.pi-code'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.6, ease: 'expo.out' },
-      1.0,
-    );
+    reveal(tl, id, '.pi-code', 1.0, { y: 12, duration: 0.6 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -342,33 +312,13 @@ const compositionScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('body-in', 0.6);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.6,
-    );
+    reveal(tl, id, '.pi-body', 0.6, { y: 10, duration: 0.5 });
     tl.addLabel('shape-in', 1.0);
-    tl.fromTo(
-      sel(id, '.pi-code'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.6, ease: 'expo.out' },
-      1.0,
-    );
+    reveal(tl, id, '.pi-code', 1.0, { y: 12, duration: 0.6 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -472,33 +422,13 @@ const recomposeScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('body-in', 0.6);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.6,
-    );
+    reveal(tl, id, '.pi-body', 0.6, { y: 10, duration: 0.5 });
     tl.addLabel('cols-in', 1.0);
-    tl.fromTo(
-      sel(id, '.pi-tri__col'),
-      { opacity: 0, y: 18 },
-      { opacity: 1, y: 0, duration: 0.7, stagger: 0.18, ease: 'expo.out' },
-      1.0,
-    );
+    reveal(tl, id, '.pi-tri__col', 1.0, { y: 18, duration: 0.7, stagger: 0.18 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -563,32 +493,12 @@ const modesScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('rows-in', 0.7);
-    tl.fromTo(
-      sel(id, '.pi-modes__url'),
-      { opacity: 0, x: -8 },
-      { opacity: 1, x: 0, duration: 0.4, stagger: 0.09, ease: 'expo.out' },
-      0.7,
-    );
-    tl.fromTo(
-      sel(id, '.pi-modes__desc'),
-      { opacity: 0 },
-      { opacity: 1, duration: 0.4, stagger: 0.09, ease: 'expo.out' },
-      0.78,
-    );
+    reveal(tl, id, '.pi-modes__url', 0.7, { x: -8, duration: 0.4, stagger: 0.09 });
+    reveal(tl, id, '.pi-modes__desc', 0.78, { duration: 0.4, stagger: 0.09 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -634,19 +544,9 @@ const urlScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('display-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-display__w'),
-      { opacity: 0, y: 16 },
-      { opacity: 1, y: 0, duration: 0.6, stagger: 0.06, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-display__w', 0, { y: 16, duration: 0.6, stagger: 0.06 });
     tl.addLabel('url-in', 0.9);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.9,
-    );
+    reveal(tl, id, '.pi-body', 0.9, { y: 10, duration: 0.5 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -707,32 +607,12 @@ const transportScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('rows-in', 0.7);
-    tl.fromTo(
-      sel(id, '.pi-modes__url'),
-      { opacity: 0, x: -8 },
-      { opacity: 1, x: 0, duration: 0.4, stagger: 0.09, ease: 'expo.out' },
-      0.7,
-    );
-    tl.fromTo(
-      sel(id, '.pi-modes__desc'),
-      { opacity: 0 },
-      { opacity: 1, duration: 0.4, stagger: 0.09, ease: 'expo.out' },
-      0.78,
-    );
+    reveal(tl, id, '.pi-modes__url', 0.7, { x: -8, duration: 0.4, stagger: 0.09 });
+    reveal(tl, id, '.pi-modes__desc', 0.78, { duration: 0.4, stagger: 0.09 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -812,26 +692,11 @@ const layersScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('layers-in', 0.7);
-    tl.fromTo(
-      sel(id, '.pi-layer'),
-      { opacity: 0, y: 18 },
-      { opacity: 1, y: 0, duration: 0.6, stagger: 0.16, ease: 'expo.out' },
-      0.7,
-    );
+    reveal(tl, id, '.pi-layer', 0.7, { y: 18, duration: 0.6, stagger: 0.16 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -885,33 +750,13 @@ const authorScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('body-in', 0.6);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.6,
-    );
+    reveal(tl, id, '.pi-body', 0.6, { y: 10, duration: 0.5 });
     tl.addLabel('shape-in', 1.0);
-    tl.fromTo(
-      sel(id, '.pi-code'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.6, ease: 'expo.out' },
-      1.0,
-    );
+    reveal(tl, id, '.pi-code', 1.0, { y: 12, duration: 0.6 });
     tl.to({}, { duration: 1.6 });
   },
 });
@@ -956,19 +801,9 @@ const selfScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('display-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-display__w'),
-      { opacity: 0, y: 16 },
-      { opacity: 1, y: 0, duration: 0.6, stagger: 0.07, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-display__w', 0, { y: 16, duration: 0.6, stagger: 0.07 });
     tl.addLabel('sub-in', 1.0);
-    tl.fromTo(
-      sel(id, '.pi-body'),
-      { opacity: 0, y: 10 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      1.0,
-    );
+    reveal(tl, id, '.pi-body', 1.0, { y: 10, duration: 0.5 });
     tl.to({}, { duration: 1.4 });
   },
 });
@@ -1042,26 +877,11 @@ const outroScene = buildScene({
   },
   beats: (tl, id) => {
     tl.addLabel('eyebrow-in', 0);
-    tl.fromTo(
-      sel(id, '.pi-eyebrow'),
-      { opacity: 0, y: 6 },
-      { opacity: 1, y: 0, duration: 0.4, ease: 'expo.out' },
-      0,
-    );
+    reveal(tl, id, '.pi-eyebrow', 0, { y: 6, duration: 0.4 });
     tl.addLabel('heading-in', 0.25);
-    tl.fromTo(
-      sel(id, '.pi-heading'),
-      { opacity: 0, y: 12 },
-      { opacity: 1, y: 0, duration: 0.5, ease: 'expo.out' },
-      0.25,
-    );
+    reveal(tl, id, '.pi-heading', 0.25, { y: 12, duration: 0.5 });
     tl.addLabel('rows-in', 0.7);
-    tl.fromTo(
-      sel(id, '.pi-try'),
-      { opacity: 0, x: -8 },
-      { opacity: 1, x: 0, duration: 0.45, stagger: 0.13, ease: 'expo.out' },
-      0.7,
-    );
+    reveal(tl, id, '.pi-try', 0.7, { x: -8, duration: 0.45, stagger: 0.13 });
     tl.to({}, { duration: 1.6 });
   },
 });

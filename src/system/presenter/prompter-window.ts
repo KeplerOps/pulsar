@@ -1,14 +1,8 @@
 // Pulsar L2 — prompter window helper.
 //
-// `openPrompterWindow(url)` spawns a separate browser window booted
-// in `mode=prompter`. The runtime's `renderPrompter` adapter in the
-// spawned window receives the prompter script and renders it (the L2
-// system layer ships `createChromePrompterRenderer` below, which the
-// workbench bootstrap wires in `src/main.ts`).
-//
-// Because pulsar has end-to-end prompter wiring (loader-side
-// lifecycle bypass + buildPrompterScript caption aggregation), the
-// prompter window just needs to open the same URL with mode=prompter.
+// `openPrompterWindow(url)` spawns a separate browser window booted in
+// `mode=prompter` at the same URL; the spawned window's `renderPrompter`
+// adapter (`createChromePrompterRenderer` below) renders the script.
 
 import type { PrompterRenderer, PrompterScript } from '../../runtime/prompter';
 import {
@@ -89,12 +83,9 @@ export const openPrompterWindow = (
 };
 
 /**
- * A `PrompterRenderer` that renders the full prompter script into
- * the workbench chrome's lower-third slot (or a fallback `<aside>`).
- * Wired by `src/main.ts` as the workbench's prompter renderer.
- *
- * The renderer mounts a panel and returns a cleanup callback the
- * loader invokes on next navigation.
+ * A `PrompterRenderer` that paints the full prompter script into the
+ * chrome lower-third slot (or a fallback element). Mounts a panel and
+ * returns the cleanup callback the loader runs on next navigation.
  */
 export const createChromePrompterRenderer =
   (target: HTMLElement | (() => HTMLElement | null)): PrompterRenderer =>

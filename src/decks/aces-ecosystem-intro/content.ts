@@ -31,10 +31,9 @@ interface SceneSpec {
   readonly build: (root: HTMLElement, ownerDoc: Document) => void;
   readonly beats: (tl: TemplateTimeline, rootValue: string) => void;
   /**
-   * When true, the trailing tween is extended to an
-   * effectively-indefinite duration so the master never reaches its
-   * natural end — `skip-backward` from the end of the deck still seeks
-   * to an earlier segment instead of operating on a torn-down master.
+   * Extend the trailing tween to an indefinite hold so the master never
+   * ends and `skip-backward` keeps working past the deck's last scene.
+   * Only the final scene sets it.
    */
   readonly holdForever?: boolean;
 }
@@ -109,8 +108,7 @@ const buildScene = (spec: SceneSpec): SceneModule =>
     cleanup: cleanupTemplateRoot(spec.id),
   });
 
-// Restrained motion. Body fades in at 200ms; structural rows
-// stagger at 80ms; pull quotes fade up with a 12px nudge.
+// Every beat is the same restrained reveal: fade up from a small offset.
 const fadeIn = (
   tl: TemplateTimeline,
   id: string,

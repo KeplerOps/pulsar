@@ -11,48 +11,26 @@
 
 import type { AudioUnlockAdapter, AudioUnlockContext } from './scene-loader';
 
-/**
- * Minimal `HTMLElement`-like surface the adapter writes to. Production
- * `main.ts` passes a real `HTMLElement`; tests pass a fake. Click
- * dispatch / removal happens through these methods.
- */
+/** Minimal `HTMLElement`-like surface the adapter writes to (real button in prod, fake in tests). */
 export interface UnlockButtonElement {
   addEventListener(event: 'click', listener: () => void, options?: { once?: boolean }): void;
   removeEventListener(event: 'click', listener: () => void): void;
-  /**
-   * Remove this element from its parent. Production: `Element.remove()`.
-   * Tests: a no-op or a flag setter to verify cleanup.
-   */
+  /** Remove this element from its parent. Production: `Element.remove()`. */
   remove(): void;
 }
 
-/**
- * Mount callback the adapter invokes to attach the gesture surface to
- * the workbench. Decoupling the mount from a specific `Element` /
- * `appendChild` shape lets the production wiring stay compatible with
- * the real DOM (`(b) => stage.appendChild(b as unknown as Node)`) while
- * tests pass a fake that records the appended button — without forcing
- * the factory to know about `Node` or jsdom.
- */
-export type UnlockMount = (button: UnlockButtonElement) => void;
+/** Mount callback that attaches the gesture surface to the workbench. */
+export type UnlockMount<B extends UnlockButtonElement = UnlockButtonElement> = (button: B) => void;
 
 /**
- * Inputs to {@link createDomAudioUnlockAdapter}.
- *
- *  - `mount` is the callback that attaches the gesture surface to the
- *    workbench. When `null`, the adapter rejects with a clear
- *    navigation-level error (the gate IS the structural defense for
- *    PUL-F030; an inert seam would silently violate the requirement).
- *  - `createButton` builds the gesture surface. The adapter wires
- *    one click listener and one signal-abort listener; the factory
- *    is responsible for any pre-wiring (label, attributes, type).
- *    Production `main.ts` builds a `<button data-pulsar-audio-
- *    unlock="gesture">Start presentation</button>`; tests build a
- *    minimal fake with an `addEventListener` / `remove` shape.
+ * Inputs to {@link createDomAudioUnlockAdapter}, generic over the concrete
+ * button type so production passes a real `HTMLButtonElement` (no cast).
+ * A `null` mount rejects at navigation time — the gate IS the structural
+ * defense for PUL-F030, so an inert seam would silently violate it.
  */
-export interface DomAudioUnlockHost {
-  readonly mount: UnlockMount | null;
-  readonly createButton: () => UnlockButtonElement;
+export interface DomAudioUnlockHost<B extends UnlockButtonElement = UnlockButtonElement> {
+  readonly mount: UnlockMount<B> | null;
+  readonly createButton: () => B;
 }
 
 /**
@@ -116,7 +94,9 @@ function onClickFired(state: GateState): void {
  * resolves/rejects. A signal abort before settlement rejects.
  * Contract verified by `tests/runtime/audio-unlock-dom.test.ts`.
  */
-export function createDomAudioUnlockAdapter(host: DomAudioUnlockHost): AudioUnlockAdapter {
+export function createDomAudioUnlockAdapter<B extends UnlockButtonElement>(
+  host: DomAudioUnlockHost<B>,
+): AudioUnlockAdapter {
   return (gate: AudioUnlockContext) =>
     new Promise<void>((resolve, reject) => {
       if (host.mount === null) {

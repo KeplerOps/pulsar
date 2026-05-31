@@ -1,12 +1,5 @@
-// Workbench-owned chrome surface — PUL-F031 / ADR-031 (ADR-007 / ADR-016).
-//
-// `main.ts` builds the chrome root and wires this controller into the
-// loader via `SceneLoaderOptions.chrome`; the loader calls `applyMode`
-// once per navigation before lifecycle work. Chrome is workbench-owned
-// (scenes never see a handle) and mounted ONCE — persistence across
-// scene navigations is structural, `applyMode` only flips visibility on
-// the existing element. The factory shape keeps the DOM behavior testable
-// against fakes.
+// Workbench chrome — PUL-F031. Mounted once (persistence is structural);
+// applyMode() only flips visibility on the existing element.
 
 import { profileFor } from './mode-profile';
 import { NAVIGATION_MODES, type NavigationMode } from './navigation';
@@ -20,37 +13,20 @@ export interface WorkbenchChromeElement {
 }
 
 /**
- * Mount callback that attaches the chrome surface, decoupled from a
- * specific `Node` / `appendChild` shape so tests can pass a fake.
+ * Inputs to {@link createDomWorkbenchChrome}, generic over the concrete
+ * element type so production passes a real `HTMLElement` (no cast) and
+ * tests pass a fake. `mount` / `createSurface` each run once at construction.
  */
-export type WorkbenchChromeMount = (element: WorkbenchChromeElement) => void;
-
-/**
- * Inputs to {@link createDomWorkbenchChrome}. `mount` / `createSurface`
- * are each called exactly once during construction — chrome MUST exist
- * before the first navigation event.
- */
-export interface WorkbenchChromeHost {
-  readonly mount: WorkbenchChromeMount;
-  readonly createSurface: () => WorkbenchChromeElement;
+export interface WorkbenchChromeHost<E extends WorkbenchChromeElement = WorkbenchChromeElement> {
+  readonly mount: (element: E) => void;
+  readonly createSurface: () => E;
 }
 
-/**
- * Returned by {@link createDomWorkbenchChrome} and wired into
- * `SceneLoaderOptions.chrome`. `dispose()` removes the surface and
- * silences later `applyMode` calls (run from HMR cleanup).
- */
+/** Controller wired into `SceneLoaderOptions.chrome`; inert after `dispose()`. */
 export interface WorkbenchChromeController {
-  /**
-   * Apply the effective mode to the surface (visibility attr + `hidden`),
-   * a forced-visibility override winning over the mode mapping. Inert post-dispose.
-   */
+  /** Apply mode visibility (forced override wins over the mode mapping). Inert post-dispose. */
   applyMode(mode: NavigationMode): void;
-  /**
-   * Override mode-derived visibility for chrome-opted-out compositions
-   * (`behavior.chrome: 'hidden'`); `null` clears it. The loader sets it
-   * BEFORE `applyMode` each navigation.
-   */
+  /** Force visibility for chrome-opted-out compositions; loader sets it before `applyMode`. */
   setForcedVisibility(visibility: 'hidden' | null): void;
   /** Enable/disable composition-scoped atmospheric chrome (opt-in per deck). */
   setAtmosphere(atmosphere: 'cinematic' | null): void;
@@ -59,10 +35,9 @@ export interface WorkbenchChromeController {
 }
 
 /**
- * Pure mapping from workbench mode to chrome visibility (PUL-F031):
- * `present` shows chrome, `standalone` / `screenshot` hide it, others
- * default to visible. The extensibility seam — a new mode extends the
- * mode profile, not scenes / manifests / the resolver.
+ * Pure mode→visibility mapping (PUL-F031): `standalone` / `screenshot`
+ * hide chrome, all other modes show it. A new mode extends the mode
+ * profile, not scenes / manifests / the resolver.
  */
 export function chromeVisibilityFor(mode: NavigationMode): 'visible' | 'hidden' {
   return profileFor(mode).chromeVisibility;
@@ -74,10 +49,11 @@ const ATMOSPHERE_ATTR = 'data-pulsar-chrome-atmosphere';
 /**
  * Build a {@link WorkbenchChromeController} over a DOM-shaped surface.
  * Eager: `createSurface()` then `mount()` run before returning, so chrome
- * exists before the first navigation (PUL-F031). `applyMode` only flips
- * visibility on the same element, so the surface persists across navigations.
+ * exists before the first navigation (PUL-F031).
  */
-export function createDomWorkbenchChrome(host: WorkbenchChromeHost): WorkbenchChromeController {
+export function createDomWorkbenchChrome<E extends WorkbenchChromeElement>(
+  host: WorkbenchChromeHost<E>,
+): WorkbenchChromeController {
   const element = host.createSurface();
   host.mount(element);
   let disposed = false;

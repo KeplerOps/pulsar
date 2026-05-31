@@ -101,9 +101,7 @@ export const createKeyboardPresenterSource = (
       opts.onHome?.();
       return;
     }
-    // Snapshot via .slice() so a handler that unsubscribes mid-loop
-    // doesn't skip a later handler. for-of on a real Set iterator
-    // would mutate-during-iteration.
+    // Snapshot so a handler that unsubscribes mid-loop can't skip a later one.
     const snapshot = Array.from(handlers);
     for (const h of snapshot) {
       h({ kind: action });
