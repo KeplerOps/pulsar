@@ -57,3 +57,4 @@ Each ADR includes:
 | [029](029-present-mode-audio-unlock-gate.md) | Present-Mode Audio Unlock Gate Before Composition Start | Accepted |
 | [030](030-browser-support.md) | Browser Support Contract | Accepted |
 | [031](031-workbench-chrome-surface.md) | Workbench Chrome Surface — Workbench-Owned, Mode-Governed, Persistent | Accepted |
+| [032](032-single-imperative-scene-control-plane.md) | Single Imperative Scene Control Plane | Accepted (supersedes master-timeline sequencing and speculative mode decisions) |
