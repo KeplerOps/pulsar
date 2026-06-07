@@ -308,8 +308,10 @@ export interface RunModuleDeps {
   /** Navigation supersession signal (jump away / teardown the whole run). */
   readonly navSignal: AbortSignal;
   readonly onError?: (err: unknown) => void;
-  /** Build the per-scene ctx (e.g. WorkbenchSceneCtx) the SceneModule hooks consume. */
-  readonly buildCtx: (scene: SceneModule) => unknown;
+  /** Build the per-scene ctx (e.g. WorkbenchSceneCtx) the SceneModule hooks consume. `index` is the scene's position in the slice (disambiguates repeated scene ids). */
+  readonly buildCtx: (scene: SceneModule, index: number) => unknown;
+  /** Optional per-scene asset preload, awaited before the scene mounts. */
+  readonly preload?: (scene: SceneModule) => void | Promise<void>;
 }
 
 /** Mount the scene, play its standalone timeline to completion, then hold for advance. */
@@ -333,10 +335,15 @@ async function playModuleBody(
 }
 
 /** Run one real SceneModule to its end and tear it down. Returns why it ended. */
-async function runOneModule(scene: SceneModule, deps: RunModuleDeps): Promise<EndReason> {
+async function runOneModule(
+  scene: SceneModule,
+  index: number,
+  deps: RunModuleDeps,
+): Promise<EndReason> {
   const gate = createEndGate(deps);
-  const ctx = deps.buildCtx(scene);
+  const ctx = deps.buildCtx(scene, index);
   try {
+    if (deps.preload !== undefined) await deps.preload(scene);
     await playModuleBody(scene, ctx, gate.signal);
   } catch (err) {
     if (!isSceneCancelled(err)) report(deps, err);
@@ -361,9 +368,9 @@ export async function runSceneModules(
   scenes: readonly SceneModule[],
   deps: RunModuleDeps,
 ): Promise<void> {
-  for (const scene of scenes) {
+  for (let index = 0; index < scenes.length; index++) {
     if (deps.navSignal.aborted) return;
-    const reason = await runOneModule(scene, deps);
+    const reason = await runOneModule(scenes[index] as SceneModule, index, deps);
     if (reason === 'superseded') return;
   }
 }
