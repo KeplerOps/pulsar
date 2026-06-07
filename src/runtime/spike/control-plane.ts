@@ -16,6 +16,7 @@ import { clearAct, clearBrand, clearTitle, resetFlickers } from '../../system/ch
 import type { ChromeSlots } from '../../system/chrome';
 import type { AudioService } from '../audio';
 import type { PresenterController } from '../presenter';
+import type { SceneModule } from '../scene';
 
 /** Thrown out of `sleep`/`hold`/`runTimeline` when the scene is ended. */
 export class SceneCancelled extends Error {
@@ -104,7 +105,7 @@ export interface RunDeps {
 
 type EndReason = 'advance' | 'superseded';
 
-const report = (deps: RunDeps, err: unknown): void => {
+const report = (deps: { readonly onError?: (err: unknown) => void }, err: unknown): void => {
   if (deps.onError !== undefined) {
     try {
       deps.onError(err);
@@ -127,8 +128,19 @@ const resetChrome = (chrome: ChromeSlots): void => {
   chrome.center.innerHTML = '';
 };
 
-/** Run one scene to its end and tear it down. Returns why it ended. */
-async function runScene(scene: SpikeScene, deps: RunDeps): Promise<EndReason> {
+interface EndGate {
+  /** Fires when the scene ends (presenter advance OR navigation supersession). */
+  readonly signal: AbortSignal;
+  getReason(): EndReason;
+  /** Detach presenter + navigation listeners. Call in teardown. */
+  unwire(): void;
+}
+
+/** Wire presenter advance + navigation supersession into a single end signal. */
+function createEndGate(deps: {
+  readonly presenter?: PresenterController;
+  readonly navSignal: AbortSignal;
+}): EndGate {
   const end = new AbortController();
   let reason: EndReason | null = null;
   const finish = (r: EndReason): void => {
@@ -136,60 +148,80 @@ async function runScene(scene: SpikeScene, deps: RunDeps): Promise<EndReason> {
     reason = r;
     end.abort();
   };
-
   const unsub = deps.presenter?.subscribe((cmd) => {
     if (cmd.kind === 'advance' || cmd.kind === 'skip-forward') finish('advance');
   });
   const onNav = (): void => finish('superseded');
   if (deps.navSignal.aborted) finish('superseded');
   else deps.navSignal.addEventListener('abort', onNav, { once: true });
+  return {
+    signal: end.signal,
+    getReason: () => reason ?? 'advance',
+    unwire: () => {
+      unsub?.();
+      deps.navSignal.removeEventListener('abort', onNav);
+    },
+  };
+}
 
+/** Resolve when the scene's end signal fires — the post-completion advance hold. */
+const holdUntilEnd = (signal: AbortSignal): Promise<void> =>
+  signal.aborted
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+
+/** Play `tl` to natural completion; reject `SceneCancelled` when the scene ends first. */
+const playUntilEnd = (tl: ControllableTimeline, endSignal: AbortSignal): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    if (endSignal.aborted) {
+      tl.kill();
+      reject(new SceneCancelled());
+      return;
+    }
+    const onEnd = (): void => {
+      tl.kill();
+      reject(new SceneCancelled());
+    };
+    tl.eventCallback('onComplete', () => {
+      endSignal.removeEventListener('abort', onEnd);
+      resolve();
+    });
+    endSignal.addEventListener('abort', onEnd, { once: true });
+    tl.play();
+  });
+
+/** Run one async-body (spike) scene to its end and tear it down. */
+async function runScene(scene: SpikeScene, deps: RunDeps): Promise<EndReason> {
+  const gate = createEndGate(deps);
   const disposers: Array<() => void> = [];
   const setTimer = deps.setTimer ?? ((cb, ms) => setTimeout(cb, ms)); // PUL-Q001-allow: control-plane dwell timer; screenshot mode is removed under ADR-032 and never runs scenes through this path.
 
   const sleep = (ms: number): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      if (end.signal.aborted) {
+      if (gate.signal.aborted) {
         reject(new SceneCancelled());
         return;
       }
       const timer = setTimer(() => {
-        end.signal.removeEventListener('abort', onEnd);
+        gate.signal.removeEventListener('abort', onEnd);
         resolve();
       }, ms) as ReturnType<typeof setTimeout>;
       const onEnd = (): void => {
         clearTimeout(timer);
         reject(new SceneCancelled());
       };
-      end.signal.addEventListener('abort', onEnd, { once: true });
+      gate.signal.addEventListener('abort', onEnd, { once: true });
     });
 
   const hold = (): Promise<never> =>
     new Promise<never>((_resolve, reject) => {
-      if (end.signal.aborted) {
+      if (gate.signal.aborted) {
         reject(new SceneCancelled());
         return;
       }
-      end.signal.addEventListener('abort', () => reject(new SceneCancelled()), { once: true });
-    });
-
-  const runTimeline = (tl: ControllableTimeline): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      if (end.signal.aborted) {
-        tl.kill();
-        reject(new SceneCancelled());
-        return;
-      }
-      const onEnd = (): void => {
-        tl.kill();
-        reject(new SceneCancelled());
-      };
-      tl.eventCallback('onComplete', () => {
-        end.signal.removeEventListener('abort', onEnd);
-        resolve();
-      });
-      end.signal.addEventListener('abort', onEnd, { once: true });
-      tl.play();
+      gate.signal.addEventListener('abort', () => reject(new SceneCancelled()), { once: true });
     });
 
   const spawn = (fn: () => Promise<void>): void => {
@@ -198,36 +230,28 @@ async function runScene(scene: SpikeScene, deps: RunDeps): Promise<EndReason> {
     });
   };
 
-  const dispose = (fn: () => void): void => {
-    disposers.push(fn);
-  };
-
   const ctx: SceneCtx = {
     chrome: deps.chrome,
     audio: deps.audio,
     gsap: deps.gsap,
-    signal: end.signal,
+    signal: gate.signal,
     sleep,
     hold,
-    runTimeline,
+    runTimeline: (tl) => playUntilEnd(tl, gate.signal),
     spawn,
-    dispose,
+    dispose: (fn) => {
+      disposers.push(fn);
+    },
   };
 
   try {
     await scene.run(ctx);
-    // Body completed on its own → hold at the scene boundary until the
-    // presenter advances (or navigation supersedes).
-    if (reason === null) {
-      await new Promise<void>((resolve) => {
-        end.signal.addEventListener('abort', () => resolve(), { once: true });
-      });
-    }
+    // Body completed on its own → hold at the boundary until advance / supersede.
+    await holdUntilEnd(gate.signal);
   } catch (err) {
     if (!isSceneCancelled(err)) report(deps, err);
   } finally {
-    unsub?.();
-    deps.navSignal.removeEventListener('abort', onNav);
+    gate.unwire();
     // Teardown LIFO; one throwing disposer must not skip the rest.
     for (let i = disposers.length - 1; i >= 0; i--) {
       try {
@@ -239,7 +263,7 @@ async function runScene(scene: SpikeScene, deps: RunDeps): Promise<EndReason> {
     resetChrome(deps.chrome);
   }
 
-  return reason ?? 'advance';
+  return gate.getReason();
 }
 
 /**
@@ -251,6 +275,95 @@ export async function runScenes(scenes: readonly SpikeScene[], deps: RunDeps): P
   for (const scene of scenes) {
     if (deps.navSignal.aborted) return;
     const reason = await runScene(scene, deps);
+    if (reason === 'superseded') return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Real SceneModule driver — runs the EXISTING create/timeline/cleanup contract
+// through the same imperative loop, no master timeline. The committed decks
+// (pulsar-intro, aces) and every `buildTemplateScene` ride on this unchanged:
+// per scene we mount via create(), play the per-scene GSAP timeline standalone
+// and await its completion, hold for advance, then cleanup() and reset chrome.
+// ---------------------------------------------------------------------------
+
+/** A SceneModule's `timeline(ctx)` value is playable when it quacks like a GSAP timeline. */
+const asPlayableTimeline = (value: unknown): ControllableTimeline | null => {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as ControllableTimeline).play === 'function' &&
+    typeof (value as ControllableTimeline).kill === 'function' &&
+    typeof (value as ControllableTimeline).eventCallback === 'function'
+  ) {
+    return value as ControllableTimeline;
+  }
+  return null;
+};
+
+export interface RunModuleDeps {
+  readonly chrome: ChromeSlots;
+  readonly audio?: AudioService;
+  readonly presenter?: PresenterController;
+  /** Navigation supersession signal (jump away / teardown the whole run). */
+  readonly navSignal: AbortSignal;
+  readonly onError?: (err: unknown) => void;
+  /** Build the per-scene ctx (e.g. WorkbenchSceneCtx) the SceneModule hooks consume. */
+  readonly buildCtx: (scene: SceneModule) => unknown;
+}
+
+/** Mount the scene, play its standalone timeline to completion, then hold for advance. */
+async function playModuleBody(
+  scene: SceneModule,
+  ctx: unknown,
+  endSignal: AbortSignal,
+): Promise<void> {
+  await Promise.resolve(scene.create(ctx));
+  if (endSignal.aborted) return;
+  const tl = asPlayableTimeline(scene.timeline(ctx));
+  if (tl !== null) {
+    try {
+      await playUntilEnd(tl, endSignal);
+    } catch (err) {
+      if (!isSceneCancelled(err)) throw err;
+    }
+  }
+  // Scene content done → hold at the boundary until advance / supersession.
+  await holdUntilEnd(endSignal);
+}
+
+/** Run one real SceneModule to its end and tear it down. Returns why it ended. */
+async function runOneModule(scene: SceneModule, deps: RunModuleDeps): Promise<EndReason> {
+  const gate = createEndGate(deps);
+  const ctx = deps.buildCtx(scene);
+  try {
+    await playModuleBody(scene, ctx, gate.signal);
+  } catch (err) {
+    if (!isSceneCancelled(err)) report(deps, err);
+  } finally {
+    gate.unwire();
+    try {
+      await Promise.resolve(scene.cleanup(ctx));
+    } catch (err) {
+      report(deps, err);
+    }
+    resetChrome(deps.chrome);
+  }
+  return gate.getReason();
+}
+
+/**
+ * Sequence an ordered list of real SceneModules through the control plane.
+ * Drop-in replacement for `composeMasterTimeline` sequencing: run scene →
+ * await its end → tear down → next; supersession stops the whole run.
+ */
+export async function runSceneModules(
+  scenes: readonly SceneModule[],
+  deps: RunModuleDeps,
+): Promise<void> {
+  for (const scene of scenes) {
+    if (deps.navSignal.aborted) return;
+    const reason = await runOneModule(scene, deps);
     if (reason === 'superseded') return;
   }
 }

@@ -13,10 +13,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type PresenterCommand, createPresenterController } from '../../src/runtime/presenter';
+import { defineScene } from '../../src/runtime/scene';
 import {
   type ControllableTimeline,
   type GsapLike,
   type SpikeScene,
+  runSceneModules,
   runScenes,
 } from '../../src/runtime/spike/control-plane';
 import { mountChromeSlots } from '../../src/system/chrome';
@@ -186,5 +188,83 @@ describe('scene control plane', () => {
 
     expect(trace.disposed).toBe(1);
     expect(ctx.chrome.title.innerHTML).not.toContain('B');
+  });
+
+  it('drives the real SceneModule contract (create -> timeline -> cleanup) across scenes', async () => {
+    const calls: string[] = [];
+    const fakeTimeline = (): ControllableTimeline => {
+      let onComplete: (() => void) | null = null;
+      const tl: ControllableTimeline = {
+        from: () => tl,
+        to: () => tl,
+        set: () => tl,
+        eventCallback: (_type, cb) => {
+          onComplete = cb;
+          return tl;
+        },
+        play: () => {
+          setTimeout(() => onComplete?.(), 0);
+          return tl;
+        },
+        kill: () => tl,
+      };
+      return tl;
+    };
+    const sceneA = defineScene({
+      id: 'a',
+      title: 'A',
+      create: () => {
+        calls.push('a:create');
+      },
+      timeline: () => {
+        calls.push('a:timeline');
+        return fakeTimeline();
+      },
+      cleanup: () => {
+        calls.push('a:cleanup');
+      },
+    });
+    const sceneB = defineScene({
+      id: 'b',
+      title: 'B',
+      create: () => {
+        calls.push('b:create');
+      },
+      timeline: () => {
+        calls.push('b:timeline');
+        return fakeTimeline();
+      },
+      cleanup: () => {
+        calls.push('b:cleanup');
+      },
+    });
+
+    const ctx = setup();
+    const done = runSceneModules([sceneA, sceneB], {
+      chrome: ctx.chrome,
+      presenter: ctx.deps.presenter,
+      navSignal: ctx.navController.signal,
+      onError: () => {},
+      buildCtx: () => ({}),
+    });
+
+    // scene A mounts, its timeline plays to completion, then holds for advance
+    await vi.advanceTimersByTimeAsync(5);
+    expect(calls).toEqual(['a:create', 'a:timeline']);
+
+    ctx.emit('advance'); // end A -> cleanup A -> mount B
+    await vi.advanceTimersByTimeAsync(5);
+    ctx.emit('advance'); // end B -> cleanup B -> run completes
+    await vi.advanceTimersByTimeAsync(5);
+    await done;
+
+    expect(calls).toEqual([
+      'a:create',
+      'a:timeline',
+      'a:cleanup',
+      'b:create',
+      'b:timeline',
+      'b:cleanup',
+    ]);
   });
 });
