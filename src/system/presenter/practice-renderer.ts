@@ -1,15 +1,8 @@
 // Pulsar L2 — practice (speaker-notes) renderer.
 //
-// Reads the active navigation's resolved scene captions and renders
-// them into the chrome lower-third slot for the presenter to read
-// from. Toggleable via a keyboard binding (the workbench wires the
-// `KeyN` key by default; the toggle is a state field on the renderer
-// handle).
-//
-// This is the minimum viable practice mode: caption text wrapped to
-// 60-character chunks, scrollable, rendered into the lower-third
-// slot. A future iteration can layer chunk paging, progress, or
-// per-scene navigation.
+// Renders the active scene's captions into the chrome lower-third slot,
+// wrapped to ~60-char chunks and scrollable. Toggled via the workbench's
+// `KeyN` binding; visibility is a state field on the returned handle.
 
 import type { Caption } from '../../runtime/scene';
 

@@ -1,24 +1,17 @@
-// Pulsar L2 template — presenter-driven scene tests.
-//
-// Covers the lifecycle scaffolding: `create` (ctx validation, the
-// abort-prior-run path), `timeline` (the gated body kick-off and its
-// error arm), and `cleanup` (signal flip, deck `cleanup` invocation,
-// and the throwing-cleanup catch arm).
+// Pulsar L2 template — presenter-driven scene tests: ctx validation,
+// the gated body kick-off + its error arm, and cleanup (signal flip,
+// deck cleanup invocation, throwing-cleanup catch arm).
 
 import { gsap } from 'gsap';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PresenterCommand, PresenterController } from '../../src/runtime/presenter';
 import type { ChromeSlots } from '../../src/system/chrome';
 import {
   type PresenterDrivenCtx,
   presenterDrivenScene,
 } from '../../src/system/templates/presenter-driven';
+import { noopPresenterController as noopPresenter } from '../support/fakes';
 
 const flushMicrotasks = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
-const noopPresenter: PresenterController = {
-  subscribe: (_handler: (cmd: PresenterCommand) => void) => () => {},
-};
 
 const fakeChrome = {} as unknown as ChromeSlots;
 

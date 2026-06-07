@@ -53,10 +53,10 @@ import {
 //     unloads every sound the service registered on navigation
 //     abort / dispose / happy-path completion. A scene's audio
 //     handle cannot survive the navigation.
-//   - `MasterTimeline.kill()` (`src/runtime/timeline.ts`) kills the
-//     composed master on natural completion AND on abort;
-//     `composeMasterTimeline` kills every scene-returned timeline
-//     on compose failure. A scene's timeline object cannot survive
+//   - The control plane (`src/runtime/spike/control-plane.ts`) kills
+//     each scene's standalone GSAP timeline on natural completion AND
+//     on scene end (advance / navigation supersession), then runs the
+//     scene's `cleanup(ctx)`. A scene's timeline object cannot survive
 //     the navigation.
 // Per-scene-within-composition cleanup of an *ungrouped* audio cue
 // or an *unreturned* default-playing timeline is a runtime-facade
@@ -2149,10 +2149,10 @@ describe('PUL-Q004 — resource cleanup completeness (source scan)', () => {
     it('runtime source modules under `src/runtime/` are OUT of scope by design (signal-bound listeners live there)', () => {
       // The runtime owns signal-bound `addEventListener` use across
       // `audio.ts`, `presenter.ts`, `navigation.ts`,
-      // `scene-loader.ts`, `timeline.ts`, and `audio-unlock-dom.ts`.
-      // PUL-Q004 scopes the source scan to `src/scenes/**` so those
-      // canonical activation-scope listener attachments do NOT
-      // require per-line exemptions.
+      // `present-loader.ts`, `spike/control-plane.ts`, and
+      // `audio-unlock-dom.ts`. PUL-Q004 scopes the source scan to
+      // `src/scenes/**` so those canonical activation-scope listener
+      // attachments do NOT require per-line exemptions.
       const runtimeRoot = join(SRC_ROOT, 'runtime');
       expect(statSync(runtimeRoot).isDirectory()).toBe(true);
       const sceneFiles = walkSourceFiles(SCENES_ROOT);

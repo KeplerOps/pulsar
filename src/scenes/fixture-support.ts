@@ -17,7 +17,7 @@
 // two unrelated fixture shapes.
 
 import { NAVIGATION_MODES } from '../runtime/navigation';
-import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
+import type { WorkbenchSceneCtx } from '../runtime/scene-ctx';
 
 /** Minimal owner-document seam: the fixtures only call `createElement`. */
 export interface FixtureDomFactory {

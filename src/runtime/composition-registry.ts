@@ -120,7 +120,7 @@ export function createCompositionRegistry(
         if (entry.audioBed !== undefined) assertAudioBedDeclaration(entry.audioBed);
         const value: RegisteredComposition = {
           manifest: entry.manifest,
-          ...(entry.audioBed === undefined ? {} : { audioBed: entry.audioBed }),
+          ...(entry.audioBed ? { audioBed: entry.audioBed } : {}),
         };
         yield { id: entry.id, value };
       }

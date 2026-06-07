@@ -13,7 +13,7 @@ import {
   type UnlockMount,
   createDomAudioUnlockAdapter,
 } from '../../src/runtime/audio-unlock-dom';
-import type { AudioUnlockContext } from '../../src/runtime/scene-loader';
+import type { AudioUnlockContext } from '../../src/runtime/scene-loader-guard';
 
 interface FakeButton extends UnlockButtonElement {
   click(): void;

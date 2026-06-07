@@ -1,10 +1,6 @@
-// Pulsar L2 — audio cue authoring helper tests.
-//
-// Covers `playCue`, `fadeAndStop`, and `loadAndPlayCue`: the
-// undefined / disposed short-circuits, the happy paths, and the
-// fault-tolerant `try/catch` arms inside `fadeAndStop` (a fade on an
-// unloaded sound, a stop on an unknown id, and disposal racing the
-// post-fade stop).
+// Pulsar L2 — audio cue authoring helpers (playCue / fadeAndStop /
+// loadAndPlayCue): undefined/disposed short-circuits, happy paths, and
+// fadeAndStop's fault-tolerant try/catch arms.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioService } from '../../src/runtime/audio';

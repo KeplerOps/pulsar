@@ -24,15 +24,15 @@ export const actHeader = (id: string, content: ActHeaderContent): SceneModule =>
         buildChildren: (root, ownerDoc) => {
           const rail = ownerDoc.createElement('span');
           rail.setAttribute('class', 'act__rail');
-          root.appendChild?.(rail);
+          root.appendChild(rail);
           const num = ownerDoc.createElement('div');
           num.setAttribute('class', 'act__numeral');
           num.textContent = `Act ${content.act}`;
-          root.appendChild?.(num);
+          root.appendChild(num);
           const name = ownerDoc.createElement('h2');
           name.setAttribute('class', 'act__name');
           name.textContent = content.section;
-          root.appendChild?.(name);
+          root.appendChild(name);
         },
       });
     },

@@ -47,11 +47,11 @@ export const outlineTitle = (id: string, content: OutlineTitleContent): SceneMod
           const idx = ownerDoc.createElement('div');
           idx.setAttribute('class', 'outline__index');
           idx.textContent = `${prefix} ${numeral}`;
-          root.appendChild?.(idx);
+          root.appendChild(idx);
           const t = ownerDoc.createElement('h2');
           t.setAttribute('class', 'outline__title');
           t.textContent = content.title;
-          root.appendChild?.(t);
+          root.appendChild(t);
         },
       });
     },

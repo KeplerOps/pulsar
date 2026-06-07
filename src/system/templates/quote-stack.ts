@@ -32,12 +32,12 @@ export const quoteStack = (id: string, content: QuoteStackContent): SceneModule 
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const stack = ownerDoc.createElement('div');
           stack.setAttribute('class', 'stack');
           content.quotes.forEach((q, i) => {
@@ -45,15 +45,15 @@ export const quoteStack = (id: string, content: QuoteStackContent): SceneModule 
             art.setAttribute('style', `--stack-delay: ${500 + i * 620}ms`);
             const bq = ownerDoc.createElement('blockquote');
             bq.textContent = q.text;
-            art.appendChild?.(bq);
+            art.appendChild(bq);
             if (q.attribution !== undefined) {
               const cite = ownerDoc.createElement('cite');
               cite.textContent = q.attribution;
-              art.appendChild?.(cite);
+              art.appendChild(cite);
             }
-            stack.appendChild?.(art);
+            stack.appendChild(art);
           });
-          root.appendChild?.(stack);
+          root.appendChild(stack);
         },
       });
     },

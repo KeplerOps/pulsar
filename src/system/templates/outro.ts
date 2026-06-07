@@ -27,19 +27,19 @@ export const outro = (id: string, content: OutroContent): SceneModule =>
           const title = ownerDoc.createElement('h2');
           title.setAttribute('class', 'outro__title');
           title.textContent = content.title;
-          root.appendChild?.(title);
+          root.appendChild(title);
           if (content.subtitle !== undefined) {
             const sub = ownerDoc.createElement('p');
             sub.setAttribute('class', 'outro__subtitle');
             sub.textContent = content.subtitle;
-            root.appendChild?.(sub);
+            root.appendChild(sub);
           }
           if (content.qrSrc !== undefined) {
             const img = ownerDoc.createElement('img');
             img.setAttribute('class', 'outro__qr');
             img.setAttribute('src', content.qrSrc);
             img.setAttribute('alt', content.qrAlt ?? '');
-            root.appendChild?.(img);
+            root.appendChild(img);
           }
         },
       });

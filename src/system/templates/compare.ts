@@ -28,19 +28,19 @@ export const compare = (id: string, content: CompareContent): SceneModule =>
             const h = ownerDoc.createElement('h2');
             h.setAttribute('class', 'headline');
             h.textContent = content.headline;
-            root.appendChild?.(h);
+            root.appendChild(h);
           }
           const sides = ownerDoc.createElement('div');
           sides.setAttribute('class', 'sides');
           const left = ownerDoc.createElement('article');
           left.setAttribute('class', 'left');
           left.textContent = content.left;
-          sides.appendChild?.(left);
+          sides.appendChild(left);
           const right = ownerDoc.createElement('article');
           right.setAttribute('class', 'right');
           right.textContent = content.right;
-          sides.appendChild?.(right);
-          root.appendChild?.(sides);
+          sides.appendChild(right);
+          root.appendChild(sides);
         },
       });
     },

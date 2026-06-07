@@ -41,7 +41,7 @@
 
 import { NAVIGATION_MODES } from '../runtime/navigation';
 import type { SceneModule } from '../runtime/scene';
-import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
+import type { WorkbenchSceneCtx } from '../runtime/scene-ctx';
 
 const ROOT_ATTR = 'data-pulsar-q008-root';
 const TEXT_ATTR = 'data-pulsar-q008-text';
@@ -254,8 +254,8 @@ export const domCssAccessibilityFixtureScene: SceneModule = {
     // composer treats both as "no timeline contribution"
     // (`src/runtime/timeline.ts` null/undefined branch), so the two
     // exit shapes are semantically identical to the composer; the
-    // structural difference keeps the function honest under
-    // SonarCloud's invariant-return rule.
+    // explicit early `return null` on invalid ctx documents that the
+    // guard short-circuits the side effect.
     if (!isFixtureCtx(ctx)) return null;
     const stage = ctx.stage;
     if (stage !== null) {

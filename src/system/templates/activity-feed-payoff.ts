@@ -12,7 +12,6 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
 
@@ -57,36 +56,36 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
               const eb = ownerDoc.createElement('p');
               eb.setAttribute('class', 'afp__eyebrow');
               eb.textContent = content.eyebrow;
-              head.appendChild?.(eb);
+              head.appendChild(eb);
             }
             if (content.headline !== undefined) {
               const h = ownerDoc.createElement('h2');
               h.setAttribute('class', 'afp__headline');
               h.textContent = content.headline;
-              head.appendChild?.(h);
+              head.appendChild(h);
             }
-            root.appendChild?.(head);
+            root.appendChild(head);
           }
           const grid = ownerDoc.createElement('div');
           grid.setAttribute('class', 'afp__grid');
           const feed = ownerDoc.createElement('ol');
           feed.setAttribute('class', 'afp__feed');
           feed.dataset.afpFeed = '';
-          grid.appendChild?.(feed);
+          grid.appendChild(feed);
           const payoff = ownerDoc.createElement('div');
           payoff.setAttribute('class', 'afp__payoff');
           if (content.payoff.title !== undefined) {
             const pt = ownerDoc.createElement('h3');
             pt.setAttribute('class', 'afp__payoff-title');
             pt.textContent = content.payoff.title;
-            payoff.appendChild?.(pt);
+            payoff.appendChild(pt);
           }
           const table = ownerDoc.createElement('dl');
           table.setAttribute('class', 'afp__payoff-table');
           table.dataset.afpPayoff = '';
-          payoff.appendChild?.(table);
-          grid.appendChild?.(payoff);
-          root.appendChild?.(grid);
+          payoff.appendChild(table);
+          grid.appendChild(payoff);
+          root.appendChild(grid);
         },
       });
     },
@@ -97,14 +96,8 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
         suffixDurationSeconds: 1.4,
         buildSegments: (innerTl) => {
           innerTl.addLabel('afp-in', 0);
-          innerTl.call(() => {
-            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-          });
+          innerTl.call(() => play(id, ctx, content));
           innerTl.to({}, { duration: 1 });
-        },
-        onDeactivate: () => {
-          const s = sessions.get(id);
-          if (s !== undefined) s.abortedFlag.aborted = true;
         },
       }),
     cleanup: (ctx) => {
@@ -113,20 +106,17 @@ export const activityFeedPayoff = (id: string, content: ActivityFeedPayoffConten
         s.abortedFlag.aborted = true;
         sessions.delete(id);
       }
-      const root = findTemplateRoot(ctx, id);
-      if (root !== null && typeof root.remove === 'function') root.remove();
+      findTemplateRoot(ctx, id)?.remove();
     },
   });
 
 const play = (id: string, ctx: unknown, content: ActivityFeedPayoffContent): void => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return;
-  const root = findTemplateRoot(ctx, id) as { querySelector?: (s: string) => unknown } | null;
-  if (root === null || typeof root.querySelector !== 'function') return;
-  const feed = root.querySelector('[data-afp-feed]') as HTMLElement | null;
-  const payoff = root.querySelector('[data-afp-payoff]') as HTMLElement | null;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return;
+  const feed = root.querySelector<HTMLElement>('[data-afp-feed]');
+  const payoff = root.querySelector<HTMLElement>('[data-afp-payoff]');
   if (feed === null || payoff === null) return;
   const ownerDoc = feed.ownerDocument;
-  if (ownerDoc === null) return;
   const base = content.typeBaseMs ?? 18;
   const session = { abortedFlag: { aborted: false } };
   sessions.set(id, session);

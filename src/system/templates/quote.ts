@@ -25,12 +25,12 @@ export const quote = (id: string, content: QuoteContent): SceneModule =>
           const q = ownerDoc.createElement('blockquote');
           q.setAttribute('class', 'quote__text');
           q.textContent = content.text;
-          root.appendChild?.(q);
+          root.appendChild(q);
           if (content.attribution !== undefined) {
             const attr = ownerDoc.createElement('p');
             attr.setAttribute('class', 'quote__attr');
             attr.textContent = `— ${content.attribution}`;
-            root.appendChild?.(attr);
+            root.appendChild(attr);
           }
         },
       });

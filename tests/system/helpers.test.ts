@@ -1,18 +1,7 @@
-// Pulsar L2 — helpers unit tests.
-//
-// Covers the contracts L2 templates and decks build on:
-//   - aSleep aborts on signal AND on presenter `advance`
-//   - holdUntilAdvance resolves on presenter `advance` AND on abort
-//   - typeNode reveals chars in order, snaps remaining on abort,
-//     emits `.glow` for `[[...]]` segments
-//   - typeInto snaps to full text on abort
-//   - markedTextHtml escapes user text and converts markers
-//   - fadeInCenter removes then re-adds `.show` after the rAF settle
-//   - fadeOutAudio ramps volume to 0 and pauses
-//   - srcMark mounts and removes
+// Pulsar L2 — helpers unit tests: abort/advance gating, char-typing,
+// marker HTML, center fade, audio fade-out, and src-mark mount.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PresenterCommand, PresenterController } from '../../src/runtime/presenter';
 import {
   aSleep,
   fadeInCenter,
@@ -24,30 +13,7 @@ import {
   typeInto,
   typeNode,
 } from '../../src/system/helpers';
-
-// ---------- presenter-controller stub ----------
-
-const makeController = (): {
-  controller: PresenterController;
-  emit: (cmd: PresenterCommand) => void;
-  subscriberCount: () => number;
-} => {
-  const handlers = new Set<(cmd: PresenterCommand) => void>();
-  return {
-    controller: {
-      subscribe: (handler) => {
-        handlers.add(handler);
-        return () => {
-          handlers.delete(handler);
-        };
-      },
-    },
-    emit: (cmd) => {
-      for (const h of [...handlers]) h(cmd);
-    },
-    subscriberCount: () => handlers.size,
-  };
-};
+import { createControllerFake as makeController } from '../support/fakes';
 
 // ---------- DOM stubs (no jsdom dependency for the simple cases) ----------
 

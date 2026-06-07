@@ -1,7 +1,7 @@
 // Shared error-rendering helpers.
 //
-// Multiple subsystems (`composition-resolver`, `asset-preloader`,
-// `workbench-navigator`) need to fold an unknown thrown value into a
+// Multiple subsystems (`present-loader`, `asset-preloader`,
+// `scene-navigation`) need to fold an unknown thrown value into a
 // human-readable string for diagnostic messages. Centralizing the
 // "Error → message, otherwise stringify" predicate prevents drift
 // between subsystems and gives any future error-rendering rule
@@ -80,12 +80,12 @@ const DEFAULT_MAX_BRANCHES = Number.POSITIVE_INFINITY;
  *  - cyclic cause chains terminate via a per-walk visited set.
  *
  * The renderer is PUL-Q009's diagnostic seam: it surfaces the failing
- * scene id (already in the resolver's wrapping message) AND the
+ * scene id (already in the loader's wrapping message) AND the
  * per-asset paths (in `cause.errors[].message` from
  * `createAssetPreloader`) at the existing
  * `data-pulsar-navigation-error` / `onError` boundary, without
- * touching the lifecycle ordering invariants in
- * `composition-resolver.ts` or the AggregateError shape in
+ * touching the lifecycle ordering invariants in the control plane
+ * (`spike/control-plane.ts`) or the AggregateError shape in
  * `asset-preloader.ts`.
  */
 export function describeErrorDetailed(
@@ -135,12 +135,11 @@ function renderBranches(
 
 /**
  * Lifecycle phase keywords PUL-Q006 names in its statement: the three
- * `create` / `timeline` / `cleanup` hooks the scene contract owns
- * (`SceneFailurePhase` in `composition-resolver.ts` is the structured
- * source). Re-declared as a string-literal union here so this module
- * stays free of a `composition-resolver` import — `error.ts` is
- * upstream of the resolver in the dependency graph, and a runtime
- * `Error` formatter has no business depending on lifecycle plumbing.
+ * `create` / `timeline` / `cleanup` hooks the scene contract owns.
+ * Declared as a string-literal union here so this module stays free of
+ * a scene-lifecycle import — `error.ts` is upstream in the dependency
+ * graph, and a runtime `Error` formatter has no business depending on
+ * lifecycle plumbing.
  */
 export type ScenePhase = 'create' | 'timeline' | 'cleanup';
 
@@ -169,7 +168,7 @@ export interface SceneErrorContext {
   /**
    * The 0-based per-scene-id occurrence ordinal, when the diagnostic
    * concerns one occurrence of a composition that repeats a scene id
-   * (issue #99 — see `SceneActivation` in `composition-resolver.ts`).
+   * (issue #99 — see `SceneActivation` in `scene.ts`).
    * Occurrence `0` (the first / only use) renders bare, so a
    * single-occurrence diagnostic is byte-identical to one with no
    * `occurrence` supplied; only a later occurrence shows the ordinal.

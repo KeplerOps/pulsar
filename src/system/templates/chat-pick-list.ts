@@ -11,7 +11,6 @@ import {
   buildTemplateScene,
   buildTemplateTimeline,
   findTemplateRoot,
-  isTemplateCtx,
   mountTemplateRoot,
 } from './_shared';
 
@@ -57,13 +56,13 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
             const h = ownerDoc.createElement('span');
             h.setAttribute('class', 'cpl__prompt-handle');
             h.textContent = content.promptHandle;
-            prompt.appendChild?.(h);
+            prompt.appendChild(h);
           }
           const p = ownerDoc.createElement('p');
           p.setAttribute('class', 'cpl__prompt-text');
           p.textContent = content.promptMessage;
-          prompt.appendChild?.(p);
-          root.appendChild?.(prompt);
+          prompt.appendChild(p);
+          root.appendChild(prompt);
           const list = ownerDoc.createElement('ol');
           list.setAttribute('class', 'cpl__list');
           list.dataset.cplList = '';
@@ -76,23 +75,23 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
             const lab = ownerDoc.createElement('span');
             lab.setAttribute('class', 'cpl__label');
             lab.textContent = item.label;
-            li.appendChild?.(lab);
+            li.appendChild(lab);
             if (item.sub !== undefined) {
               const sub = ownerDoc.createElement('span');
               sub.setAttribute('class', 'cpl__sub');
               sub.textContent = item.sub;
-              li.appendChild?.(sub);
+              li.appendChild(sub);
             }
-            list.appendChild?.(li);
+            list.appendChild(li);
           });
-          root.appendChild?.(list);
+          root.appendChild(list);
           if (content.pickCaption !== undefined) {
             const cap = ownerDoc.createElement('p');
             cap.setAttribute('class', 'cpl__pick-caption');
             cap.dataset.cplCaption = '';
             cap.setAttribute('style', 'opacity:0');
             cap.textContent = content.pickCaption;
-            root.appendChild?.(cap);
+            root.appendChild(cap);
           }
         },
       });
@@ -104,14 +103,8 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
         suffixDurationSeconds: 1.4,
         buildSegments: (innerTl) => {
           innerTl.addLabel('cpl-in', 0);
-          innerTl.call(() => {
-            if (isTemplateCtx(ctx) && ctx.stage !== null) play(id, ctx, content);
-          });
+          innerTl.call(() => play(id, ctx, content));
           innerTl.to({}, { duration: 1.2 });
-        },
-        onDeactivate: () => {
-          const s = sessions.get(id);
-          if (s !== undefined) s.abortedFlag.aborted = true;
         },
       }),
     cleanup: (ctx) => {
@@ -120,24 +113,17 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
         s.abortedFlag.aborted = true;
         sessions.delete(id);
       }
-      const root = findTemplateRoot(ctx, id);
-      if (root !== null && typeof root.remove === 'function') root.remove();
+      findTemplateRoot(ctx, id)?.remove();
     },
   });
 
 const play = (id: string, ctx: unknown, content: ChatPickListContent): void => {
-  if (!isTemplateCtx(ctx) || ctx.stage === null) return;
-  const root = findTemplateRoot(ctx, id) as {
-    querySelector?: (s: string) => unknown;
-    querySelectorAll?: (s: string) => unknown;
-  } | null;
-  if (root === null || typeof root.querySelectorAll !== 'function') return;
-  const itemsRaw = root.querySelectorAll('[data-cpl-index]');
-  const items = (itemsRaw as { length: number; item(i: number): HTMLElement }) ?? null;
-  if (items === null) return;
+  const root = findTemplateRoot(ctx, id);
+  if (root === null) return;
+  const items = root.querySelectorAll<HTMLElement>('[data-cpl-index]');
   const stagger = content.staggerMs ?? 220;
   const pickAfter = content.pickAfterMs ?? 600;
-  const caption = root.querySelector?.('[data-cpl-caption]') as HTMLElement | null;
+  const caption = root.querySelector<HTMLElement>('[data-cpl-caption]');
   const session = { abortedFlag: { aborted: false } };
   sessions.set(id, session);
   void (async (): Promise<void> => {

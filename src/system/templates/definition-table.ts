@@ -33,12 +33,12 @@ export const definitionTable = (id: string, content: DefinitionTableContent): Sc
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const rows = ownerDoc.createElement('div');
           rows.setAttribute('class', 'rows');
           content.rows.forEach((r, i) => {
@@ -48,14 +48,14 @@ export const definitionTable = (id: string, content: DefinitionTableContent): Sc
             const modSuffix = r.mod === undefined ? '' : ` mod-${r.mod}`;
             cat.setAttribute('class', `cat${modSuffix}`);
             cat.textContent = r.cat;
-            art.appendChild?.(cat);
+            art.appendChild(cat);
             const rule = ownerDoc.createElement('span');
             rule.setAttribute('class', 'rule');
             rule.textContent = r.rule;
-            art.appendChild?.(rule);
-            rows.appendChild?.(art);
+            art.appendChild(rule);
+            rows.appendChild(art);
           });
-          root.appendChild?.(rows);
+          root.appendChild(rows);
         },
       });
     },

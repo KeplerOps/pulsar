@@ -25,12 +25,12 @@ export const centerpiece = (id: string, content: CenterpieceContent): SceneModul
           const q = ownerDoc.createElement('blockquote');
           q.setAttribute('class', 'centerpiece__quote');
           q.textContent = content.quote;
-          root.appendChild?.(q);
+          root.appendChild(q);
           if (content.attribution !== undefined) {
             const attr = ownerDoc.createElement('p');
             attr.setAttribute('class', 'centerpiece__attr');
             attr.textContent = content.attribution;
-            root.appendChild?.(attr);
+            root.appendChild(attr);
           }
         },
       });

@@ -7,6 +7,7 @@ import {
   assertCompositionManifest,
   isCompositionManifest,
 } from '../../src/runtime/composition';
+import { runValidatorFuzz } from './validator-fuzz';
 
 // ADR-002 §Composition manifests example fixtures, kept literally so
 // that any drift between the validator and the canonical examples
@@ -116,19 +117,18 @@ describe('CompositionManifest format (PUL-F003)', () => {
         );
       });
 
-      it.each<[string, unknown]>([
-        ['null', null],
-        ['undefined', undefined],
-        ['a number', 42],
-        ['an array', ['scene-a']],
-        ['an object', { id: 'scene-a' }],
-        ['empty string', ''],
-        ['Uppercase', 'Scene-A'],
-        ['underscore_id', 'scene_a'],
-      ])('rejects when id is %s (%j)', (_label, badId) => {
-        expect(() => assertCompositionManifest([{ id: badId }])).toThrow(
-          /^composition entry \[0\] is invalid: id /,
-        );
+      // Property fuzz over the entry `id` field across the wrong-type
+      // and non-kebab-id malformed classes, replacing the per-value
+      // `it.each`. The entry record is wrapped in a one-element manifest
+      // and the validator must name the `id` field.
+      it('rejects a malformed entry id across the malformed-input space (property fuzz)', () => {
+        runValidatorFuzz({
+          seed: 'composition-entry-id',
+          valid: () => ({ id: 'scene-a' }),
+          fields: [{ name: 'id', kind: 'kebab-id', messageField: 'id' }],
+          wrap: (record) => [record],
+          assert: assertCompositionManifest,
+        });
       });
     });
 

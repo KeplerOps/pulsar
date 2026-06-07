@@ -24,18 +24,37 @@ import {
   type AudioCueLogStopGroup,
   type AudioEngine,
   AudioError,
-  AudioGroupError,
-  AudioRangeError,
+  type AudioErrorCategory,
   type AudioSoundConfig,
-  AudioSoundError,
   type AudioSoundHandle,
-  AudioSourceError,
   type SoundDefinition,
   assertAudioBedDeclaration,
   createAudioService,
   createCueGate,
   noopAudioEngine,
 } from '../../src/runtime/audio';
+import { runValidatorFuzz } from './validator-fuzz';
+
+/**
+ * Assert `fn` throws an {@link AudioError} whose `category` discriminant
+ * is `category`. The audio service raises one error class carrying the
+ * failure-mode discriminant (no `src/` caller branches on a subclass),
+ * so these tests assert the category the old per-mode subclasses
+ * encoded — same failure-mode coverage, one assertion.
+ */
+const expectAudioError = (fn: () => unknown, category: AudioErrorCategory): void => {
+  let thrown: unknown;
+  let threw = false;
+  try {
+    fn();
+  } catch (error) {
+    threw = true;
+    thrown = error;
+  }
+  expect(threw, 'expected the call to throw an AudioError').toBe(true);
+  expect(thrown).toBeInstanceOf(AudioError);
+  expect((thrown as AudioError).category).toBe(category);
+};
 
 /* -------------------------------------------------------------------- *
  *  Fake engine — records every call so tests can assert delegation.
@@ -116,6 +135,22 @@ const buildService = (overrides: Partial<Parameters<typeof createAudioService>[1
 };
 
 /* -------------------------------------------------------------------- *
+ *  AudioError discriminant — the single error class
+ * -------------------------------------------------------------------- */
+
+describe('AudioError', () => {
+  it('carries a stable name, the category discriminant, and the cause', () => {
+    const cause = new Error('decode');
+    const err = new AudioError('range', 'volume out of range', { cause });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('AudioError');
+    expect(err.category).toBe('range');
+    expect(err.message).toBe('volume out of range');
+    expect(err.cause).toBe(cause);
+  });
+});
+
+/* -------------------------------------------------------------------- *
  *  Registration — `load`
  * -------------------------------------------------------------------- */
 
@@ -154,30 +189,31 @@ describe('createAudioService — load (C2 register a sound)', () => {
     const withSprite = (id: string, sprite: unknown): SoundDefinition =>
       ({ src: `/${id}.webm`, sprite }) as unknown as SoundDefinition;
     // Malformed shape: not an object / wrong tuple length / empty name.
-    expect(() => service.load('a', withSprite('a', 'oops'))).toThrow(AudioSoundError);
-    expect(() => service.load('b', withSprite('b', { x: [0] }))).toThrow(AudioSoundError);
-    expect(() => service.load('c', withSprite('c', { x: [0, 1, 2, 3] }))).toThrow(AudioSoundError);
-    expect(() => service.load('d', { src: '/d.webm', sprite: { '': [0, 100] } })).toThrow(
-      AudioSoundError,
+    expectAudioError(() => service.load('a', withSprite('a', 'oops')), 'sound');
+    expectAudioError(() => service.load('b', withSprite('b', { x: [0] })), 'sound');
+    expectAudioError(() => service.load('c', withSprite('c', { x: [0, 1, 2, 3] })), 'sound');
+    expectAudioError(
+      () => service.load('d', { src: '/d.webm', sprite: { '': [0, 100] } }),
+      'sound',
     );
     // Out-of-range offsets / durations.
-    expect(() => service.load('e', { src: '/e.webm', sprite: { x: [-1, 100] } })).toThrow(
-      AudioRangeError,
+    expectAudioError(
+      () => service.load('e', { src: '/e.webm', sprite: { x: [-1, 100] } }),
+      'range',
     );
-    expect(() =>
-      service.load('f', { src: '/f.webm', sprite: { x: [0, Number.POSITIVE_INFINITY] } }),
-    ).toThrow(AudioRangeError);
+    expectAudioError(
+      () => service.load('f', { src: '/f.webm', sprite: { x: [0, Number.POSITIVE_INFINITY] } }),
+      'range',
+    );
     // Non-boolean loop flag.
-    expect(() => service.load('g', withSprite('g', { x: [0, 100, 'yes'] }))).toThrow(
-      AudioSoundError,
-    );
+    expectAudioError(() => service.load('g', withSprite('g', { x: [0, 100, 'yes'] })), 'sound');
   });
 
-  it('rejects a non-kebab sound id with AudioSoundError', () => {
+  it("rejects a non-kebab sound id with an AudioError (category 'sound')", () => {
     const { service } = buildService();
-    expect(() => service.load('Stinger', { src: '/a.mp3' })).toThrow(AudioSoundError);
-    expect(() => service.load('two words', { src: '/a.mp3' })).toThrow(AudioSoundError);
-    expect(() => service.load('', { src: '/a.mp3' })).toThrow(AudioSoundError);
+    expectAudioError(() => service.load('Stinger', { src: '/a.mp3' }), 'sound');
+    expectAudioError(() => service.load('two words', { src: '/a.mp3' }), 'sound');
+    expectAudioError(() => service.load('', { src: '/a.mp3' }), 'sound');
   });
 
   it('validates the SoundDefinition payload shape at the runtime boundary', () => {
@@ -188,21 +224,22 @@ describe('createAudioService — load (C2 register a sound)', () => {
       (id: string, def: unknown): (() => void) =>
       () =>
         service.load(id, def as unknown as SoundDefinition);
-    expect(passDef('a', null)).toThrow(AudioSoundError);
-    expect(passDef('b', 'not-an-object')).toThrow(AudioSoundError);
-    expect(passDef('c', {})).toThrow(AudioSourceError); // missing src
-    expect(passDef('d', { src: 42 })).toThrow(AudioSourceError); // src wrong type
-    expect(passDef('e', { src: { not: 'array' } })).toThrow(AudioSourceError); // src wrong type
+    expectAudioError(passDef('a', null), 'sound');
+    expectAudioError(passDef('b', 'not-an-object'), 'sound');
+    expectAudioError(passDef('c', {}), 'source'); // missing src
+    expectAudioError(passDef('d', { src: 42 }), 'source'); // src wrong type
+    expectAudioError(passDef('e', { src: { not: 'array' } }), 'source'); // src wrong type
   });
 
   it('rejects re-registering an id with a different definition', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.load('bed', { src: '/audio/bed2.mp3' })).toThrow(AudioSoundError);
+    expectAudioError(() => service.load('bed', { src: '/audio/bed2.mp3' }), 'sound');
     service.load('fx', { src: '/audio/fx.webm', sprite: { laugh: [0, 1000] } });
-    expect(() =>
-      service.load('fx', { src: '/audio/fx.webm', sprite: { laugh: [0, 999] } }),
-    ).toThrow(AudioSoundError);
+    expectAudioError(
+      () => service.load('fx', { src: '/audio/fx.webm', sprite: { laugh: [0, 999] } }),
+      'sound',
+    );
   });
 
   it('is idempotent when re-registering an id with the same definition (shared SFX)', () => {
@@ -224,21 +261,19 @@ describe('createAudioService — load (C2 register a sound)', () => {
 
   it('rejects an empty source list', () => {
     const { service } = buildService();
-    expect(() => service.load('bed', { src: [] })).toThrow(AudioSourceError);
+    expectAudioError(() => service.load('bed', { src: [] }), 'source');
   });
 
   it('rejects an empty / non-string source URL', () => {
     const { service } = buildService();
-    expect(() => service.load('a', { src: '' })).toThrow(AudioSourceError);
-    expect(() => service.load('b', { src: ['/ok.mp3', ''] })).toThrow(AudioSourceError);
+    expectAudioError(() => service.load('a', { src: '' }), 'source');
+    expectAudioError(() => service.load('b', { src: ['/ok.mp3', ''] }), 'source');
   });
 
   it('rejects a disallowed source scheme when no slice allowlist is supplied', () => {
     const { service } = buildService();
-    expect(() => service.load('bed', { src: 'file:///etc/passwd.mp3' })).toThrow(AudioSourceError);
-    expect(() => service.load('bed', { src: '//cdn.example.com/bed.mp3' })).toThrow(
-      AudioSourceError,
-    );
+    expectAudioError(() => service.load('bed', { src: 'file:///etc/passwd.mp3' }), 'source');
+    expectAudioError(() => service.load('bed', { src: '//cdn.example.com/bed.mp3' }), 'source');
   });
 
   it('allows http(s) / data / blob and relative source URLs', () => {
@@ -253,13 +288,14 @@ describe('createAudioService — load (C2 register a sound)', () => {
     it('rejects a source not in allowedSources', () => {
       const { service } = buildService({ allowedSources: ['/audio/bed.mp3'] });
       expect(() => service.load('bed', { src: '/audio/bed.mp3' })).not.toThrow();
-      expect(() => service.load('typo', { src: '/audio/typo.mp3' })).toThrow(AudioSourceError);
+      expectAudioError(() => service.load('typo', { src: '/audio/typo.mp3' }), 'source');
     });
 
     it('rejects when one URL of a multi-source sound is undeclared', () => {
       const { service } = buildService({ allowedSources: ['/audio/bed.webm'] });
-      expect(() => service.load('bed', { src: ['/audio/bed.webm', '/audio/bed.mp3'] })).toThrow(
-        AudioSourceError,
+      expectAudioError(
+        () => service.load('bed', { src: ['/audio/bed.webm', '/audio/bed.mp3'] }),
+        'source',
       );
     });
 
@@ -268,7 +304,7 @@ describe('createAudioService — load (C2 register a sound)', () => {
       // in `scene.audio`; audio refuses it regardless because the
       // audio service runs its own scheme check on top of membership.
       const { service } = buildService({ allowedSources: ['file:///etc/passwd.mp3'] });
-      expect(() => service.load('x', { src: 'file:///etc/passwd.mp3' })).toThrow(AudioSourceError);
+      expectAudioError(() => service.load('x', { src: 'file:///etc/passwd.mp3' }), 'source');
     });
 
     it('skips the membership check when allowedSources is omitted', () => {
@@ -339,12 +375,12 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
 
   it('rejects playing an unregistered sound', () => {
     const { service } = buildService();
-    expect(() => service.play('ghost')).toThrow(AudioSoundError);
+    expectAudioError(() => service.play('ghost'), 'sound');
   });
 
   it('rejects playing with a non-kebab sound id', () => {
     const { service } = buildService();
-    expect(() => service.play('Bad Id')).toThrow(AudioSoundError);
+    expectAudioError(() => service.play('Bad Id'), 'sound');
   });
 
   it('plays a named sprite (C4)', () => {
@@ -357,13 +393,13 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
   it('rejects an unknown sprite name', () => {
     const { service } = buildService();
     service.load('fx', { src: '/audio/fx.webm', sprite: { laugh: [0, 1000] } });
-    expect(() => service.play('fx', { sprite: 'sob' })).toThrow(AudioSoundError);
+    expectAudioError(() => service.play('fx', { sprite: 'sob' }), 'sound');
   });
 
   it('rejects any sprite name on a sound with no sprites', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('bed', { sprite: 'laugh' })).toThrow(AudioSoundError);
+    expectAudioError(() => service.play('bed', { sprite: 'laugh' }), 'sound');
   });
 
   it('sets the loop flag on the play instance when loop is requested (C5)', () => {
@@ -405,16 +441,14 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
   it('rejects a non-numeric rate', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('bed', { rate: 'fast' as unknown as number })).toThrow(
-      AudioRangeError,
-    );
+    expectAudioError(() => service.play('bed', { rate: 'fast' as unknown as number }), 'range');
   });
 
   it('rejects a non-positive rate', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('bed', { rate: 0 })).toThrow(AudioRangeError);
-    expect(() => service.play('bed', { rate: -0.5 })).toThrow(AudioRangeError);
+    expectAudioError(() => service.play('bed', { rate: 0 }), 'range');
+    expectAudioError(() => service.play('bed', { rate: -0.5 }), 'range');
   });
 
   it('applies a per-play volume override to the play instance', () => {
@@ -427,9 +461,9 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
   it('rejects an out-of-range per-play volume', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('bed', { volume: -0.1 })).toThrow(AudioRangeError);
-    expect(() => service.play('bed', { volume: 1.5 })).toThrow(AudioRangeError);
-    expect(() => service.play('bed', { volume: Number.NaN })).toThrow(AudioRangeError);
+    expectAudioError(() => service.play('bed', { volume: -0.1 }), 'range');
+    expectAudioError(() => service.play('bed', { volume: 1.5 }), 'range');
+    expectAudioError(() => service.play('bed', { volume: Number.NaN }), 'range');
   });
 
   it('validates the PlayOptions payload shape at the runtime boundary', () => {
@@ -439,11 +473,11 @@ describe('createAudioService — play (C2 playback, C4 sprites, C5 looping)', ()
       (opts: unknown): (() => void) =>
       () =>
         service.play('bed', opts as Parameters<typeof service.play>[1]);
-    expect(passOpts('not-an-object')).toThrow(AudioSoundError);
-    expect(passOpts({ sprite: 42 })).toThrow(AudioSoundError);
-    expect(passOpts({ loop: 'true' })).toThrow(AudioSoundError);
-    expect(passOpts({ group: 99 })).toThrow(AudioGroupError);
-    expect(passOpts({ volume: 'loud' })).toThrow(AudioRangeError);
+    expectAudioError(passOpts('not-an-object'), 'sound');
+    expectAudioError(passOpts({ sprite: 42 }), 'sound');
+    expectAudioError(passOpts({ loop: 'true' }), 'sound');
+    expectAudioError(passOpts({ group: 99 }), 'group');
+    expectAudioError(passOpts({ volume: 'loud' }), 'range');
   });
 });
 
@@ -465,21 +499,21 @@ describe('createAudioService — fade (C3)', () => {
 
   it('rejects fading an unregistered sound', () => {
     const { service } = buildService();
-    expect(() => service.fade('ghost', 1, 0, 100)).toThrow(AudioSoundError);
+    expectAudioError(() => service.fade('ghost', 1, 0, 100), 'sound');
   });
 
   it('rejects out-of-range fade endpoints', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.fade('bed', 1.2, 0, 100)).toThrow(AudioRangeError);
-    expect(() => service.fade('bed', 1, -0.5, 100)).toThrow(AudioRangeError);
+    expectAudioError(() => service.fade('bed', 1.2, 0, 100), 'range');
+    expectAudioError(() => service.fade('bed', 1, -0.5, 100), 'range');
   });
 
   it('rejects a negative or non-finite fade duration', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.fade('bed', 1, 0, -10)).toThrow(AudioRangeError);
-    expect(() => service.fade('bed', 1, 0, Number.POSITIVE_INFINITY)).toThrow(AudioRangeError);
+    expectAudioError(() => service.fade('bed', 1, 0, -10), 'range');
+    expectAudioError(() => service.fade('bed', 1, 0, Number.POSITIVE_INFINITY), 'range');
   });
 });
 
@@ -498,14 +532,14 @@ describe('createAudioService — stop / stopGroup (C6 named groups)', () => {
 
   it('rejects stopping an unregistered sound', () => {
     const { service } = buildService();
-    expect(() => service.stop('ghost')).toThrow(AudioSoundError);
+    expectAudioError(() => service.stop('ghost'), 'sound');
   });
 
   it('rejects a non-kebab group name on play and on stopGroup', () => {
     const { service } = buildService();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('bed', { group: 'Scene A' })).toThrow(AudioGroupError);
-    expect(() => service.stopGroup('Scene A')).toThrow(AudioGroupError);
+    expectAudioError(() => service.play('bed', { group: 'Scene A' }), 'group');
+    expectAudioError(() => service.stopGroup('Scene A'), 'group');
   });
 
   it('stopGroup stops only the play instances tagged with that group', () => {
@@ -554,9 +588,9 @@ describe('createAudioService — master mute (ADR-004)', () => {
   it('rejects a non-boolean mute argument at the runtime boundary', () => {
     const { service } = buildService();
     const muteUnchecked = service.mute as (value: unknown) => void;
-    expect(() => muteUnchecked('on')).toThrow(AudioError);
-    expect(() => muteUnchecked(1)).toThrow(AudioError);
-    expect(() => muteUnchecked(undefined)).toThrow(AudioError);
+    expectAudioError(() => muteUnchecked('on'), 'option');
+    expectAudioError(() => muteUnchecked(1), 'option');
+    expectAudioError(() => muteUnchecked(undefined), 'option');
   });
 
   it('persists master mute across services backed by the same engine', () => {
@@ -981,11 +1015,11 @@ describe('createAudioService — outputPolicy log-cues (PUL-F026 / ADR-004)', ()
   it('does NOT emit a cue when validation rejects an operation', () => {
     const { service, cues } = buildLogCues();
     service.load('bed', { src: '/audio/bed.mp3' });
-    expect(() => service.play('ghost')).toThrow(AudioSoundError);
-    expect(() => service.play('bed', { volume: 5 })).toThrow(AudioRangeError);
-    expect(() => service.fade('bed', -0.1, 1, 100)).toThrow(AudioRangeError);
-    expect(() => service.stop('ghost')).toThrow(AudioSoundError);
-    expect(() => service.stopGroup('Bad Group')).toThrow(AudioGroupError);
+    expectAudioError(() => service.play('ghost'), 'sound');
+    expectAudioError(() => service.play('bed', { volume: 5 }), 'range');
+    expectAudioError(() => service.fade('bed', -0.1, 1, 100), 'range');
+    expectAudioError(() => service.stop('ghost'), 'sound');
+    expectAudioError(() => service.stopGroup('Bad Group'), 'group');
     expect(cues).toEqual([]);
   });
 
@@ -1144,9 +1178,9 @@ describe('createAudioService — legacy silent option rejection (codex review, c
         const opts = { signal: liveSignal(), silent: silentValue } as unknown as Opts;
         createAudioService(fake.engine, opts);
       };
-    expect(buildWithSilent(true)).toThrow(AudioError);
-    expect(buildWithSilent(false)).toThrow(AudioError);
-    expect(buildWithSilent(undefined)).toThrow(AudioError);
+    expectAudioError(buildWithSilent(true), 'option');
+    expectAudioError(buildWithSilent(false), 'option');
+    expectAudioError(buildWithSilent(undefined), 'option');
   });
 });
 
@@ -1165,11 +1199,11 @@ describe('createAudioService — outputPolicy runtime validation', () => {
 
   it('rejects an unknown outputPolicy value at construction', () => {
     const fake = fakeEngine();
-    expect(buildBadPolicy(fake, 'log-cue')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, 'SILENT')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, '')).toThrow(AudioError);
-    expect(buildBadPolicy(fake, true)).toThrow(AudioError);
-    expect(buildBadPolicy(fake, null)).toThrow(AudioError);
+    expectAudioError(buildBadPolicy(fake, 'log-cue'), 'option');
+    expectAudioError(buildBadPolicy(fake, 'SILENT'), 'option');
+    expectAudioError(buildBadPolicy(fake, ''), 'option');
+    expectAudioError(buildBadPolicy(fake, true), 'option');
+    expectAudioError(buildBadPolicy(fake, null), 'option');
   });
 
   it('does NOT throw a TypeError on values JSON.stringify cannot encode (codex review, cycle 2)', () => {
@@ -1215,11 +1249,11 @@ describe('createAudioService — onCue runtime validation (codex review, cycle 2
     // here; without boundary validation, the misuse would be silently
     // swallowed inside the non-fatal `emitCue` try/catch and rehearsal
     // would see an empty cue stream.
-    expect(buildBadOnCue(fake, true)).toThrow(AudioError);
-    expect(buildBadOnCue(fake, 42)).toThrow(AudioError);
-    expect(buildBadOnCue(fake, {})).toThrow(AudioError);
-    expect(buildBadOnCue(fake, 'cue-log')).toThrow(AudioError);
-    expect(buildBadOnCue(fake, null)).toThrow(AudioError);
+    expectAudioError(buildBadOnCue(fake, true), 'option');
+    expectAudioError(buildBadOnCue(fake, 42), 'option');
+    expectAudioError(buildBadOnCue(fake, {}), 'option');
+    expectAudioError(buildBadOnCue(fake, 'cue-log'), 'option');
+    expectAudioError(buildBadOnCue(fake, null), 'option');
   });
 
   it('accepts an omitted onCue (workbench without a cue UI)', () => {
@@ -1297,7 +1331,7 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
       bed: bed(),
       allowedSources: ['/audio/sting.webm'],
     });
-    expect(() => service.load('leak', { src: BED_SRC })).toThrow(AudioSourceError);
+    expectAudioError(() => service.load('leak', { src: BED_SRC }), 'source');
   });
 
   it('keeps the bed suppressed AND unreachable via load under mode=standalone', () => {
@@ -1311,7 +1345,7 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
       allowedSources: ['/audio/sting.webm'],
     });
     expect(fake.created).toHaveLength(0);
-    expect(() => service.load('smuggled-bed', { src: BED_SRC })).toThrow(AudioSourceError);
+    expectAudioError(() => service.load('smuggled-bed', { src: BED_SRC }), 'source');
   });
 
   it('constructs the bed muted under the silent output policy', () => {
@@ -1360,37 +1394,43 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
 
   it('rejects a bed source with a disallowed scheme', () => {
     const fake = fakeEngine();
-    expect(() =>
-      createAudioService(fake.engine, {
-        signal: liveSignal(),
-        bed: { src: 'file:///etc/passwd' },
-      }),
-    ).toThrow(AudioSourceError);
+    expectAudioError(
+      () =>
+        createAudioService(fake.engine, {
+          signal: liveSignal(),
+          bed: { src: 'file:///etc/passwd' },
+        }),
+      'source',
+    );
   });
 
   it('applies the supplied asset URL policy to a string bed source', () => {
     const fake = fakeEngine();
-    expect(() =>
-      createAudioService(fake.engine, {
-        signal: liveSignal(),
-        bed: { src: 'http://cdn.example.test/bed.webm' },
-        assetPolicy: { allowedSchemes: ['https:'] },
-      }),
-    ).toThrow(AudioSourceError);
+    expectAudioError(
+      () =>
+        createAudioService(fake.engine, {
+          signal: liveSignal(),
+          bed: { src: 'http://cdn.example.test/bed.webm' },
+          assetPolicy: { allowedSchemes: ['https:'] },
+        }),
+      'source',
+    );
     expect(fake.created).toHaveLength(0);
   });
 
   it('applies the supplied asset URL policy to every array bed source', () => {
     const fake = fakeEngine();
-    expect(() =>
-      createAudioService(fake.engine, {
-        signal: liveSignal(),
-        bed: {
-          src: ['https://cdn.example.test/bed.webm', 'data:audio/webm;base64,AAAA'],
-        },
-        assetPolicy: { allowedSchemes: ['https:'] },
-      }),
-    ).toThrow(AudioSourceError);
+    expectAudioError(
+      () =>
+        createAudioService(fake.engine, {
+          signal: liveSignal(),
+          bed: {
+            src: ['https://cdn.example.test/bed.webm', 'data:audio/webm;base64,AAAA'],
+          },
+          assetPolicy: { allowedSchemes: ['https:'] },
+        }),
+      'source',
+    );
     expect(fake.created).toHaveLength(0);
   });
 
@@ -1407,12 +1447,14 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
 
   it('rejects an out-of-range bed volume', () => {
     const fake = fakeEngine();
-    expect(() =>
-      createAudioService(fake.engine, {
-        signal: liveSignal(),
-        bed: bed({ volume: 1.5 }),
-      }),
-    ).toThrow(AudioRangeError);
+    expectAudioError(
+      () =>
+        createAudioService(fake.engine, {
+          signal: liveSignal(),
+          bed: bed({ volume: 1.5 }),
+        }),
+      'range',
+    );
   });
 
   it('tears the bed down when the navigation signal aborts', () => {
@@ -1437,9 +1479,9 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
     // The bed key is not a kebab identifier, so a scene cannot name,
     // collide with, stop, or re-register it through load/play/stop.
     const { service } = buildService({ bed: bed() });
-    expect(() => service.load('composition audio bed', { src: BED_SRC })).toThrow(AudioSoundError);
-    expect(() => service.play('composition audio bed')).toThrow(AudioSoundError);
-    expect(() => service.stop('composition audio bed')).toThrow(AudioSoundError);
+    expectAudioError(() => service.load('composition audio bed', { src: BED_SRC }), 'sound');
+    expectAudioError(() => service.play('composition audio bed'), 'sound');
+    expectAudioError(() => service.stop('composition audio bed'), 'sound');
   });
 
   it('rejects a non-boolean bedSuppressed at construction', () => {
@@ -1452,9 +1494,9 @@ describe('createAudioService — composition audio bed (PUL-F014)', () => {
           bedSuppressed: value as boolean,
         });
     };
-    expect(build('yes')).toThrow(AudioError);
-    expect(build(1)).toThrow(AudioError);
-    expect(build(null)).toThrow(AudioError);
+    expectAudioError(build('yes'), 'option');
+    expectAudioError(build(1), 'option');
+    expectAudioError(build(null), 'option');
   });
 });
 
@@ -1507,10 +1549,10 @@ describe('createAudioService — cue gate (PUL-F017 / ADR-020)', () => {
   it('still validates a closed-gate cue — malformed cue calls fail loud (suppression is post-validation)', () => {
     const { service } = buildService({ cueGate: createCueGate(false) });
     service.load('cue', { src: '/cue.webm', sprite: { hit: [0, 100] } });
-    expect(() => service.play('missing')).toThrow(AudioSoundError);
-    expect(() => service.play('cue', { sprite: 'ghost' })).toThrow(AudioSoundError);
-    expect(() => service.play('cue', { group: 'Bad Group' })).toThrow(AudioGroupError);
-    expect(() => service.play('cue', { volume: 9 })).toThrow(AudioRangeError);
+    expectAudioError(() => service.play('missing'), 'sound');
+    expectAudioError(() => service.play('cue', { sprite: 'ghost' }), 'sound');
+    expectAudioError(() => service.play('cue', { group: 'Bad Group' }), 'group');
+    expectAudioError(() => service.play('cue', { volume: 9 }), 'range');
   });
 
   it('does not gate fade / stop — only cue firing (play) is direction-gated', () => {
@@ -1531,29 +1573,35 @@ describe('createAudioService — cue gate (PUL-F017 / ADR-020)', () => {
 });
 
 describe('assertAudioBedDeclaration (PUL-F014)', () => {
-  it('accepts a string source', () => {
+  it('accepts a string source, an array source, and an optional volume', () => {
     expect(() => assertAudioBedDeclaration({ src: '/audio/bed.webm' })).not.toThrow();
-  });
-
-  it('accepts an array source and an optional volume', () => {
     expect(() =>
       assertAudioBedDeclaration({ src: ['/audio/bed.webm', '/audio/bed.mp3'], volume: 0.5 }),
     ).not.toThrow();
   });
 
   it('rejects a non-object declaration', () => {
-    expect(() => assertAudioBedDeclaration('oops')).toThrow(AudioError);
-    expect(() => assertAudioBedDeclaration(null)).toThrow(AudioError);
+    expectAudioError(() => assertAudioBedDeclaration('oops'), 'option');
+    expectAudioError(() => assertAudioBedDeclaration(null), 'option');
   });
 
-  it('rejects a declaration with a missing or mistyped src', () => {
-    expect(() => assertAudioBedDeclaration({})).toThrow(AudioSourceError);
-    expect(() => assertAudioBedDeclaration({ src: 42 })).toThrow(AudioSourceError);
+  it('rejects a missing src field', () => {
+    expectAudioError(() => assertAudioBedDeclaration({}), 'source');
   });
 
-  it('rejects a non-numeric volume', () => {
-    expect(() => assertAudioBedDeclaration({ src: '/audio/bed.webm', volume: 'loud' })).toThrow(
-      AudioRangeError,
-    );
+  // Property fuzz over the bed `src` (must be a string or array) and
+  // optional `volume` (must be a number) shallow-shape fields,
+  // replacing the per-value rejections. The validator must name the
+  // offending field.
+  it('rejects a malformed src or volume across the malformed-input space (property fuzz)', () => {
+    runValidatorFuzz({
+      seed: 'audio-bed',
+      valid: () => ({ src: '/audio/bed.webm' }),
+      fields: [
+        { name: 'src', kind: 'string-or-array', omittable: true },
+        { name: 'volume', kind: 'number' },
+      ],
+      assert: assertAudioBedDeclaration,
+    });
   });
 });

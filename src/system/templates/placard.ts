@@ -26,18 +26,18 @@ export const placard = (id: string, content: PlacardContent): SceneModule =>
           inner.setAttribute('class', 'placard');
           const rule = ownerDoc.createElement('span');
           rule.setAttribute('class', 'placard__rule');
-          inner.appendChild?.(rule);
+          inner.appendChild(rule);
           const title = ownerDoc.createElement('h2');
           title.setAttribute('class', 'placard__title');
           title.textContent = content.line1;
-          inner.appendChild?.(title);
+          inner.appendChild(title);
           if (content.line2 !== undefined) {
             const sub = ownerDoc.createElement('p');
             sub.setAttribute('class', 'placard__sub');
             sub.textContent = content.line2;
-            inner.appendChild?.(sub);
+            inner.appendChild(sub);
           }
-          root.appendChild?.(inner);
+          root.appendChild(inner);
         },
       });
     },

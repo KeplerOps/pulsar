@@ -50,25 +50,46 @@ function per site.
 | File | Symbol | Score |
 |------|--------|-------|
 | [`src/runtime/asset-preloader.ts`](../../src/runtime/asset-preloader.ts) | returned async `(scene) => ...` arrow inside `createAssetPreloader` | 16 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `async unlock()` method on the AudioUnlocker | 22 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `normalizeSources` arrow | 17 |
-| [`src/runtime/audio.ts`](../../src/runtime/audio.ts) | `play(soundId, options)` method | 24 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `buildLoad` arrow | 18 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `runLifecycle` arrow | 21 |
-| [`src/runtime/scene-loader.ts`](../../src/runtime/scene-loader.ts) | `runTarget` async arrow | 23 |
+
+The three `src/runtime/audio.ts` offenders — `async unlock()` (22),
+`normalizeSources` (17), and `play(soundId, options)` (24) — were
+removed when the audio engine was slimmed: `unlock()` delegates to the
+`unlockHtml5Fallback` / `resumeWebAudioContext` module helpers, the
+per-URL validation lives in the hoisted `normalizeAudioUrl`, and
+`play()` delegates option validation to `validatePlay` and engine
+output to `applyPlayToHandle`. Their site-level suppressions were
+deleted with them.
+
+`runLifecycle` (formerly score 21) was removed from this list when the
+per-mode runner hints (`repeat` / `hold` / `cueGate` / `screenshot`)
+collapsed from four `mode === X` ternaries into a single
+`...runnerHints` spread sourced from
+[`src/runtime/mode-profile.ts`](../../src/runtime/mode-profile.ts). Its
+site-level suppression was deleted with it.
+
+`buildLoad` (score 18) and `runTarget` (score 23) were removed when the
+scene loader was decomposed into cohesive single-responsibility units:
+per-navigation audio/presenter/ctx construction moved to
+[`src/runtime/scene-loader-ctx.ts`](../../src/runtime/scene-loader-ctx.ts),
+the unlock-gate predicate and chrome dispatch policy to
+[`src/runtime/scene-loader-guard.ts`](../../src/runtime/scene-loader-guard.ts),
+and the `beat` / `mode` grammar re-check unified onto the shared
+`NAVIGATION_GRAMMAR` source in
+[`src/runtime/navigation.ts`](../../src/runtime/navigation.ts). Both
+site-level suppressions were deleted with them.
 
 ### Test fixtures and helpers
 
-These three test offenders are isolated functions, not part of the
-policy-scanner cluster, and are not covered by the file-level
-overrides below. They get site-level suppressions like the production
-source above. They are listed here so the ratchet has the same
-target/score record for them.
+This test offender is an isolated function, not part of the
+policy-scanner cluster, and is not covered by the file-level
+overrides below. It gets a site-level suppression like the production
+source above. It is listed here so the ratchet has the same
+target/score record for it. (The `scene-loader.helpers.ts` `asTimeline`
+and `scene-loader-present.test.ts` `mountPresent` offenders were removed
+with the master-timeline scene-loader test suite under ADR-032.)
 
 | File | Symbol | Score |
 |------|--------|-------|
-| [`tests/runtime/scene-loader.helpers.ts`](../../tests/runtime/scene-loader.helpers.ts) | `asTimeline` adapter's `run` method | 21 |
-| [`tests/runtime/scene-loader-present.test.ts`](../../tests/runtime/scene-loader-present.test.ts) | `mountPresent` mount helper | 22 |
 | [`tests/scenes/dom-css-accessibility-fixture.test.ts`](../../tests/scenes/dom-css-accessibility-fixture.test.ts) | recursive `walk` accessibility-attribute scan | 20 |
 
 ## File-level overrides (no ratchet target)
@@ -89,6 +110,17 @@ listed in the ratchet target tables above — they are not ratchet
 targets at all, by design. The override allowlist is enforced by
 `tests/runtime/policy-biome-complexity-gate.test.ts` so the cluster
 cannot be quietly widened.
+
+This policy-scanner cluster (`policy-*.test.ts`, `source-policy.ts`,
+`screenshot-determinism-source.test.ts`) does **not** run in the
+default behavior suite (`pnpm test`). It is a separate, still-blocking
+gate run via `pnpm policy` (`vitest.policy.config.ts`), wired into both
+CI (the `policy` job) and the `policy` pre-commit hook. Its whole-tree
+AST scans starved under the behavior suite's parallel load and
+intermittently timed out, so the gate was relocated — the enforcement
+set is unchanged. The Biome override above stays regardless of where
+the suite runs; `biome.json` remains the canonical complexity-gate
+declaration.
 
 ## Ratchet plan
 

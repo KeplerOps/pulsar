@@ -26,9 +26,9 @@ const actWrapper = (slots: ChromeSlots): HTMLElement => {
 export const shake = (slots: ChromeSlots): void => {
   slots.stage.classList.remove('shake');
   // Force a reflow so the next class-add is observed as a state
-  // change. getBoundingClientRect() triggers layout flush the same
-  // way offsetWidth read does, without the discarded-expression lint
-  // (Sonar typescript:S3735).
+  // change. getBoundingClientRect() flushes layout the same way an
+  // `offsetWidth` read does, but as a method call rather than a
+  // discarded property-access expression.
   slots.stage.getBoundingClientRect();
   slots.stage.classList.add('shake');
 };
@@ -42,16 +42,45 @@ export const fireScreenFlash = (slots: ChromeSlots): void => {
   slots.flash.classList.add('fire');
 };
 
+/** Handle returned by {@link flickerOutAll}; `stop()` clears any pending stagger timers. */
+export interface FlickerHandle {
+  /** Cancel any not-yet-fired stagger timers. Idempotent. */
+  stop(): void;
+}
+
 /**
  * Stagger-fade the title, brand, and act layers offline. Each layer
  * goes on its own rhythm (90 / 230 / 140 ms) so they don't visibly
  * sync. Call `resetFlickers` to clear before re-mounting content.
+ *
+ * The staggered class-adds are real `setTimeout`s, so a scene that tears
+ * down (advance / navigation supersession) before they fire would otherwise
+ * mutate a stale chrome surface. Returns a {@link FlickerHandle} whose
+ * `stop()` clears the pending timers; pass an `AbortSignal` to clear them
+ * automatically when the scene ends. Backward-compatible: callers that
+ * ignore the return value keep the original behavior.
  */
-export const flickerOutAll = (slots: ChromeSlots): void => {
+export const flickerOutAll = (slots: ChromeSlots, signal?: AbortSignal): FlickerHandle => {
   const act = actWrapper(slots);
-  setTimeout(() => slots.title.classList.add('flicker-out-a'), 90); // PUL-Q001-allow: stagger-out kickoff; never runs under mode=screenshot.
-  setTimeout(() => slots.brand.classList.add('flicker-out-b'), 230); // PUL-Q001-allow: stagger-out kickoff; never runs under mode=screenshot.
-  setTimeout(() => act.classList.add('flicker-out-c'), 140); // PUL-Q001-allow: stagger-out kickoff; never runs under mode=screenshot.
+  // Each layer flickers offline on its own rhythm so they don't visibly sync.
+  const stagger: readonly [add: () => void, delayMs: number][] = [
+    [() => slots.title.classList.add('flicker-out-a'), 90],
+    [() => slots.brand.classList.add('flicker-out-b'), 230],
+    [() => act.classList.add('flicker-out-c'), 140],
+  ];
+  const timers = stagger.map(([add, delayMs]) => setTimeout(add, delayMs)); // PUL-Q001-allow: stagger-out kickoff; never runs under mode=screenshot.
+  let stopped = false;
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    for (const timer of timers) clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+  };
+  if (signal !== undefined) {
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  }
+  return { stop };
 };
 
 /**

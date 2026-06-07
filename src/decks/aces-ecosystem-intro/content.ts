@@ -15,19 +15,12 @@
 
 import type { SceneModule } from '../../runtime/scene';
 import {
+  type TemplateTimeline,
   buildTemplateScene,
   buildTemplateTimeline,
   cleanupTemplateRoot,
   mountTemplateRoot,
 } from '../../system/templates/_shared';
-
-interface BeatTimeline {
-  addLabel(name: string, time?: number): unknown;
-  fromTo(target: unknown, from: object, to: object, position?: number | string): unknown;
-  to(target: unknown, vars: object, position?: number | string): unknown;
-  set(target: unknown, vars: object, position?: number | string): unknown;
-  call(fn: () => void, params?: unknown[], position?: number | string): unknown;
-}
 
 interface SceneSpec {
   readonly id: string;
@@ -36,12 +29,11 @@ interface SceneSpec {
   readonly section: string;
   readonly cite?: string;
   readonly build: (root: HTMLElement, ownerDoc: Document) => void;
-  readonly beats: (tl: BeatTimeline, rootValue: string) => void;
+  readonly beats: (tl: TemplateTimeline, rootValue: string) => void;
   /**
-   * When true, the trailing tween is extended to an
-   * effectively-indefinite duration so the master never reaches its
-   * natural end — `skip-backward` from the end of the deck still seeks
-   * to an earlier segment instead of operating on a torn-down master.
+   * Extend the trailing tween to an indefinite hold so the master never
+   * ends and `skip-backward` keeps working past the deck's last scene.
+   * Only the final scene sets it.
    */
   readonly holdForever?: boolean;
 }
@@ -68,8 +60,7 @@ const buildScene = (spec: SceneSpec): SceneModule =>
         templateKind: spec.id,
         extraClasses: ['aces-intro'],
         buildChildren: (root, ownerDoc) => {
-          const r = root as unknown as HTMLElement;
-          const d = ownerDoc as unknown as Document;
+          const d = ownerDoc;
           const page = d.createElement('div');
           page.className = 'ax-page';
 
@@ -101,7 +92,7 @@ const buildScene = (spec: SceneSpec): SceneModule =>
           page.appendChild(head);
           page.appendChild(body);
           page.appendChild(foot);
-          r.appendChild(page);
+          root.appendChild(page);
         },
       });
     },
@@ -111,16 +102,15 @@ const buildScene = (spec: SceneSpec): SceneModule =>
         rootValue: spec.id,
         suffixDurationSeconds: spec.holdForever === true ? 3600 : 0.6,
         buildSegments: (tl) => {
-          spec.beats(tl as unknown as BeatTimeline, spec.id);
+          spec.beats(tl, spec.id);
         },
       }),
     cleanup: cleanupTemplateRoot(spec.id),
   });
 
-// Restrained motion. Body fades in at 200ms; structural rows
-// stagger at 80ms; pull quotes fade up with a 12px nudge.
+// Every beat is the same restrained reveal: fade up from a small offset.
 const fadeIn = (
-  tl: BeatTimeline,
+  tl: TemplateTimeline,
   id: string,
   cls: string,
   at: number,
@@ -133,7 +123,7 @@ const fadeIn = (
       opacity: 1,
       y: 0,
       duration: opts.duration ?? 0.45,
-      stagger: opts.stagger,
+      stagger: opts.stagger ?? 0,
       ease: 'power2.out',
     },
     at,

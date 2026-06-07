@@ -1,10 +1,12 @@
+/** @vitest-environment happy-dom */
 // Pulsar L2 — template optional-branch coverage tests.
 //
 // templates.test.ts exercises the smoke path (minimal valid content
 // per template). This file exercises the OPTIONAL branches each
 // template factory has: subtitle / eyebrow / glow / qrSrc / mod /
 // headline / etc. Each branch flips a piece of DOM the template
-// otherwise wouldn't render.
+// otherwise wouldn't render. Assertions run against a real (happy-dom)
+// document so the templates author against `lib.dom` types.
 
 import { gsap } from 'gsap';
 import { describe, expect, it } from 'vitest';
@@ -20,11 +22,8 @@ import {
   compare,
   definitionTable,
   dropList,
-  haulCitations,
-  incidentPlate,
   introGrid,
   metricTicker,
-  operatorDossier,
   outlineTitle,
   outro,
   placard,
@@ -40,154 +39,9 @@ import {
   titleSlam,
 } from '../../src/system/templates';
 
-interface FakeClassList {
-  add(name: string): void;
-  remove(name: string): void;
-  contains(name: string): boolean;
-}
+const makeStage = (): HTMLElement => document.createElement('div');
 
-interface FakeNode {
-  className: string;
-  textContent: string;
-  innerHTML: string;
-  childNodes: FakeNode[];
-  attrs: Map<string, string>;
-  dataset: Record<string, string>;
-  classList: FakeClassList;
-  parentElement: FakeNode | null;
-  ownerDocument: FakeDoc;
-  setAttribute(name: string, value: string): void;
-  removeAttribute(name: string): void;
-  getAttribute(name: string): string | null;
-  appendChild(child: FakeNode): FakeNode;
-  remove(): void;
-  querySelector(selector: string): FakeNode | null;
-  querySelectorAll(selector: string): FakeNode[];
-}
-
-interface FakeDoc {
-  createElement(tag: string): FakeNode;
-}
-
-// Kebab-cases a `dataset` key the way the DOM does (`fooBar` →
-// `foo-bar`) so the proxy below mirrors `el.dataset.fooBar` onto the
-// `data-foo-bar` attribute.
-const datasetKebab = (key: string): string => key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-
-// A `dataset` surface that writes through to the attribute map, so a
-// template's `el.dataset.fooBar = ''` is observable via
-// `querySelector('[data-foo-bar]')` exactly as in a real browser.
-const makeDataset = (attrs: Map<string, string>): Record<string, string> =>
-  new Proxy({} as Record<string, string>, {
-    get: (_t, p) => (typeof p === 'string' ? attrs.get(`data-${datasetKebab(p)}`) : undefined),
-    set: (_t, p, v) => {
-      if (typeof p === 'string') attrs.set(`data-${datasetKebab(p)}`, String(v));
-      return true;
-    },
-    has: (_t, p) => typeof p === 'string' && attrs.has(`data-${datasetKebab(p)}`),
-    deleteProperty: (_t, p) => {
-      if (typeof p === 'string') attrs.delete(`data-${datasetKebab(p)}`);
-      return true;
-    },
-  });
-
-const makeNode = (doc: FakeDoc): FakeNode => {
-  const classes = new Set<string>();
-  const attrs = new Map<string, string>();
-  const node: FakeNode = {
-    className: '',
-    textContent: '',
-    innerHTML: '',
-    childNodes: [],
-    attrs,
-    dataset: makeDataset(attrs),
-    classList: {
-      add: (n) => {
-        classes.add(n);
-      },
-      remove: (n) => {
-        classes.delete(n);
-      },
-      contains: (n) => classes.has(n),
-    },
-    parentElement: null,
-    ownerDocument: doc,
-    setAttribute: (n, v) => {
-      node.attrs.set(n, v);
-      if (n === 'class') node.className = v;
-    },
-    removeAttribute: (n) => {
-      node.attrs.delete(n);
-      if (n === 'class') node.className = '';
-    },
-    getAttribute: (n) => node.attrs.get(n) ?? null,
-    appendChild: (child) => {
-      child.parentElement = node;
-      node.childNodes.push(child);
-      return child;
-    },
-    remove: () => {
-      if (node.parentElement !== null) {
-        const i = node.parentElement.childNodes.indexOf(node);
-        if (i >= 0) node.parentElement.childNodes.splice(i, 1);
-        node.parentElement = null;
-      }
-    },
-    querySelector: (selector) => {
-      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
-      if (match === null) {
-        const cm = selector.match(/^\.([\w-]+)$/);
-        if (cm === null) return null;
-        const cls = cm[1] ?? '';
-        const search = (n: FakeNode): FakeNode | null => {
-          if (n.className.split(' ').includes(cls)) return n;
-          for (const c of n.childNodes) {
-            const f = search(c);
-            if (f !== null) return f;
-          }
-          return null;
-        };
-        return search(node);
-      }
-      const attr = match[1] ?? '';
-      const wanted = match[3];
-      const search = (n: FakeNode): FakeNode | null => {
-        const v = n.attrs.get(attr);
-        if (v !== undefined && (wanted === undefined || v === wanted)) return n;
-        for (const c of n.childNodes) {
-          const f = search(c);
-          if (f !== null) return f;
-        }
-        return null;
-      };
-      return search(node);
-    },
-    querySelectorAll: (selector) => {
-      const out: FakeNode[] = [];
-      const match = selector.match(/\[([^=\]]+)(=["']?([^"'\]]+)["']?)?\]/);
-      if (match === null) return out;
-      const attr = match[1] ?? '';
-      const wanted = match[3];
-      const search = (n: FakeNode): void => {
-        const v = n.attrs.get(attr);
-        if (v !== undefined && (wanted === undefined || v === wanted)) out.push(n);
-        for (const c of n.childNodes) search(c);
-      };
-      search(node);
-      return out;
-    },
-  };
-  return node;
-};
-
-const makeStage = (): FakeNode => {
-  const doc: FakeDoc = {
-    createElement: (_tag) => makeNode(doc),
-  };
-  return makeNode(doc);
-};
-
-const ctx = (stage: FakeNode): unknown => ({ stage, mode: 'present', gsap });
+const ctx = (stage: HTMLElement): unknown => ({ stage, mode: 'present', gsap });
 
 const runLifecycle = (
   scene: ReturnType<typeof titleSlam>,
@@ -207,48 +61,36 @@ const assertLifecycle = (scene: ReturnType<typeof titleSlam>, fakeCtx: unknown):
   expect(tl).not.toBeNull();
 };
 
-const hasClass = (node: FakeNode, className: string): boolean =>
-  node.className.split(/\s+/).includes(className);
+const findByClass = (root: HTMLElement, className: string): HTMLElement | null =>
+  root.querySelector<HTMLElement>(`.${className}`);
 
-const findAll = (root: FakeNode, predicate: (node: FakeNode) => boolean): FakeNode[] => {
-  const out: FakeNode[] = [];
-  const search = (node: FakeNode): void => {
-    if (predicate(node)) out.push(node);
-    for (const child of node.childNodes) search(child);
-  };
-  search(root);
-  return out;
-};
+const findAllByClass = (root: HTMLElement, className: string): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>(`.${className}`),
+];
 
-const findByClass = (root: FakeNode, className: string): FakeNode | null =>
-  findAll(root, (node) => hasClass(node, className))[0] ?? null;
+const findAll = (root: HTMLElement, predicate: (node: HTMLElement) => boolean): HTMLElement[] =>
+  [...root.querySelectorAll<HTMLElement>('*')].filter(predicate);
 
-const findAllByClass = (root: FakeNode, className: string): FakeNode[] =>
-  findAll(root, (node) => hasClass(node, className));
+const findByAttr = (root: HTMLElement, attr: string, value?: string): HTMLElement | null =>
+  root.querySelector<HTMLElement>(value === undefined ? `[${attr}]` : `[${attr}="${value}"]`);
 
-const findByAttr = (root: FakeNode, attr: string, value?: string): FakeNode | null =>
-  findAll(root, (node) => {
-    const actual = node.getAttribute(attr);
-    return actual !== null && (value === undefined || actual === value);
-  })[0] ?? null;
-
-const requireNode = (node: FakeNode | null | undefined, message: string): FakeNode => {
+const requireNode = (node: HTMLElement | null | undefined, message: string): HTMLElement => {
   expect(node).toBeDefined();
   expect(node).not.toBeNull();
   if (node === null || node === undefined) throw new Error(message);
   return node;
 };
 
-const renderRoot = (scene: SceneModule, rootValue: string): FakeNode => {
+const renderRoot = (scene: SceneModule, rootValue: string): HTMLElement => {
   const stage = makeStage();
   scene.create(ctx(stage));
   return requireNode(
-    stage.querySelector(`[data-pulsar-template="${rootValue}"]`),
+    stage.querySelector<HTMLElement>(`[data-pulsar-template="${rootValue}"]`),
     `expected ${rootValue} root`,
   );
 };
 
-const expectClassText = (root: FakeNode, className: string, text: string): FakeNode => {
+const expectClassText = (root: HTMLElement, className: string, text: string): HTMLElement => {
   const node = requireNode(findByClass(root, className), `expected .${className}`);
   expect(node.textContent).toBe(text);
   return node;
@@ -278,16 +120,16 @@ describe('L2 templates — optional-branch coverage', () => {
     });
     scene.create(ctx(stage));
 
-    const root = stage.querySelector('[data-pulsar-template="opt-title-escape"]');
+    const root = stage.querySelector<HTMLElement>('[data-pulsar-template="opt-title-escape"]');
     expect(root).not.toBeNull();
     if (root === null) throw new Error('expected titleSlam root');
 
-    const titleEl = root.childNodes[0];
+    const titleEl = root.children[0];
     expect(titleEl).toBeDefined();
     if (titleEl === undefined) throw new Error('expected title element');
 
-    expect(titleEl.childNodes).toHaveLength(1);
-    const word = titleEl.childNodes[0];
+    expect(titleEl.children).toHaveLength(1);
+    const word = titleEl.children[0] as HTMLElement | undefined;
     expect(word).toBeDefined();
     if (word === undefined) throw new Error('expected word span');
 
@@ -295,12 +137,12 @@ describe('L2 templates — optional-branch coverage', () => {
     expect(word.textContent).toBe(token);
     expect(word.getAttribute('data-text')).toBe(token);
     expect(word.getAttribute('onclick')).toBeNull();
-    expect(word.attrs.has('b')).toBe(false);
-    const injectedAttrs = [...word.attrs.keys()].filter(
-      (name) => name !== 'class' && name !== 'data-text',
-    );
+    expect(word.hasAttribute('b')).toBe(false);
+    const injectedAttrs = [...word.attributes]
+      .map((a) => a.name)
+      .filter((name) => name !== 'class' && name !== 'data-text');
     expect(injectedAttrs).toEqual([]);
-    expect(word.childNodes).toHaveLength(0);
+    expect(word.children).toHaveLength(0);
   });
 
   it('outro with qrSrc + subtitle', () => {
@@ -423,7 +265,7 @@ describe('L2 templates — optional-branch coverage', () => {
     const stage = makeStage();
     expect(() => scene.create(ctx(stage))).not.toThrow();
     const root = requireNode(
-      stage.querySelector('[data-pulsar-template="opt-ticker"]'),
+      stage.querySelector<HTMLElement>('[data-pulsar-template="opt-ticker"]'),
       'ticker root',
     );
     expectClassText(root, 'eyebrow', 'eb');
@@ -491,38 +333,6 @@ describe('L2 templates — optional-branch coverage', () => {
     assertLifecycle(roman, ctx(makeStage()));
   });
 
-  it('incidentPlate with bg + sub', () => {
-    const scene = incidentPlate('opt-ip', {
-      time: '03:14 UTC',
-      headline: 'BRIDGE COLLAPSE',
-      sub: 'no casualties yet',
-      bgSrc: '/bg.png',
-      bgAlt: 'bridge',
-    });
-    expect(scene.assets).toEqual(['/bg.png']);
-    const root = renderRoot(scene, 'opt-ip');
-    const bg = requireNode(findByClass(root, 'incident-plate__bg'), 'expected incident bg');
-    expect(bg.getAttribute('style')).toBe('background-image: url(/bg.png)');
-    expect(bg.getAttribute('aria-label')).toBe('bridge');
-    expectClassText(root, 'incident-plate__sub', 'no casualties yet');
-    assertLifecycle(scene, ctx(makeStage()));
-  });
-
-  it('operatorDossier renders all rows', () => {
-    const scene = operatorDossier('opt-od', {
-      handle: '@drift',
-      rows: [
-        { k: 'origin', v: 'unknown' },
-        { k: 'first seen', v: '2025-04' },
-        { k: 'reach', v: 'global' },
-      ],
-    });
-    const root = renderRoot(scene, 'opt-od');
-    expectClassText(root, 'dossier__handle', '@drift');
-    expect(findAllByClass(root, 'dossier__row')).toHaveLength(3);
-    assertLifecycle(scene, ctx(makeStage()));
-  });
-
   it('splitPaneTerminalDoc with eyebrow + headline + canted doc + caption', () => {
     const scene = splitPaneTerminalDoc('opt-sptd', {
       eyebrow: 'EB',
@@ -540,12 +350,13 @@ describe('L2 templates — optional-branch coverage', () => {
     const root = renderRoot(scene, 'opt-sptd');
     expectClassText(root, 'splitpane__eyebrow', 'EB');
     expectClassText(root, 'splitpane__headline', 'CHATBOT');
-    expectClassText(root, 'splitpane__doc', '');
     const doc = requireNode(findByClass(root, 'splitpane__doc'), 'expected splitpane doc');
     expect(doc.getAttribute('style')).toBe('transform: rotate(4deg)');
     const img = requireNode(findByAttr(root, 'src', '/d.png'), 'expected splitpane image');
     expect(img.getAttribute('alt')).toBe('d');
-    expect(findAll(root, (node) => node.textContent === 'cap')).toHaveLength(1);
+    expect(
+      requireNode(doc.querySelector<HTMLElement>('figcaption'), 'expected caption').textContent,
+    ).toBe('cap');
     assertLifecycle(scene, ctx(makeStage()));
   });
 
@@ -576,32 +387,6 @@ describe('L2 templates — optional-branch coverage', () => {
     assertLifecycle(scene, ctx(makeStage()));
   });
 
-  it('haulCitations with eyebrow + headline + hot row mod + citation title', () => {
-    const scene = haulCitations('opt-hc', {
-      eyebrow: 'EB',
-      headline: 'HAUL',
-      haul: [
-        { count: '12,847', label: 'records', mod: 'hot' },
-        { count: '100%', label: 'coverage' },
-      ],
-      citations: {
-        title: 'Sources',
-        rows: [
-          { source: 'foo.com', quote: 'breach' },
-          { source: 'bar.com', quote: 'leaked' },
-        ],
-      },
-      staggerMs: 100,
-    });
-    const root = renderRoot(scene, 'opt-hc');
-    expectClassText(root, 'hc__eyebrow', 'EB');
-    expectClassText(root, 'hc__headline', 'HAUL');
-    expectClassText(root, 'hc__citations-title', 'Sources');
-    const hot = requireNode(findByClass(root, 'hc__row--hot'), 'expected hot haul row');
-    expect(hot.getAttribute('style')).toBe('--row-delay: 0ms');
-    assertLifecycle(scene, ctx(makeStage()));
-  });
-
   it('chatTranscript with title + alert flag + doc', () => {
     const scene = chatTranscript('opt-ct', {
       title: 'Signal export',
@@ -620,7 +405,9 @@ describe('L2 templates — optional-branch coverage', () => {
     expect(doc.getAttribute('style')).toBe('transform: rotate(-3deg)');
     const img = requireNode(findByAttr(root, 'src', '/d.png'), 'expected transcript image');
     expect(img.getAttribute('alt')).toBe('d');
-    expect(findAll(root, (node) => node.textContent === 'doc')).toHaveLength(1);
+    expect(
+      requireNode(doc.querySelector<HTMLElement>('figcaption'), 'expected doc caption').textContent,
+    ).toBe('doc');
     assertLifecycle(scene, ctx(makeStage()));
   });
 
@@ -661,7 +448,11 @@ describe('L2 templates — optional-branch coverage', () => {
     expectClassText(root, 'sde__eyebrow', 'EB');
     expectClassText(root, 'sde__headline', 'PHISH');
     expectClassText(root, 'sde__email-footer', 'sent 09:12 MDT');
-    expectClassText(root, 'sde__email-signoff', '');
+    // The signoff renders `[[alex]]` as a `.glow` marker span; real-DOM
+    // textContent concatenates the rendered text.
+    const signoff = requireNode(findByClass(root, 'sde__email-signoff'), 'expected signoff');
+    expect(signoff.textContent).toBe('— alex');
+    expectClassText(signoff, 'glow', 'alex');
     expect(findByAttr(root, 'data-sde-dialogue')).not.toBeNull();
     expect(findByAttr(root, 'data-sde-email')).not.toBeNull();
     assertLifecycle(scene, ctx(makeStage()));

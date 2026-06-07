@@ -35,7 +35,7 @@ export const screenshotCallouts = (id: string, content: ScreenshotCalloutsConten
           const img = ownerDoc.createElement('img');
           img.setAttribute('src', content.imageSrc);
           img.setAttribute('alt', content.imageAlt ?? '');
-          shot.appendChild?.(img);
+          shot.appendChild(img);
           content.callouts.forEach((c, i) => {
             const div = ownerDoc.createElement('div');
             div.setAttribute('class', 'callout');
@@ -44,9 +44,9 @@ export const screenshotCallouts = (id: string, content: ScreenshotCalloutsConten
               `left: ${c.x}%; top: ${c.y}%; --callout-delay: ${600 + i * 320}ms`,
             );
             div.textContent = c.text;
-            shot.appendChild?.(div);
+            shot.appendChild(div);
           });
-          root.appendChild?.(shot);
+          root.appendChild(shot);
         },
       });
     },

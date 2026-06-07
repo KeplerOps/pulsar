@@ -33,14 +33,14 @@ export const titleSlam = (id: string, content: TitleSlamContent): SceneModule =>
             span.className = content.glitch === true ? 'word pulsar-glitch' : 'word';
             span.textContent = w;
             span.dataset.text = w;
-            h1.appendChild?.(span);
+            h1.appendChild(span);
           }
-          root.appendChild?.(h1);
+          root.appendChild(h1);
           if (content.subtitle !== undefined) {
             const sub = ownerDoc.createElement('p');
             sub.setAttribute('class', 'pulsar-title__subtitle');
             sub.textContent = content.subtitle;
-            root.appendChild?.(sub);
+            root.appendChild(sub);
           }
         },
       });

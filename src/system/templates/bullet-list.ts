@@ -29,21 +29,21 @@ export const bulletList = (id: string, content: BulletListContent): SceneModule 
             const eb = ownerDoc.createElement('div');
             eb.setAttribute('class', 'eyebrow');
             eb.textContent = content.eyebrow;
-            root.appendChild?.(eb);
+            root.appendChild(eb);
           }
           const h = ownerDoc.createElement('h2');
           h.setAttribute('class', 'heading');
           h.textContent = content.title;
-          root.appendChild?.(h);
+          root.appendChild(h);
           const ul = ownerDoc.createElement('ul');
           ul.setAttribute('class', 'bullets');
           content.bullets.forEach((b, i) => {
             const li = ownerDoc.createElement('li');
             li.setAttribute('style', `--bullet-delay: ${500 + i * stagger}ms`);
             li.textContent = b;
-            ul.appendChild?.(li);
+            ul.appendChild(li);
           });
-          root.appendChild?.(ul);
+          root.appendChild(ul);
         },
       });
     },

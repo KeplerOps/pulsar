@@ -43,12 +43,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install pre-commit
         run: pip install pre-commit
-      # typecheck and vitest hooks have dedicated jobs below that also
-      # upload coverage. Skip them here to avoid duplicate runs.
+      # typecheck, vitest, and policy hooks have dedicated jobs below.
+      # Skip them here to avoid duplicate runs.
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure
         env:
-          SKIP: typecheck,vitest
+          SKIP: typecheck,vitest,policy
 
   typecheck:
     name: Typecheck
@@ -88,6 +88,26 @@ jobs:
           name: coverage
           path: coverage/
           retention-days: 7
+
+  policy:
+    # Structural code-shape audits (PUL-Q001/Q003/Q007, PUL-A001..A010,
+    # complexity-gate allowlist). Relocated out of the behavior suite
+    # into their own vitest project so their whole-tree AST scans no
+    # longer starve under parallel load — enforcement is unchanged and
+    # this step is blocking. Mirrored by the `policy` pre-commit hook.
+    name: Policy gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm policy
 
   build:
     name: Build

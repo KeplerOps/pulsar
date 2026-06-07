@@ -31,16 +31,7 @@ import {
 // Plus ADR-013 invariants (repeated keys rejected, unknown keys ignored,
 // and the five valid + four invalid combination shapes).
 
-const ALL_MODES: readonly NavigationMode[] = [
-  'present',
-  'standalone',
-  'loop',
-  'paused',
-  'scrub',
-  'screenshot',
-  'prompter',
-  'rehearsal',
-];
+const ALL_MODES: readonly NavigationMode[] = ['present', 'prompter'];
 
 describe('parseNavigationSearch — clause 1: accepts the five grammar keys', () => {
   describe('input shape', () => {
@@ -228,9 +219,9 @@ describe('parseNavigationSearch — ADR-013: combination shapes', () => {
     });
 
     it('no explicit target with optional mode', () => {
-      expect(parseNavigationSearch('mode=screenshot')).toEqual({
+      expect(parseNavigationSearch('mode=prompter')).toEqual({
         locator: { kind: 'none' },
-        mode: 'screenshot',
+        mode: 'prompter',
       });
     });
 
@@ -241,9 +232,9 @@ describe('parseNavigationSearch — ADR-013: combination shapes', () => {
     });
 
     it('scene with mode', () => {
-      expect(parseNavigationSearch('scene=intro&mode=standalone')).toEqual({
+      expect(parseNavigationSearch('scene=intro&mode=prompter')).toEqual({
         locator: { kind: 'scene', scene: 'intro' },
-        mode: 'standalone',
+        mode: 'prompter',
       });
     });
 
@@ -268,11 +259,11 @@ describe('parseNavigationSearch — ADR-013: combination shapes', () => {
 
     it('composition + scene + beat + mode', () => {
       expect(
-        parseNavigationSearch('composition=full-talk&scene=intro&beat=hook&mode=scrub'),
+        parseNavigationSearch('composition=full-talk&scene=intro&beat=hook&mode=prompter'),
       ).toEqual({
         locator: { kind: 'composition-scene', composition: 'full-talk', scene: 'intro' },
         beat: 'hook',
-        mode: 'scrub',
+        mode: 'prompter',
       });
     });
 
@@ -283,10 +274,12 @@ describe('parseNavigationSearch — ADR-013: combination shapes', () => {
     });
 
     it('composition + index + beat + mode', () => {
-      expect(parseNavigationSearch('composition=full-talk&index=2&beat=hook&mode=loop')).toEqual({
+      expect(
+        parseNavigationSearch('composition=full-talk&index=2&beat=hook&mode=prompter'),
+      ).toEqual({
         locator: { kind: 'composition-index', composition: 'full-talk', index: 2 },
         beat: 'hook',
-        mode: 'loop',
+        mode: 'prompter',
       });
     });
   });
@@ -336,7 +329,7 @@ describe('parseNavigationSearch — ADR-013: repeated keys & unknown keys', () =
   );
 
   it('reports the first repeated grammar key it encounters', () => {
-    expect(() => parseNavigationSearch('scene=a&scene=b&mode=loop&mode=present')).toThrow(
+    expect(() => parseNavigationSearch('scene=a&scene=b&mode=prompter&mode=present')).toThrow(
       /repeated query parameter "scene"/,
     );
   });
@@ -370,7 +363,7 @@ describe('parseNavigationSearch — boundary discipline', () => {
   });
 
   it('returns frozen targets so callers cannot mutate the parser output', () => {
-    const target = parseNavigationSearch('composition=t&index=0&beat=hook&mode=loop');
+    const target = parseNavigationSearch('composition=t&index=0&beat=hook&mode=prompter');
     expect(Object.isFrozen(target)).toBe(true);
     expect(Object.isFrozen(target.locator)).toBe(true);
   });
@@ -404,7 +397,7 @@ describe('effectiveMode — PUL-F012: derive workbench mode for runtime dispatch
   });
 
   it('round-trips through parseNavigationSearch — explicit mode is selected', () => {
-    expect(effectiveMode(parseNavigationSearch('mode=screenshot'))).toBe('screenshot');
+    expect(effectiveMode(parseNavigationSearch('mode=prompter'))).toBe('prompter');
   });
 
   it('round-trips through parseNavigationSearch — empty URL defaults to "present"', () => {
@@ -486,9 +479,9 @@ describe('effectiveMode — PUL-F012: derive workbench mode for runtime dispatch
 
     try {
       expect(effectiveMode(undefined)).toBe('present');
-      expect(
-        effectiveMode({ locator: { kind: 'scene', scene: 'intro' }, mode: 'screenshot' }),
-      ).toBe('screenshot');
+      expect(effectiveMode({ locator: { kind: 'scene', scene: 'intro' }, mode: 'prompter' })).toBe(
+        'prompter',
+      );
       expect(effectiveMode({ locator: { kind: 'none' } })).toBe('present');
     } finally {
       // Restore in reverse order so spy descriptors are removed
@@ -1014,21 +1007,21 @@ describe('PUL-Q003 — persisted browser state never determines the target', () 
 
     browser.setSearch('?scene=intro');
     browser.firePopstate(TAMPERED_HISTORY_STATE);
-    browser.setSearch('?composition=full-talk&index=2&mode=loop');
+    browser.setSearch('?composition=full-talk&index=2&mode=prompter');
     browser.firePopstate({ scene: 'still-tampered', mode: 'still-tampered' });
 
     expect(navigate.map((e) => e.detail)).toEqual([
       { locator: { kind: 'scene', scene: 'intro' } },
       {
         locator: { kind: 'composition-index', composition: 'full-talk', index: 2 },
-        mode: 'loop',
+        mode: 'prompter',
       },
     ]);
     const first = navigate[0];
     const second = navigate[1];
     if (!first || !second) throw new Error('expected two navigate events');
     expect(effectiveMode(first.detail)).toBe('present');
-    expect(effectiveMode(second.detail)).toBe('loop');
+    expect(effectiveMode(second.detail)).toBe('prompter');
   });
 
   it('an invalid URL grammar still routes through `navigation grammar is invalid:` without leaking seeded state into the error envelope', async () => {

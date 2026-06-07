@@ -40,15 +40,15 @@ export const dropList = (id: string, content: DropListContent): SceneModule =>
               const eb = ownerDoc.createElement('p');
               eb.setAttribute('class', 'dl__eyebrow');
               eb.textContent = content.eyebrow;
-              head.appendChild?.(eb);
+              head.appendChild(eb);
             }
             if (content.headline !== undefined) {
               const h = ownerDoc.createElement('h2');
               h.setAttribute('class', 'dl__headline');
               h.textContent = content.headline;
-              head.appendChild?.(h);
+              head.appendChild(h);
             }
-            root.appendChild?.(head);
+            root.appendChild(head);
           }
           const list = ownerDoc.createElement('ul');
           list.setAttribute('class', 'dl__list');
@@ -61,16 +61,16 @@ export const dropList = (id: string, content: DropListContent): SceneModule =>
             const lab = ownerDoc.createElement('span');
             lab.setAttribute('class', 'dl__label');
             lab.textContent = item.label;
-            li.appendChild?.(lab);
+            li.appendChild(lab);
             if (item.sub !== undefined) {
               const sub = ownerDoc.createElement('span');
               sub.setAttribute('class', 'dl__sub');
               sub.textContent = item.sub;
-              li.appendChild?.(sub);
+              li.appendChild(sub);
             }
-            list.appendChild?.(li);
+            list.appendChild(li);
           });
-          root.appendChild?.(list);
+          root.appendChild(list);
         },
       });
     },

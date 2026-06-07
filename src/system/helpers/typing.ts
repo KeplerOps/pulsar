@@ -96,9 +96,9 @@ export const typeNode = (
       j++;
       // Tiny linear-congruential offset for jitter — deterministic,
       // sourced from the character index so the sequence is stable
-      // across reloads. Avoids `Math.random` (Sonar security
-      // hotspot; Q001 nondeterminism) without losing the
-      // organic feel of variable per-char delays.
+      // across reloads. Avoids `Math.random` (Q001 screenshot
+      // nondeterminism) without losing the organic feel of variable
+      // per-char delays.
       const tick = j;
       const offset = ((tick * 1103515245 + 12345) & 0x7fff) / 0x7fff; // 0..1, deterministic
       timer = setTimeout(step, base + offset * jitter); // PUL-Q001-allow: typewriter reveal; screenshot mode bypasses the scene lifecycle entirely so this helper never runs in a captured frame.
