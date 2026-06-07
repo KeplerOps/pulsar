@@ -17,7 +17,6 @@
 import { gsap } from 'gsap';
 import { describe, expect, it } from 'vitest';
 import { assertSceneModule } from '../../src/runtime/scene';
-import { ADVANCE_GATE_LABEL } from '../../src/runtime/timeline';
 // Barrel re-export under test: register/index.ts re-exports these from
 // ./tokens. Importing through the barrel (not ./tokens) is what covers
 // the re-export line.
@@ -230,11 +229,6 @@ describe('_shared envelope — buildTemplateTimeline activation lifecycle', () =
     const tl = buildTemplateTimeline({
       ctx,
       rootValue: 'keep-active',
-      holdForAdvance: false,
-      // Give the body real duration so we can park the playhead AFTER the
-      // leading activation call but BEFORE the trailing deactivation
-      // onComplete and observe the active state mid-segment.
-      suffixDurationSeconds: 0.5,
       buildSegments: (segTl, root) => {
         segmentRoot = root;
         segTl.to({}, { duration: 1 });
@@ -246,7 +240,7 @@ describe('_shared envelope — buildTemplateTimeline activation lifecycle', () =
     expect(segmentRoot).toBe(keep);
 
     // Advance into the middle of the segment so the leading `tl.call(...)`
-    // (at t=0) has fired but the trailing onComplete (at the end) has not.
+    // (at t=0) has fired.
     timeline.time(0.5, false);
     // The kept root is now active; the sibling was forced inactive.
     expect(keep.dataset.pulsarTemplateActive).toBe('true');
@@ -255,56 +249,33 @@ describe('_shared envelope — buildTemplateTimeline activation lifecycle', () =
     timeline.kill();
   });
 
-  it('trailing tween onComplete deactivates the root and fires onDeactivate', () => {
+  it('keeps the root active through the timeline natural end (ADR-032: teardown lives in cleanup, not the timeline)', () => {
     const stage = makeStage();
     const ctx = liveCtx(stage);
-    const root = requireRoot(mountTemplateRoot({ ctx, rootValue: 'teardown' }), 'expected root');
+    const root = requireRoot(mountTemplateRoot({ ctx, rootValue: 'no-early-teardown' }), 'root');
 
-    let teardownFired = false;
     const tl = buildTemplateTimeline({
       ctx,
-      rootValue: 'teardown',
-      holdForAdvance: false,
-      suffixDurationSeconds: 0.1,
+      rootValue: 'no-early-teardown',
       buildSegments: (segTl) => {
         segTl.to({}, { duration: 0.1 });
       },
-      onDeactivate: () => {
-        teardownFired = true;
-      },
     });
     const timeline = tl as gsap.core.Timeline;
 
-    // Run the whole timeline synchronously to its very end so both the
-    // leading call (activate) and the trailing onComplete (deactivate +
-    // teardown) execute.
+    // Run the whole timeline synchronously to its very end. Under the
+    // run-loop there is no deactivate-on-complete tween, so the root MUST
+    // stay active — the run-loop holds for advance, then `cleanup(ctx)`
+    // removes the root. A premature deactivate-on-end would blank the scene
+    // before the presenter advanced.
     timeline.totalTime(timeline.totalDuration(), false);
 
-    expect(root.dataset.pulsarTemplateActive).toBe('false');
-    expect(teardownFired).toBe(true);
+    expect(root.dataset.pulsarTemplateActive).toBe('true');
 
     timeline.kill();
   });
 
-  it('inserts an advance gate label when holdForAdvance is left default', () => {
-    const stage = makeStage();
-    const ctx = liveCtx(stage);
-    mountTemplateRoot({ ctx, rootValue: 'gated' });
-
-    const tl = buildTemplateTimeline({
-      ctx,
-      rootValue: 'gated',
-      buildSegments: (segTl) => {
-        segTl.to({}, { duration: 0.2 });
-      },
-    });
-    const timeline = tl as gsap.core.Timeline;
-    // The canonical hold gate is authored on the timeline by label.
-    expect(timeline.labels[ADVANCE_GATE_LABEL]).toBeDefined();
-    timeline.kill();
-  });
-
-  it('omits the advance gate when holdForAdvance is false', () => {
+  it('authors no advance-gate label on the timeline (ADR-032: no master pause)', () => {
     const stage = makeStage();
     const ctx = liveCtx(stage);
     mountTemplateRoot({ ctx, rootValue: 'ungated' });
@@ -312,13 +283,14 @@ describe('_shared envelope — buildTemplateTimeline activation lifecycle', () =
     const tl = buildTemplateTimeline({
       ctx,
       rootValue: 'ungated',
-      holdForAdvance: false,
       buildSegments: (segTl) => {
         segTl.to({}, { duration: 0.2 });
       },
     });
     const timeline = tl as gsap.core.Timeline;
-    expect(timeline.labels[ADVANCE_GATE_LABEL]).toBeUndefined();
+    // No `_advance-gate*` label is authored — the run-loop holds for advance.
+    const gateLabels = Object.keys(timeline.labels).filter((name) => name.startsWith('_advance'));
+    expect(gateLabels).toEqual([]);
     timeline.kill();
   });
 });

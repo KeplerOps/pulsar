@@ -22,7 +22,6 @@
 import { gsap } from 'gsap';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertSceneModule } from '../../src/runtime/scene';
-import { ADVANCE_GATE_LABEL } from '../../src/runtime/timeline';
 import {
   type ActivityFeedPayoffContent,
   activityFeedPayoff,
@@ -192,7 +191,7 @@ describe('activityFeedPayoff — streaming + payoff + abort behavior', () => {
     expect(pt?.textContent).toBe('Dossier');
   });
 
-  it('exposes the afp-in label and a trailing advance gate on the timeline', () => {
+  it('exposes the afp-in label and authors no advance gate on the timeline (ADR-032)', () => {
     const scene = activityFeedPayoff('afp-labels', {
       feed: [{ type: 'search', text: 'q' }],
       payoff: { rows: [{ label: 'k', value: 'v' }] },
@@ -202,7 +201,8 @@ describe('activityFeedPayoff — streaming + payoff + abort behavior', () => {
     const tl = scene.timeline(ctxOf(stage)) as gsap.core.Timeline;
     try {
       expect(Object.keys(tl.labels)).toContain('afp-in');
-      expect(Object.keys(tl.labels)).toContain(ADVANCE_GATE_LABEL);
+      // The run-loop holds for advance; no `_advance-gate*` master pause.
+      expect(Object.keys(tl.labels).filter((n) => n.startsWith('_advance'))).toEqual([]);
       expect(tl.duration()).toBeGreaterThan(0);
     } finally {
       tl.kill();
@@ -314,7 +314,7 @@ describe('activityFeedPayoff — streaming + payoff + abort behavior', () => {
     }
   });
 
-  it('flips the activation marker on when activated and off when deactivated', async () => {
+  it('flips the activation marker on at start and keeps it active through the natural end (ADR-032)', async () => {
     vi.useFakeTimers();
     const stage = makeStage();
     const ctx = ctxOf(stage);
@@ -332,12 +332,18 @@ describe('activityFeedPayoff — streaming + payoff + abort behavior', () => {
     tl.seek(0.001, false); // leading .call flips it active
     expect(root.dataset.pulsarTemplateActive).toBe('true');
 
-    tl.progress(1); // trailing onComplete deactivates
-    expect(root.dataset.pulsarTemplateActive).toBe('false');
+    // No deactivate-on-complete tween: the root stays active at the
+    // timeline's natural end. The run-loop holds for advance; teardown is
+    // the scene's `cleanup(ctx)` job, which removes the root entirely.
+    tl.progress(1);
+    expect(root.dataset.pulsarTemplateActive).toBe('true');
     tl.kill();
+
+    scene.cleanup(ctx);
+    expect(stage.querySelector('[data-pulsar-template="afp-active"]')).toBeNull();
   });
 
-  it('onDeactivate aborts the streaming loop so no further entries/rows append', async () => {
+  it('cleanup aborts the streaming loop so no further entries/rows append (ADR-032 teardown in cleanup)', async () => {
     vi.useFakeTimers();
     const stage = makeStage();
     const ctx = ctxOf(stage);
@@ -355,14 +361,15 @@ describe('activityFeedPayoff — streaming + payoff + abort behavior', () => {
     const tl = scene.timeline(ctx) as gsap.core.Timeline;
     tl.pause();
     tl.seek(0.001, false);
-    // Let the loop append its first entry, then mid-stream deactivate.
+    // Let the loop append its first entry, then mid-stream tear down via
+    // the scene's cleanup hook (the run-loop calls it on scene exit).
     await vi.advanceTimersByTimeAsync(260);
     const entriesAtAbort = root.querySelectorAll('.afp__entry').length;
     expect(entriesAtAbort).toBeGreaterThanOrEqual(1);
     expect(entriesAtAbort).toBeLessThan(3);
 
-    tl.progress(1); // onComplete -> onDeactivate sets abortedFlag.aborted = true
     tl.kill();
+    scene.cleanup(ctx); // sets abortedFlag.aborted = true and removes the root
 
     // Drain remaining timers: the loop checks the abort flag at the top of
     // every iteration, so it must not add more entries or any payoff rows.

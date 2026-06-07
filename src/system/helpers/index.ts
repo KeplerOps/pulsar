@@ -1,15 +1,7 @@
 // Public surface of pulsar L2 helpers — re-exports for ergonomic
 // imports from templates and decks.
 
-export {
-  addAdvanceGate,
-  aSleep,
-  holdUntilAdvance,
-  runLoopUntilCleanup,
-  schedule,
-  sleep,
-  startInterval,
-} from './timing';
+export { aSleep, holdUntilAdvance, schedule, sleep, startInterval } from './timing';
 export type { ASleepOptions } from './timing';
 
 export { markedTextHtml, typeInto, typeNode } from './typing';

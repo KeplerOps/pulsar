@@ -19,7 +19,7 @@ import {
   type SceneModule,
   defineScene,
 } from '../../runtime/scene';
-import type { WorkbenchSceneCtx } from '../../runtime/scene-loader';
+import type { WorkbenchSceneCtx } from '../../runtime/scene-ctx';
 import type { ChromeSlots } from '../chrome';
 
 // ---------- ctx view --------------------------------------------------
@@ -145,58 +145,36 @@ export interface BuildTemplateTimelineHost {
   readonly rootValue: string;
   /** Scene-specific authoring callback — declare beats, tweens, etc. */
   readonly buildSegments: (tl: TemplateTimeline, root: HTMLElement | null) => void;
-  /** Duration (s) of the trailing tween whose onComplete deactivates the root. */
+  /**
+   * Duration (s) the scene's content occupies before the timeline reaches
+   * its natural end. Accepted so existing templates keep their per-scene
+   * pacing; the run-loop holds for advance after the timeline completes.
+   */
   readonly suffixDurationSeconds?: number;
-  /**
-   * When `true` (default), a trailing `addAdvanceGate(tl)` is inserted
-   * after the scene's `buildSegments` content so master pauses at the
-   * scene boundary until the presenter advances. Decks that want a
-   * scene to flow into the next without a hold (auto-flow demo
-   * sequences) pass `false`.
-   */
-  readonly holdForAdvance?: boolean;
-  /**
-   * Optional teardown callback fired by the suffix tween's
-   * `onComplete` alongside the template root's deactivation. Used by
-   * templates that mount chrome elements outside the scene root
-   * (e.g. terminal's clock + srcMark on `document.body`) so those
-   * elements are stripped when master leaves the segment.
-   */
-  readonly onDeactivate?: () => void;
 }
 
 /**
- * Build the scene's GSAP timeline with the canonical activation
- * envelope: leading `tl.call` flips the root to active (visible), the
- * supplied `buildSegments` callback adds beats / tweens, the trailing
- * tween's `onComplete` deactivates the root.
+ * Build the scene's GSAP timeline with the canonical activation envelope:
+ * a leading `tl.call` flips the root to active (visible), then the supplied
+ * `buildSegments` callback adds beats / tweens.
  *
- * The trailing mutation rides on a tween's `onComplete` (not a
- * trailing `tl.call`) because the last entry in a composition slice
- * has its child timeline end at master `duration()`, where a callback
- * at that exact position races the master's own `onComplete` and may
- * be skipped on the final tick. A short trailing tween moves the
- * mutation off the boundary.
+ * ADR-032 run-loop: the runtime no longer composes a master timeline, so
+ * there is no deactivate-on-complete tween — the scene timeline plays
+ * standalone to its natural end, the run-loop holds for advance, and the
+ * scene's `cleanup(ctx)` tears down (root removal + any chrome the scene
+ * mounted on `document.body`). Teardown therefore lives in `cleanup`, not
+ * on the timeline, so it never fires prematurely at the timeline's end.
  */
 export const buildTemplateTimeline = (host: BuildTemplateTimelineHost): TemplateTimeline | null => {
   const ctx = asTemplateCtx(host.ctx);
   if (ctx.stage === null) return null;
   const root = findTemplateRoot(host.ctx, host.rootValue);
-  const suffix = host.suffixDurationSeconds ?? 0.5;
   const tl = ctx.gsap.timeline();
   tl.call(() => {
     deactivateOtherRoots(ctx.stage, host.rootValue);
     setTemplateActive(root, true);
   });
   host.buildSegments(tl, root);
-  // ADR-032 run-loop: no master advance-gate. The scene timeline plays
-  // standalone to its natural end; the run-loop then holds for advance and
-  // removes the root on cleanup, so the root stays visible until then — no
-  // deactivate-on-complete that would blank the scene before advance.
-  const userOnDeactivate = host.onDeactivate;
-  if (userOnDeactivate !== undefined) {
-    tl.to({}, { duration: suffix, onComplete: () => userOnDeactivate() });
-  }
   return tl;
 };
 

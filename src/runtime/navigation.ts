@@ -16,17 +16,8 @@
 
 import { KEBAB_IDENTIFIER_FORM, isKebabIdentifier } from './identifier';
 
-/** Workbench mode set (ADR-007); the only accepted `mode=` values. Frozen. */
-export const NAVIGATION_MODES = Object.freeze([
-  'present',
-  'standalone',
-  'loop',
-  'paused',
-  'scrub',
-  'screenshot',
-  'prompter',
-  'rehearsal',
-] as const);
+/** Workbench mode set (ADR-007 / ADR-032); the only accepted `mode=` values. Frozen. */
+export const NAVIGATION_MODES = Object.freeze(['present', 'prompter'] as const);
 
 /** One of the {@link NAVIGATION_MODES} values. */
 export type NavigationMode = (typeof NAVIGATION_MODES)[number];

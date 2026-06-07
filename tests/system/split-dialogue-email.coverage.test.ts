@@ -201,7 +201,7 @@ describe('splitDialogueEmail — behavioral coverage', () => {
     scene.cleanup(ctx(stage));
   });
 
-  it('timeline() exposes the sde-in beat, an advance gate, and positive duration', () => {
+  it('timeline() exposes the sde-in beat, no advance gate, and positive duration (ADR-032)', () => {
     const scene = splitDialogueEmail('sde-tl', fullContent());
     const stage = makeStage();
     scene.create(ctx(stage));
@@ -210,10 +210,10 @@ describe('splitDialogueEmail — behavioral coverage', () => {
     const labels = tl.labels;
     expect(Object.keys(labels)).toContain('sde-in');
     expect(labels['sde-in']).toBe(0);
-    // The hold-for-advance gate is appended by the shared envelope.
-    expect(Object.keys(labels)).toContain('_advance-gate');
-    // Segment content + 1.6s suffix tween yields a real, positive duration.
-    expect(tl.duration()).toBeGreaterThan(1.6);
+    // The run-loop holds for advance; no `_advance-gate*` master pause.
+    expect(Object.keys(labels).filter((n) => n.startsWith('_advance'))).toEqual([]);
+    // Segment content yields a real, positive duration.
+    expect(tl.duration()).toBeGreaterThan(0);
     tl.kill();
     scene.cleanup(ctx(stage));
   });
@@ -306,16 +306,15 @@ describe('splitDialogueEmail — behavioral coverage', () => {
       { timeout: 2000, interval: 5 },
     );
 
-    // Fire the suffix tween's onComplete (onDeactivate) by jumping to the end.
-    tl.progress(1);
+    // ADR-032: the run-loop calls cleanup on scene exit; that sets the abort
+    // flag (the timeline no longer fires it on complete).
+    tl.kill();
+    scene.cleanup(ctx(stage));
 
     // Give the aborted async loop time to settle; it must NOT reveal the email.
     await new Promise((r) => setTimeout(r, 200));
     expect(email.classList.contains('sde__email--in')).toBe(false);
     expect(email.getAttribute('style')).toBe('opacity:0');
-
-    tl.kill();
-    scene.cleanup(ctx(stage));
   });
 
   it('play() uses default base/reveal delay when typeBaseMs/emailRevealAfterMs omitted (182, 201)', async () => {

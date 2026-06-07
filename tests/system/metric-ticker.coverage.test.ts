@@ -260,14 +260,15 @@ describe('metricTicker — behavioral coverage', () => {
     tl.progress(0.2);
     expect(root.dataset.pulsarTemplateActive).toBe('true');
 
-    // Trailing tween's onComplete deactivates the root at the end.
+    // ADR-032: reaching the natural end no longer deactivates the root —
+    // the run-loop holds for advance; teardown is the scene's cleanup job.
     tl.progress(1);
-    expect(root.dataset.pulsarTemplateActive).toBe('false');
+    expect(root.dataset.pulsarTemplateActive).toBe('true');
 
     // Segment body duration scales with metric count: 1 + 3*0.16 = 1.48,
-    // plus the leading activation, the advance gate, and the 2s suffix.
-    // Assert the body segment is reflected by the total exceeding the
-    // count-scaled minimum and that more metrics => longer body.
+    // plus the leading activation and the 2s suffix. Assert the body segment
+    // is reflected by the total exceeding the count-scaled minimum and that
+    // more metrics => longer body.
     const longer = metricTicker('mt-tl2', {
       title: 'TL2',
       metrics: [...metrics, { label: 'D', direction: 'up' as const, start: 0, step: 1 }],

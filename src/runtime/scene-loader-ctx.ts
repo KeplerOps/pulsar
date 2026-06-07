@@ -14,7 +14,6 @@ import {
   type CueGateControl,
   createAudioService,
 } from './audio';
-import type { SceneActivation } from './composition-resolver';
 import { profileFor } from './mode-profile';
 import type { NavigationLocator, NavigationMode, NavigationTarget } from './navigation';
 import {
@@ -23,6 +22,7 @@ import {
   createPresenterController,
 } from './presenter';
 import { createSeededRng } from './rng';
+import type { SceneActivation } from './scene';
 import type { SceneNavigationTarget } from './scene-navigation';
 import { PULSAR_RUNTIME_VERSION } from './version';
 

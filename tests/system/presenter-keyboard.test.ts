@@ -2,12 +2,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { PresenterCommand } from '../../src/runtime/presenter';
-import { createPresenterController } from '../../src/runtime/presenter';
-import {
-  type MasterTimeline,
-  createGsapCompositionTimeline,
-  createTimelineEngine,
-} from '../../src/runtime/timeline';
 import {
   DEFAULT_KEYBOARD_BINDINGS,
   createKeyboardPresenterSource,
@@ -147,49 +141,5 @@ describe('keyboard presenter source', () => {
     target.dispatchEvent(fakeKey('KeyZ'));
     expect(cmds.map((c) => c.kind)).toEqual(['pause']);
     dispose();
-  });
-});
-
-// End-to-end dispatch (issue #132 acceptance criterion): a real DOM
-// keydown flows keyboard source → per-navigation presenter controller →
-// GSAP runner → master timeline. Pins that the wired surface actually
-// moves beat state, not just that the keyboard source emits a command.
-describe('presenter keyboard → GSAP runner (PUL-F020 end-to-end dispatch)', () => {
-  it('a real ArrowRight keydown drives the master timeline to the next scene segment', async () => {
-    const engine = createTimelineEngine();
-    const sceneTl = (seconds: number): InstanceType<typeof engine.gsap.core.Timeline> => {
-      const tl = engine.gsap.timeline({ paused: true });
-      tl.to({ v: 0 }, { v: 1, duration: seconds });
-      return tl;
-    };
-    const target = makeTarget();
-    const keyboard = createKeyboardPresenterSource({ target });
-    const ctrl = new AbortController();
-    const presenter = createPresenterController(keyboard.source, ctrl.signal);
-    let captured: MasterTimeline | null = null;
-    const adapter = createGsapCompositionTimeline({
-      engine,
-      onMaster: (m) => {
-        captured = m;
-      },
-    });
-    const settled = adapter.run(
-      [
-        { id: 'scene-a', timeline: sceneTl(20) },
-        { id: 'scene-b', timeline: sceneTl(20) },
-      ],
-      { signal: ctrl.signal, presenter },
-    );
-    await new Promise((r) => setTimeout(r, 0));
-    const master = ((): MasterTimeline => {
-      if (captured === null) throw new Error('master not captured');
-      return captured;
-    })();
-    // Real DOM keydown → keyboard source → controller → runner → master.
-    target.dispatchEvent(fakeKey('ArrowRight'));
-    expect(master.time()).toBeCloseTo(20, 0);
-    ctrl.abort();
-    keyboard.dispose();
-    await settled;
   });
 });

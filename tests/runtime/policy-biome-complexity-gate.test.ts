@@ -47,8 +47,6 @@ const SUPPRESSION_PREFIX = '// biome-ignore lint/complexity/noExcessiveCognitive
 const EXPECTED_RUNTIME_FILES_WITH_SUPPRESSIONS = ['src/runtime/asset-preloader.ts'] as const;
 
 const EXPECTED_TEST_FILES_WITH_SUPPRESSIONS = [
-  'tests/runtime/scene-loader.helpers.ts',
-  'tests/runtime/scene-loader-present.test.ts',
   'tests/scenes/dom-css-accessibility-fixture.test.ts',
 ] as const;
 

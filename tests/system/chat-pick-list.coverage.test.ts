@@ -181,9 +181,9 @@ describe('chatPickList — timeline authoring', () => {
       expect(typeof tl.duration).toBe('function');
       // Authored beat label is present (buildSegments, line 105).
       expect(tl.labels['cpl-in']).toBe(0);
-      // Leading activation call + the 1.2s play dwell + the trailing
-      // 1.4s suffix tween + an advance gate all add real duration.
-      expect(tl.duration()).toBeGreaterThan(1.2);
+      // Leading activation call + the 1.2s play dwell give the timeline its
+      // duration. ADR-032: no trailing suffix tween / advance gate is added.
+      expect(tl.duration()).toBeGreaterThanOrEqual(1.2);
     } finally {
       tl.kill();
     }
@@ -304,7 +304,7 @@ describe('chatPickList — play() pick/dim cascade (timeline-driven)', () => {
 });
 
 describe('chatPickList — abort & teardown', () => {
-  it('onDeactivate aborts an in-flight pick so the highlight is never applied', async () => {
+  it('cleanup aborts an in-flight pick so the highlight is never applied', async () => {
     vi.useFakeTimers();
     const scene = chatPickList('cpl-abort', {
       promptMessage: 'Pick',
@@ -324,9 +324,10 @@ describe('chatPickList — abort & teardown', () => {
       // Advance partway through the stagger window but BEFORE the pick fires.
       await vi.advanceTimersByTimeAsync(100);
 
-      // Reaching the timeline end fires the trailing onComplete ->
-      // onDeactivate, which sets the session abort flag.
-      tl.seek(tl.duration(), false);
+      // ADR-032: the run-loop calls cleanup on scene exit; that sets the
+      // session abort flag (the timeline no longer fires it on complete).
+      tl.kill();
+      scene.cleanup(fakeCtx);
 
       // Drain any remaining dwell; the aborted chain must bail out and
       // leave the DOM untouched.

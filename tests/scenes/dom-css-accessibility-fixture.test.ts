@@ -103,7 +103,7 @@ const buildStage = (): FakeStage => {
 
 const buildCtx = (stage: FakeStage['element'] | null): unknown => ({
   stage,
-  mode: 'paused' as const,
+  mode: 'present' as const,
   gsap: { timeline: () => ({}) } as never,
   audio: {} as never,
 });
@@ -261,7 +261,7 @@ describe('domCssAccessibilityFixtureScene', () => {
     };
     domCssAccessibilityFixtureScene.timeline({
       stage: trackedStage,
-      mode: 'paused',
+      mode: 'present',
       gsap: { timeline: () => ({}) } as never,
       audio: {} as never,
     });
@@ -300,7 +300,7 @@ describe('domCssAccessibilityFixtureScene', () => {
     expect(() =>
       domCssAccessibilityFixtureScene.create({
         stage: minimalStage,
-        mode: 'paused',
+        mode: 'present',
         gsap: { timeline: () => ({}) } as never,
         audio: {} as never,
       }),
@@ -312,7 +312,7 @@ describe('domCssAccessibilityFixtureScene', () => {
     ['null', null],
     ['undefined', undefined],
     ['object without `stage`/`mode`', {}],
-    ['object with `stage: null`', { stage: null, mode: 'paused' }],
+    ['object with `stage: null`', { stage: null, mode: 'present' }],
   ])('is a no-op when ctx is %s', (_label, ctx) => {
     it('does not throw from any lifecycle hook', () => {
       expect(() => domCssAccessibilityFixtureScene.create(ctx)).not.toThrow();

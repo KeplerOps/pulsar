@@ -22,11 +22,7 @@ import type { CompositionRegistryEntry } from './runtime/composition-registry';
 import type { SceneModule } from './runtime/scene';
 import { browserSupportFixtureScene } from './scenes/browser-support-fixture';
 import { domCssAccessibilityFixtureScene } from './scenes/dom-css-accessibility-fixture';
-import { loopFixtureScene } from './scenes/loop-fixture';
-import { pausedFixtureScene } from './scenes/paused-fixture';
 import { placeholderScene } from './scenes/placeholder';
-import { screenshotRngFixtureScene } from './scenes/screenshot-rng-fixture';
-import { scrubFixtureScene } from './scenes/scrub-fixture';
 
 // Optional local decks live under `src/decks/local-*/index.ts` and
 // are gitignored — never enter the public repo, but auto-register at
@@ -55,35 +51,10 @@ const LOCAL_COMPOSITIONS: readonly CompositionRegistryEntry[] = Object.values(
 // the same way so the PUL-Q008 Playwright spec can boot it via
 // `?scene=dom-css-accessibility-fixture`.
 //
-// PUL-F015 / ADR-018: the loop verification fixture is registered the
-// same way so the loop-mode Playwright spec can boot it via
-// `?scene=loop-fixture&mode=loop` and observe the master timeline
-// genuinely restarting on completion (a strictly increasing
-// `data-pulsar-loop-iteration` attribute).
-//
-// PUL-F016 / ADR-019: the paused verification fixture is registered the
-// same way so the paused-mode Playwright spec can boot it via
-// `?scene=paused-fixture&mode=paused` and observe the master timeline
-// genuinely holding at its first frame (a `data-pulsar-paused-progress`
-// attribute pinned at `"0"`).
-//
-// PUL-F017 / ADR-020: the scrub verification fixture is registered the
-// same way so the scrub-mode Playwright spec can boot it via
-// `?scene=scrub-fixture&mode=scrub` and observe the workbench scrub
-// controls driving a real master timeline (a `data-pulsar-scrub-progress`
-// attribute that responds to play / reverse / beat-jump).
-//
-// PUL-F018 / ADR-021: the screenshot RNG verification fixture is
-// registered the same way so the screenshot-mode Playwright spec can
-// boot it via `?scene=screenshot-rng-fixture&mode=screenshot` and
-// observe the deterministic seeded generator replaying an identical
-// sequence across reloads (a `data-pulsar-screenshot-rng` attribute
-// that is byte-identical between two loads of the same URL).
-//
 // Pulsar L2: the pulsar-intro reference deck (`?composition=pulsar-intro`)
 // is the self-referential proof of the L2 system layer. Its scenes
-// exercise the shipped template factories, transition kinds, chrome
-// slots, metadata contracts, and presenter-driven scene shape.
+// exercise the shipped template factories, chrome slots, metadata
+// contracts, and presenter-driven scene shape.
 //
 // The ACES ecosystem intro (`?composition=aces-ecosystem-intro`) is a
 // one-hour content deck built from the same public template surface.
@@ -91,10 +62,6 @@ export const WORKBENCH_SCENES: readonly SceneModule[] = [
   placeholderScene,
   browserSupportFixtureScene,
   domCssAccessibilityFixtureScene,
-  loopFixtureScene,
-  pausedFixtureScene,
-  scrubFixtureScene,
-  screenshotRngFixtureScene,
   ...PULSAR_INTRO_SCENES,
   ...ACES_ECOSYSTEM_INTRO_SCENES,
   ...LOCAL_SCENES,

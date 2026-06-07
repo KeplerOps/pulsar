@@ -41,7 +41,7 @@
 
 import { NAVIGATION_MODES } from '../runtime/navigation';
 import type { SceneModule } from '../runtime/scene';
-import type { WorkbenchSceneCtx } from '../runtime/scene-loader';
+import type { WorkbenchSceneCtx } from '../runtime/scene-ctx';
 
 const ROOT_ATTR = 'data-pulsar-q008-root';
 const TEXT_ATTR = 'data-pulsar-q008-text';

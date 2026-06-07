@@ -3,17 +3,17 @@
 // The runtime-side contract for presenter commands under `mode=present`.
 // The runtime does not own the input surface; a workbench-supplied
 // {@link PresenterCommandSource} is wrapped per-navigation into a
-// {@link PresenterController} and forwarded to the timeline runner. This
+// {@link PresenterController} and forwarded to the control plane. This
 // module only DELIVERS the command kinds (the allowlist below); the
-// runner (`presenter-transport.ts`) honors them and the loader dispatches
+// control plane (`spike/control-plane.ts`) honors `advance` /
+// `skip-forward` to end the active scene, and the loader dispatches
 // `toggle-master-mute` (PUL-F025) against the audio service.
 //
-// Command meanings (the runner's contract, not enforced here): beat
-// pacing — `advance` / `hold` / `skip-forward` / `skip-backward`
-// (PUL-F020); transport freeze — `pause` / `resume` from the same
-// playhead (PUL-F021, orthogonal to beat pacing); `toggle-master-mute`
-// is a fact the loader's audio handler flips (PUL-F025). None abort the
-// navigation, call cleanup, or mutate URL/history.
+// Command meanings (the control plane's contract, not enforced here):
+// beat pacing — `advance` / `hold` / `skip-forward` / `skip-backward`
+// (PUL-F020); transport freeze — `pause` / `resume` (PUL-F021);
+// `toggle-master-mute` is a fact the loader's audio handler flips
+// (PUL-F025). None mutate URL/history.
 
 /**
  * Presenter command kinds accepted under `mode=present` (PUL-F020 beat

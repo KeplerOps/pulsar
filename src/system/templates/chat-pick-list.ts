@@ -106,10 +106,6 @@ export const chatPickList = (id: string, content: ChatPickListContent): SceneMod
           innerTl.call(() => play(id, ctx, content));
           innerTl.to({}, { duration: 1.2 });
         },
-        onDeactivate: () => {
-          const s = sessions.get(id);
-          if (s !== undefined) s.abortedFlag.aborted = true;
-        },
       }),
     cleanup: (ctx) => {
       const s = sessions.get(id);

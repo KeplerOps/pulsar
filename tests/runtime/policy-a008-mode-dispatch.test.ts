@@ -37,7 +37,7 @@ import {
 //      `ctx.mode == 'paused'` (loose-equality bypass), the TypeScript-
 //      wrapper variants (`(ctx.mode as string) === '...'`,
 //      `(ctx.mode!) === '...'`, parenthesized, `satisfies`), and the
-//      alias form `const SCREENSHOT = 'screenshot'; if (ctx.mode ===
+//      alias form `const SCREENSHOT = 'prompter'; if (ctx.mode ===
 //      SCREENSHOT) {}`.
 //
 //   2. A `SwitchStatement` whose discriminant resolves to `.mode` /
@@ -138,7 +138,7 @@ function isModeLiteral(expr: ts.Expression, literalAliases: ReadonlyMap<string, 
  * Collect file-local `const <name> = '<string literal>'` bindings —
  * including chained aliases (`const A = 'screenshot'; const B = A;`)
  * — so the scanner sees through the trivial obfuscation
- * `const SCREENSHOT = 'screenshot'; if (ctx.mode === SCREENSHOT) {}`.
+ * `const SCREENSHOT = 'prompter'; if (ctx.mode === SCREENSHOT) {}`.
  *
  * The collector iterates to a fixed point so chained declarations
  * resolve regardless of source order. `let` / `var` bindings are
@@ -427,28 +427,28 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       });
 
       it.each([
-        ["flipped order — `'screenshot' === ctx.mode`", "if ('screenshot' === ctx.mode) {}"],
-        ["inequality — `ctx.mode !== 'paused'`", "if (ctx.mode !== 'paused') {}"],
-        ["flipped inequality — `'loop' !== ctx.mode`", "if ('loop' !== ctx.mode) {}"],
+        ["flipped order — `'prompter' === ctx.mode`", "if ('prompter' === ctx.mode) {}"],
+        ["inequality — `ctx.mode !== 'prompter'`", "if (ctx.mode !== 'prompter') {}"],
+        ["flipped inequality — `'prompter' !== ctx.mode`", "if ('prompter' !== ctx.mode) {}"],
         [
           "bare identifier — `mode === 'present'`",
           "declare const mode: string; if (mode === 'present') {}",
         ],
         [
-          "ternary — `ctx.mode === 'screenshot' ? 1 : 0`",
-          'declare const ctx: { mode: string }; const x = ctx.mode === "screenshot" ? 1 : 0;',
+          "ternary — `ctx.mode === 'prompter' ? 1 : 0`",
+          'declare const ctx: { mode: string }; const x = ctx.mode === "prompter" ? 1 : 0;',
         ],
         [
           "parenthesized — `(ctx.mode) === 'present'`",
           'declare const ctx: { mode: string }; if ((ctx.mode) === "present") {}',
         ],
         [
-          "non-null — `ctx.mode! === 'paused'`",
-          'declare const ctx: { mode: string }; if (ctx.mode! === "paused") {}',
+          "non-null — `ctx.mode! === 'prompter'`",
+          'declare const ctx: { mode: string }; if (ctx.mode! === "prompter") {}',
         ],
         [
-          "as-cast — `(ctx.mode as string) === 'paused'`",
-          'declare const ctx: { mode: string }; if ((ctx.mode as string) === "paused") {}',
+          "as-cast — `(ctx.mode as string) === 'prompter'`",
+          'declare const ctx: { mode: string }; if ((ctx.mode as string) === "prompter") {}',
         ],
         [
           'template no-substitution — `` ctx.mode === \\`present\\` ``',
@@ -471,9 +471,9 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       it('preserves exact count when multiple comparisons appear', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "if (ctx.mode === 'screenshot') {}",
-          "if (ctx.mode !== 'paused') {}",
-          "if ('loop' === ctx.mode) {}",
+          "if (ctx.mode === 'present') {}",
+          "if (ctx.mode !== 'prompter') {}",
+          "if ('present' === ctx.mode) {}",
         ].join('\n');
         const findings = findingsOf(src);
         expect(findings).toHaveLength(3);
@@ -508,14 +508,13 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
           [
             'declare const ctx: { mode: string };',
             'switch (ctx.mode) {',
-            "  case 'screenshot': break;",
-            "  case 'paused': break;",
-            "  case 'loop': break;",
+            "  case 'present': break;",
+            "  case 'prompter': break;",
             '  default: break;',
             '}',
           ].join('\n'),
         );
-        expect(findings).toHaveLength(3);
+        expect(findings).toHaveLength(2);
         expect(findings.every((f) => f.label === 'mode-literal switch case in scene module')).toBe(
           true,
         );
@@ -523,12 +522,9 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
 
       it('flags `switch (mode)` with a bare identifier discriminant', () => {
         const findings = findingsOf(
-          [
-            'declare const mode: string;',
-            'switch (mode) {',
-            "  case 'screenshot': break;",
-            '}',
-          ].join('\n'),
+          ['declare const mode: string;', 'switch (mode) {', "  case 'prompter': break;", '}'].join(
+            '\n',
+          ),
         );
         expect(findings.map((f) => f.label)).toContain('mode-literal switch case in scene module');
         expect(findings).toHaveLength(1);
@@ -648,9 +644,9 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       // still violates the architectural rule. The gate flags both
       // strict and loose equality so a lint-bypass doesn't slip past.
       it.each([
-        ["loose === — `ctx.mode == 'screenshot'`", "if (ctx.mode == 'screenshot') {}"],
-        ["loose !== — `ctx.mode != 'paused'`", "if (ctx.mode != 'paused') {}"],
-        ["flipped loose === — `'loop' == ctx.mode`", "if ('loop' == ctx.mode) {}"],
+        ["loose === — `ctx.mode == 'prompter'`", "if (ctx.mode == 'prompter') {}"],
+        ["loose !== — `ctx.mode != 'prompter'`", "if (ctx.mode != 'prompter') {}"],
+        ["flipped loose === — `'prompter' == ctx.mode`", "if ('prompter' == ctx.mode) {}"],
         ["flipped loose !== — `'present' != ctx.mode`", "if ('present' != ctx.mode) {}"],
       ])('flags %s', (_label, source) => {
         const findings = findingsOf(`declare const ctx: { mode: string }; ${source}`);
@@ -660,7 +656,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
     });
 
     describe('file-local const alias of a mode literal', () => {
-      // Codex review (cycle 1): `const SCREENSHOT = 'screenshot';
+      // Codex review (cycle 1): `const SCREENSHOT = 'prompter';
       // if (ctx.mode === SCREENSHOT) {}` was a blind spot. The
       // literal-alias collector resolves single-step and chained
       // `const` bindings so the comparison fires the same way as the
@@ -668,7 +664,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       it('flags `const SCREENSHOT = "screenshot"; if (ctx.mode === SCREENSHOT) {}`', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const SCREENSHOT = 'screenshot';",
+          "const SCREENSHOT = 'prompter';",
           'if (ctx.mode === SCREENSHOT) {}',
         ].join('\n');
         const findings = findingsOf(src);
@@ -682,7 +678,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       it('flags chained const aliases (`const A = "loop"; const B = A; ctx.mode === B`)', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const A = 'loop';",
+          "const A = 'present';",
           'const B = A;',
           'if (ctx.mode === B) {}',
         ].join('\n');
@@ -698,7 +694,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         const src = [
           'declare const ctx: { mode: string };',
           'const B = A;',
-          "const A = 'loop';",
+          "const A = 'present';",
           'if (ctx.mode === B) {}',
         ].join('\n');
         const findings = findingsOf(src);
@@ -709,7 +705,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       it('flags `case TARGET:` inside `switch (ctx.mode)` when `const TARGET = "screenshot"`', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const TARGET = 'screenshot';",
+          "const TARGET = 'prompter';",
           'switch (ctx.mode) {',
           '  case TARGET: break;',
           '  default: break;',
@@ -723,7 +719,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
       it('flags loose-equality through an alias (`ctx.mode == SCREENSHOT`)', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const SCREENSHOT = 'screenshot';",
+          "const SCREENSHOT = 'prompter';",
           'if (ctx.mode == SCREENSHOT) {}',
         ].join('\n');
         const findings = findingsOf(src);
@@ -748,7 +744,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         // analysis here.
         const src = [
           'declare const ctx: { mode: string };',
-          "let target: string = 'screenshot';",
+          "let target: string = 'prompter';",
           'if (ctx.mode === target) {}',
         ].join('\n');
         expect(findingsOf(src)).toEqual([]);
@@ -774,9 +770,9 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         },
       );
 
-      it("flags multi-element `['paused', 'screenshot'].includes(ctx.mode)`", () => {
+      it("flags multi-element `['present', 'prompter'].includes(ctx.mode)`", () => {
         const findings = findingsOf(
-          "declare const ctx: { mode: string }; if (['paused', 'screenshot'].includes(ctx.mode)) {}",
+          "declare const ctx: { mode: string }; if (['present', 'prompter'].includes(ctx.mode)) {}",
         );
         expect(findings.map((f) => f.label)).toContain(
           'mode-literal membership branch in scene module',
@@ -784,10 +780,10 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         expect(findings).toHaveLength(1);
       });
 
-      it('flags aliased-array `const MUTED = ["paused"]; MUTED.includes(ctx.mode)`', () => {
+      it('flags aliased-array `const MUTED = ["present"]; MUTED.includes(ctx.mode)`', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const MUTED = ['paused', 'screenshot'];",
+          "const MUTED = ['present', 'prompter'];",
           'if (MUTED.includes(ctx.mode)) {}',
         ].join('\n');
         const findings = findingsOf(src);
@@ -797,10 +793,10 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         expect(findings).toHaveLength(1);
       });
 
-      it('flags chained alias of an array (`const A = ["paused"]; const B = A; B.includes(ctx.mode)`)', () => {
+      it('flags chained alias of an array (`const A = ["present"]; const B = A; B.includes(ctx.mode)`)', () => {
         const src = [
           'declare const ctx: { mode: string };',
-          "const A = ['paused'];",
+          "const A = ['present'];",
           'const B = A;',
           'if (B.includes(ctx.mode)) {}',
         ].join('\n');
@@ -811,8 +807,8 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         expect(findings).toHaveLength(1);
       });
 
-      it('flags bare-`mode` argument (`["paused"].includes(mode)`)', () => {
-        const src = "declare const mode: string; if (['paused'].includes(mode)) {}";
+      it('flags bare-`mode` argument (`["present"].includes(mode)`)', () => {
+        const src = "declare const mode: string; if (['present'].includes(mode)) {}";
         const findings = findingsOf(src);
         expect(findings.map((f) => f.label)).toContain(
           'mode-literal membership branch in scene module',
@@ -861,7 +857,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
 
       it('honors the line-allow tag on a `.includes()` branch', () => {
         const src =
-          "declare const ctx: { mode: string }; if (['screenshot'].includes(ctx.mode)) {} // PUL-A008-allow: scene-owned screenshot suppression";
+          "declare const ctx: { mode: string }; if (['prompter'].includes(ctx.mode)) {} // PUL-A008-allow: scene-owned mode suppression";
         expect(findingsOf(src)).toEqual([]);
       });
     });
@@ -869,13 +865,13 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
     describe('exemption marker', () => {
       it('honors `// PUL-A008-allow: <reason>` on the same line', () => {
         const src =
-          "declare const ctx: { mode: string }; if (ctx.mode === 'screenshot') {} // PUL-A008-allow: screenshot randomness suppression";
+          "declare const ctx: { mode: string }; if (ctx.mode === 'prompter') {} // PUL-A008-allow: prompter-only suppression";
         expect(findingsOf(src)).toEqual([]);
       });
 
       it('rejects an empty rationale', () => {
         const src =
-          "declare const ctx: { mode: string }; if (ctx.mode === 'screenshot') {} // PUL-A008-allow:";
+          "declare const ctx: { mode: string }; if (ctx.mode === 'prompter') {} // PUL-A008-allow:";
         const findings = findingsOf(src);
         expect(findings).toHaveLength(1);
         expect(findings[0]?.label).toBe('mode-literal comparison in scene module');
@@ -883,7 +879,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
 
       it('rejects a whitespace-only rationale', () => {
         const src =
-          "declare const ctx: { mode: string }; if (ctx.mode === 'screenshot') {} // PUL-A008-allow:    ";
+          "declare const ctx: { mode: string }; if (ctx.mode === 'prompter') {} // PUL-A008-allow:    ";
         expect(findingsOf(src)).toHaveLength(1);
       });
 
@@ -891,7 +887,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         const src = [
           'declare const ctx: { mode: string };',
           'const note = "// PUL-A008-allow: hidden";',
-          "if (ctx.mode === 'screenshot') {}",
+          "if (ctx.mode === 'prompter') {}",
         ].join('\n');
         expect(findingsOf(src)).toHaveLength(1);
       });
@@ -900,7 +896,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         const src = [
           'declare const ctx: { mode: string };',
           '// PUL-A008-allow: see above',
-          "if (ctx.mode === 'screenshot') {}",
+          "if (ctx.mode === 'prompter') {}",
         ].join('\n');
         const findings = findingsOf(src);
         expect(findings).toHaveLength(1);
@@ -911,17 +907,17 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         const src = [
           'declare const ctx: { mode: string };',
           'switch (ctx.mode) {',
-          "  case 'screenshot': break; // PUL-A008-allow: scene-owned screenshot suppression",
-          "  case 'paused': break;",
+          "  case 'present': break; // PUL-A008-allow: scene-owned mode suppression",
+          "  case 'prompter': break;",
           '  default: break;',
           '}',
         ].join('\n');
         const findings = findingsOf(src);
         // Two case arms touch a NAVIGATION_MODES literal; the
-        // screenshot arm is exempt, leaving exactly one finding on
-        // the `paused` arm.
+        // `present` arm is exempt, leaving exactly one finding on
+        // the `prompter` arm.
         expect(findings).toHaveLength(1);
-        expect(findings[0]?.text).toContain("case 'paused'");
+        expect(findings[0]?.text).toContain("case 'prompter'");
       });
     });
 
@@ -930,7 +926,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         const src = [
           'declare const ctx: { mode: string };',
           'const a = 1;',
-          "if (ctx.mode === 'screenshot') {}",
+          "if (ctx.mode === 'prompter') {}",
           'const b = 2;',
         ].join('\n');
         const findings = findingsOf(src, 'src/scenes/example.ts');
@@ -943,7 +939,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
           file: 'src/scenes/example.ts',
           line: 3,
           label: 'mode-literal comparison in scene module',
-          text: "if (ctx.mode === 'screenshot') {}",
+          text: "if (ctx.mode === 'prompter') {}",
         });
       });
     });
@@ -964,7 +960,7 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
         findings.push(...scanA008(parseSource(text, rel)));
       }
       const header =
-        'PUL-A008 forbids scene modules from branching on workbench mode literals (`ctx.mode === "screenshot"`, `switch (ctx.mode) { case "loop": ... }`, etc.). Mode dispatch lives in the runtime core (`src/runtime/navigation.ts`, `src/runtime/scene-loader.ts`); scenes consume bounded `ctx.mode` hints. Add a `// PUL-A008-allow: <reason>` exemption on the same line only when scene-owned behavior cannot be enforced centrally (e.g., deterministic randomness under mode=screenshot).';
+        'PUL-A008 forbids scene modules from branching on workbench mode literals (`ctx.mode === "prompter"`, `switch (ctx.mode) { case "present": ... }`, etc.). Mode dispatch lives in the runtime core (`src/runtime/navigation.ts`, `src/runtime/present-loader.ts`); scenes consume bounded `ctx.mode` hints. Add a `// PUL-A008-allow: <reason>` exemption on the same line only when scene-owned behavior cannot be enforced centrally.';
       const detail = findings.map((f) => `  ${f.file}:${f.line}  ${f.label}  ${f.text}`).join('\n');
       const message = findings.length === 0 ? '' : `${header}\n${detail}`;
       expect(findings, message).toEqual([]);
@@ -972,13 +968,13 @@ describe('PUL-A008 — mode dispatch in core (source scan)', () => {
 
     it('runtime core `src/runtime/` is exempt by scope (the dispatch boundary)', () => {
       // The scope is source modules under `src/scenes/`, so `src/runtime/navigation.ts`
-      // and `src/runtime/scene-loader.ts` — which deliberately contain
+      // and `src/runtime/present-loader.ts` — which deliberately contain
       // the mode-literal comparisons this gate forbids in scenes —
       // never enter the scan. This test pins that property so a
       // future change to the scope cannot silently drag the dispatch
       // boundary into the gate.
       const navigation = join(SRC_ROOT, 'runtime', 'navigation.ts');
-      const loader = join(SRC_ROOT, 'runtime', 'scene-loader.ts');
+      const loader = join(SRC_ROOT, 'runtime', 'present-loader.ts');
       expect(statSync(navigation).isFile()).toBe(true);
       expect(statSync(loader).isFile()).toBe(true);
       const sceneFiles = walkSourceFiles(SCENES_ROOT);

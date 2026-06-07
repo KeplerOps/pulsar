@@ -13,7 +13,7 @@ import { REPO_ROOT, parseSource } from './source-policy';
 // #102's acceptance criterion 4 ("Identify APIs that scene code can
 // affect through lifecycle hooks and context") names the structural
 // surface the doc enumerates — every field on `WorkbenchSceneCtx` (the
-// `ctx.X` an active scene receives, in `src/runtime/scene-loader.ts`)
+// `ctx.X` an active scene receives, in `src/runtime/scene-ctx.ts`)
 // and every lifecycle hook on `SceneModule` (any member typed as
 // `SceneLifecycleFn`, in `src/runtime/scene.ts`).
 //
@@ -34,7 +34,7 @@ import { REPO_ROOT, parseSource } from './source-policy';
 // doc-coverage assertion.
 
 const DOC_PATH = join(REPO_ROOT, 'docs/scene-trust-model.md');
-const CTX_SRC = join(REPO_ROOT, 'src/runtime/scene-loader.ts');
+const CTX_SRC = join(REPO_ROOT, 'src/runtime/scene-ctx.ts');
 const SCENE_SRC = join(REPO_ROOT, 'src/runtime/scene.ts');
 const LIFECYCLE_TYPE_NAME = 'SceneLifecycleFn';
 

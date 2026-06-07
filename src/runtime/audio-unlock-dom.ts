@@ -9,7 +9,7 @@
 // choreography is testable against fakes; production `main.ts` supplies
 // the real `#stage` and `document.createElement`.
 
-import type { AudioUnlockAdapter, AudioUnlockContext } from './scene-loader';
+import type { AudioUnlockAdapter, AudioUnlockContext } from './scene-loader-guard';
 
 /** Minimal `HTMLElement`-like surface the adapter writes to (real button in prod, fake in tests). */
 export interface UnlockButtonElement {

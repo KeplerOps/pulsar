@@ -80,16 +80,16 @@ site-level suppressions were deleted with them.
 
 ### Test fixtures and helpers
 
-These three test offenders are isolated functions, not part of the
-policy-scanner cluster, and are not covered by the file-level
-overrides below. They get site-level suppressions like the production
-source above. They are listed here so the ratchet has the same
-target/score record for them.
+This test offender is an isolated function, not part of the
+policy-scanner cluster, and is not covered by the file-level
+overrides below. It gets a site-level suppression like the production
+source above. It is listed here so the ratchet has the same
+target/score record for it. (The `scene-loader.helpers.ts` `asTimeline`
+and `scene-loader-present.test.ts` `mountPresent` offenders were removed
+with the master-timeline scene-loader test suite under ADR-032.)
 
 | File | Symbol | Score |
 |------|--------|-------|
-| [`tests/runtime/scene-loader.helpers.ts`](../../tests/runtime/scene-loader.helpers.ts) | `asTimeline` adapter's `run` method | 21 |
-| [`tests/runtime/scene-loader-present.test.ts`](../../tests/runtime/scene-loader-present.test.ts) | `mountPresent` mount helper | 22 |
 | [`tests/scenes/dom-css-accessibility-fixture.test.ts`](../../tests/scenes/dom-css-accessibility-fixture.test.ts) | recursive `walk` accessibility-attribute scan | 20 |
 
 ## File-level overrides (no ratchet target)

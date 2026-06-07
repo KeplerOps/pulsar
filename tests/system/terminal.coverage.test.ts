@@ -126,7 +126,7 @@ describe('terminal — rendering + lifecycle coverage', () => {
     expect(term.children).toHaveLength(0);
   });
 
-  it('timeline authors the term-start label, an advance gate, and flips the activation marker', () => {
+  it('timeline authors the term-start label, no advance gate, and keeps the root active through the end (ADR-032)', () => {
     const ctx = makeCtx();
     const scene = terminal('term-tl', { script: [{ t: 'user', text: 'go' }], typeBaseMs: 1 });
     scene.create(ctx);
@@ -135,7 +135,8 @@ describe('terminal — rendering + lifecycle coverage', () => {
     const tl = scene.timeline(ctx) as gsap.core.Timeline;
     expect(tl).not.toBeNull();
     expect(Object.keys(tl.labels)).toContain('term-start');
-    expect(Object.keys(tl.labels)).toContain('_advance-gate');
+    // Run-loop holds for advance; no `_advance-gate*` master pause is authored.
+    expect(Object.keys(tl.labels).filter((n) => n.startsWith('_advance'))).toEqual([]);
     expect(tl.labels['term-start']).toBe(0);
     expect(tl.duration()).toBeGreaterThan(0);
 
@@ -144,9 +145,10 @@ describe('terminal — rendering + lifecycle coverage', () => {
     tl.pause();
     tl.seek(0.001, false);
     expect(root.getAttribute('data-pulsar-template-active')).toBe('true');
-    // Seeking to the end fires the suffix tween's onComplete → inactive.
+    // Reaching the natural end no longer deactivates the root — the run-loop
+    // holds for advance and the scene's cleanup tears down.
     complete(tl);
-    expect(root.getAttribute('data-pulsar-template-active')).toBe('false');
+    expect(root.getAttribute('data-pulsar-template-active')).toBe('true');
     tl.kill();
   });
 
@@ -515,7 +517,7 @@ describe('terminal — rendering + lifecycle coverage', () => {
     tl.kill();
   });
 
-  it('onDeactivate (suffix-tween onComplete) strips the body-mounted clock + srcMark when master leaves', async () => {
+  it('reaching the timeline end keeps body-mounted clock + srcMark up; cleanup strips them (ADR-032)', async () => {
     const ctx = makeCtx();
     const scene = terminal('term-deact', {
       script: [{ t: 'user', text: 'x' }],
@@ -533,16 +535,19 @@ describe('terminal — rendering + lifecycle coverage', () => {
     expect(document.body.querySelector('.src-mark')).not.toBeNull();
     expect(root.getAttribute('data-pulsar-template-active')).toBe('true');
 
-    // Seeking to the end fires the suffix tween's onComplete:
-    // deactivate the root + run sessionTeardown.
+    // Reaching the natural end no longer tears anything down — the run-loop
+    // holds for advance, so the root stays active and chrome stays mounted.
     complete(tl);
     await drain(10);
+    expect(root.getAttribute('data-pulsar-template-active')).toBe('true');
+    expect(document.body.querySelector('.ph-clock')).not.toBeNull();
+    expect(document.body.querySelector('.src-mark')).not.toBeNull();
+    tl.kill();
 
-    expect(root.getAttribute('data-pulsar-template-active')).toBe('false');
+    // The run-loop calls cleanup on scene exit; that is what strips chrome.
+    scene.cleanup(ctx);
     expect(document.body.querySelector('.ph-clock')).toBeNull();
     expect(document.body.querySelector('.src-mark')).toBeNull();
-
-    tl.kill();
   });
 
   it('cleanup removes the scene root AND tears down body-mounted chrome (clock + srcMark)', async () => {

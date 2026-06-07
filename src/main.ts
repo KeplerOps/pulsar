@@ -19,7 +19,7 @@ import {
 import { createPresentLoader } from './runtime/present-loader';
 import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
-import type { WorkbenchChromeSlots, WorkbenchSceneCtx } from './runtime/scene-loader';
+import type { WorkbenchChromeSlots, WorkbenchSceneCtx } from './runtime/scene-ctx';
 import { createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { createDomWorkbenchChrome } from './runtime/workbench-chrome';

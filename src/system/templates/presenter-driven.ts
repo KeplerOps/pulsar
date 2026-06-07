@@ -13,18 +13,17 @@
 //     },
 //   });
 //
-// Behind the scenes:
-//   - timeline(ctx) returns a child timeline with a leading 0.1s spacer
-//     and a trailing `addAdvanceGate(tl)` label. composeMasterTimeline
-//     turns the gate label into a master `addPause` (existing PUL-Bx2
-//     wiring), so master halts at the end of this scene's segment
-//     until the user advances. The scene's segment is functionally
-//     "indefinite" from the master's POV — exactly what calgary's loop
-//     pattern needs.
-//   - create(ctx) kicks off `run(ctx)` as a side-effect async; the body
-//     drives its own pacing via `aSleep({ controller })` /
-//     `holdUntilAdvance(controller)`, both of which subscribe to the
-//     same `PresenterController` and resolve on `advance`.
+// Behind the scenes (ADR-032 run-loop):
+//   - timeline(ctx) returns a short child timeline that kicks off the body
+//     when the run-loop plays it. The timeline reaches its natural end
+//     quickly; the run-loop then holds at the scene boundary until the user
+//     advances. The body itself parks on `holdUntilAdvance(controller)` /
+//     `aSleep({ controller })` and exits in lockstep when advance fires, so
+//     the scene is functionally "indefinite" — exactly what calgary's loop
+//     pattern needs — without a master-timeline advance gate.
+//   - create(ctx) stashes the ctx; the body kicks off from the timeline's
+//     leading `tl.call` so all scenes don't fire their bodies concurrently
+//     at composition load.
 //   - cleanup(ctx) flips an abort flag that the body can read between
 //     beats so a navigation-superseded scene tears down promptly.
 //
@@ -37,7 +36,6 @@ import { gsap as gsapDefault } from 'gsap';
 import type { PresenterController } from '../../runtime/presenter';
 import { type Caption, type SceneModule, assertSceneModule } from '../../runtime/scene';
 import type { ChromeSlots } from '../chrome';
-import { addAdvanceGate } from '../helpers/timing';
 
 /**
  * Subset of `WorkbenchSceneCtx` the presenter-driven body is contracted
@@ -153,19 +151,10 @@ export const presenterDrivenScene = (id: string, content: PresenterDrivenContent
           }
         })();
       });
-      // Tiny leading spacer so the segment has non-zero duration on
-      // master (composeMasterTimeline positions following segments at
-      // the new end via '>').
-      tl.to({}, { duration: 0.1 });
-      // Trailing advance gate. composeMasterTimeline detects the
-      // `_advance-gate` label and inserts a master.addPause at the
-      // corresponding master-time. Master halts here until the user
-      // advances; advance also wakes any holdUntilAdvance/aSleep the
-      // body is parked in, so the body exits in lockstep.
-      addAdvanceGate(tl);
-      // Trailing 0.1s tween so the segment continues past the gate
-      // after advance fires — covers the fade-out window for any
-      // cleanup work.
+      // Tiny spacer so the timeline has a non-zero duration to play. It
+      // reaches its natural end almost immediately; the run-loop then holds
+      // at the scene boundary until the presenter advances, which also wakes
+      // the body's `holdUntilAdvance` / `aSleep` so it exits in lockstep.
       tl.to({}, { duration: 0.1 });
       return tl;
     },

@@ -287,7 +287,7 @@ describe('cardCarousel — behavioral coverage', () => {
     long.cleanup(ctx(stageLong));
   });
 
-  it('completing the timeline fires onDeactivate: the loop aborts and stops advancing', async () => {
+  it('cleanup aborts the card loop so it stops advancing (ADR-032 teardown in cleanup)', async () => {
     const stage = makeStage();
     const scene = cardCarousel('cc-deactivate', {
       dwellMs: 60,
@@ -300,20 +300,20 @@ describe('cardCarousel — behavioral coverage', () => {
     tl.progress(0.001);
     expect(requireEl(cardStage.querySelector('.cc__headline'), 'first').textContent).toBe('Alpha');
 
-    // Jump to the end: the suffix tween's onComplete deactivates the root and
-    // fires onDeactivate, which sets the abort flag.
+    // Reaching the natural end no longer deactivates the root — the run-loop
+    // holds for advance; the root stays active.
     tl.progress(1, false);
-    expect(root.dataset.pulsarTemplateActive).toBe('false');
+    expect(root.dataset.pulsarTemplateActive).toBe('true');
+    tl.kill();
 
-    // Even though the dwell elapses, the aborted loop must NOT advance.
+    // The run-loop calls cleanup on scene exit; that sets the abort flag.
+    scene.cleanup(ctx(stage));
+
+    // Even though the dwell elapses, the aborted loop must NOT advance, and
+    // the root was removed by cleanup.
     await vi.advanceTimersByTimeAsync(300);
     await flushMicrotasks();
-    expect(requireEl(cardStage.querySelector('.cc__headline'), 'still-first').textContent).toBe(
-      'Alpha',
-    );
-
-    tl.kill();
-    scene.cleanup(ctx(stage));
+    expect(stage.querySelector('[data-pulsar-template="cc-deactivate"]')).toBeNull();
   });
 
   it('cleanup aborts the loop and removes the scene root', async () => {

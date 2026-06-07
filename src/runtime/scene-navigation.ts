@@ -1,11 +1,12 @@
 // Scene navigation dispatch — PUL-F008 (ADR-014 / ADR-002 §Navigation).
 //
-// Turns a {@link NavigationTarget} (PUL-F007 parser) into a running scene
-// via the composition-resolver lifecycle (PUL-F004). Owns the dispatch
-// step the parser does not: scene/composition existence, member/index
-// range, snapshotting the manifest slice, and routing through the bridge.
+// Turns a {@link NavigationTarget} (PUL-F007 parser) into the resolved view
+// of "what scene the URL addresses" (ADR-032). Owns the dispatch step the
+// parser does not: scene/composition existence, member/index range, and
+// snapshotting the manifest slice. The present-loader (`present-loader.ts`)
+// then sequences the resolved slice through the imperative control plane.
 
-import type { AudioBedDeclaration, CueGateControl } from './audio';
+import type { AudioBedDeclaration } from './audio';
 import {
   type CompositionEntry,
   type CompositionManifest,
@@ -13,17 +14,9 @@ import {
   findUnregisteredEntries,
 } from './composition';
 import type { CompositionRegistry, RegisteredComposition } from './composition-registry';
-import {
-  type AssetPreloader,
-  type CompositionTimelineAdapter,
-  type ResolveCompositionOptions,
-  type SceneActivation,
-  resolveComposition,
-} from './composition-resolver';
 import type { NavigationTarget } from './navigation';
 import { deepFreeze } from './object';
-import type { PresenterController } from './presenter';
-import { type SceneRegistry, createSceneRegistry } from './registry';
+import type { SceneRegistry } from './registry';
 import type { SceneModule } from './scene';
 
 /**
@@ -75,70 +68,6 @@ export interface SceneNavigationTarget {
 export interface ResolveSceneNavigationOptions {
   readonly scenes: SceneRegistry;
   readonly compositions: CompositionRegistry;
-}
-
-/**
- * Inputs to {@link loadSceneNavigationTarget}: lifecycle adapters + ctx.
- * No registry — the bridge synthesizes one from `target`'s snapshot.
- */
-export interface LoadSceneNavigationTargetOptions {
-  /**
-   * Per-occurrence scene-context factory (issue #99): called once per
-   * entry with its {@link SceneActivation}, so a repeated-id slice gives
-   * each occurrence a distinct `ctx`. The resolver never inspects it (ADR-011).
-   */
-  readonly ctx: (activation: SceneActivation) => unknown;
-  /** Preload adapter — see {@link AssetPreloader}. */
-  readonly preloadAssets: AssetPreloader;
-  /** Timeline composition/playback adapter — see {@link CompositionTimelineAdapter}. */
-  readonly timeline: CompositionTimelineAdapter;
-  /** Cancellation signal forwarded to {@link resolveComposition} (PUL-F006). */
-  readonly signal?: AbortSignal;
-  /** Beat label to seek before the head timeline (PUL-F011); head-only via `headBeat`. */
-  readonly beat?: string;
-  /**
-   * Non-fatal missing-beat callback (PUL-F011 / ADR-015); the runner MUST
-   * NOT throw on a missing label. REQUIRED whenever {@link beat} is
-   * supplied — the bridge throws otherwise so the diagnostic cannot vanish.
-   */
-  readonly onBeatMissing?: () => void;
-  /** Loop repeat hint (PUL-F015 / ADR-018); head-only via `headRepeat`. */
-  readonly repeat?: 'until-aborted';
-  /** Paused hold hint (PUL-F016 / ADR-019); head-only via `headHold`. */
-  readonly hold?: 'first-frame';
-  /** Scrub cue-gate hint (PUL-F017 / ADR-020); head-only via `headCueGate`. */
-  readonly cueGate?: 'monotonic-forward';
-  /** Dynamic cue-eligibility gate paired with {@link cueGate} (PUL-F017 / ADR-020). */
-  readonly audioCueGate?: CueGateControl;
-  /**
-   * Screenshot capture hint (PUL-F018 / ADR-021); head-only via
-   * `headScreenshot`. Direct callers supplying `'capture'` MUST also build
-   * {@link ctx} with `mode: 'screenshot'` — the deterministic-seed clause
-   * flows through `ctx.mode` (PUL-F012), not the runner input. The bridge
-   * cannot enforce this (ctx is opaque per ADR-011).
-   */
-  readonly screenshot?: 'capture';
-  /**
-   * Present-mode presenter controller (PUL-F020 / ADR-023; PUL-F021 /
-   * ADR-024 pause/resume). Forwarded to EVERY scene (not head-only), so
-   * the bridge does NOT truncate the slice — present-mode runs the full
-   * slice and presenter commands act on whichever scene is active.
-   */
-  readonly presenter?: PresenterController;
-  /** Diagnostic sink for the per-scene presenter wrapper (PUL-F020 / ADR-023). */
-  readonly onPresenterError?: (err: unknown) => void;
-  /**
-   * Per-scene post-cleanup hook (PUL-F024 / ADR-004), receiving the
-   * cleaned occurrence's {@link SceneActivation} so a repeated-id slice
-   * tears down occurrence-safely (issue #99).
-   */
-  readonly onSceneCleaned?: (activation: SceneActivation) => void;
-  /**
-   * Per-scene failure sink (PUL-F029 / ADR-028); the loader appends to
-   * `data-pulsar-scene-failures` and surfaces a public diagnostic without
-   * serializing the raw cause (ADR-028: no raw causes).
-   */
-  readonly onSceneFailed?: (event: import('./composition-resolver').SceneFailureEvent) => void;
 }
 
 const NAV_FAIL_PREFIX = 'scene navigation failed:';
@@ -278,37 +207,6 @@ function resolveCompositionContext(
 }
 
 /**
- * Bridge-level slice truncation for single-scene modes (loop / paused /
- * scrub / screenshot — PUL-F015..F018), whose head timeline never
- * naturally completes. Guarantees "no following entries run" independent
- * of runner conformance, mirroring (and idempotent with) the loader's
- * `applySingleSceneSlice`. Returns the input unchanged when `headOnly` is
- * false or there is no composition slice.
- */
-function truncateToHead(target: SceneNavigationTarget, headOnly: boolean): SceneNavigationTarget {
-  if (!headOnly || target.composition === undefined) {
-    return target;
-  }
-  const headEntry = target.composition.manifestSlice[0];
-  const headScene = target.composition.sceneSlice[0];
-  if (headEntry === undefined || headScene === undefined) {
-    return target;
-  }
-  return {
-    scene: target.scene,
-    composition: {
-      id: target.composition.id,
-      manifestSlice: Object.freeze([headEntry]),
-      sceneSlice: Object.freeze([headScene]),
-      ...(target.composition.audioBed ? { audioBed: target.composition.audioBed } : {}),
-      // PUL-F029 / ADR-028: preserve the absolute start index so a failure
-      // diagnostic still names the right manifest entry after truncation.
-      startIndex: target.composition.startIndex,
-    },
-  };
-}
-
-/**
  * Resolve a {@link NavigationTarget} against the registries into a
  * runnable {@link SceneNavigationTarget}, or `null` for `kind: 'none'`.
  * Throws (`scene navigation failed: ...`) on existence / membership
@@ -360,100 +258,4 @@ export function resolveSceneNavigation(
       return { scene: composition.sceneSlice[0] as SceneModule, composition };
     }
   }
-}
-
-/**
- * Drive the addressed scene (or composition slice) through the
- * composition resolver lifecycle, so URL navigation inherits PUL-F004's
- * preload → create → timeline → cleanup ordering and PUL-F006's
- * mandatory cleanup. Synthesizes a fresh registry from `target`'s
- * snapshot so no outside registry can substitute scenes at the same ids.
- *
- * Per PUL-F029 / ADR-028, per-scene phase throws are SCENE failures:
- * with `onSceneFailed` wired they isolate (the composition plays on);
- * without it they aggregate into an `AggregateError`. Composition-wide
- * failures still reject (`composition resolution failed: ...`).
- */
-export async function loadSceneNavigationTarget(
-  target: SceneNavigationTarget,
-  options: LoadSceneNavigationTargetOptions,
-): Promise<void> {
-  // Truncate to head for single-scene modes (PUL-F015..F018) so "no
-  // following entries run" holds independent of runner conformance;
-  // idempotent with the loader's `applySingleSceneSlice`.
-  const effectiveTarget = truncateToHead(
-    target,
-    options.repeat !== undefined ||
-      options.hold !== undefined ||
-      options.cueGate !== undefined ||
-      options.screenshot !== undefined,
-  );
-  const composition = effectiveTarget.composition;
-  // One assignment for both paths so manifest and registry cannot drift.
-  let scenes: readonly SceneModule[];
-  let manifest: CompositionManifest;
-  if (composition === undefined) {
-    scenes = [effectiveTarget.scene];
-    manifest = [effectiveTarget.scene.id];
-  } else {
-    scenes = composition.sceneSlice;
-    manifest = composition.manifestSlice;
-  }
-
-  // Dedupe by id (identity-preserving — same id is the same module) so a
-  // repeated-id slice does not trip the synthesized registry's dup guard.
-  const uniqueScenes = Array.from(new Map(scenes.map((s) => [s.id, s])).values());
-
-  // PUL-F011 / ADR-015: fail at construction if `beat` lacks
-  // `onBeatMissing`, mirroring the resolver, so direct callers cannot
-  // silently lose the missing-label diagnostic.
-  if (options.beat !== undefined && options.onBeatMissing === undefined) {
-    fail(
-      '"onBeatMissing" is required when "beat" is supplied — a beat without a diagnostic surface would silently lose missing-label errors',
-    );
-  }
-
-  await resolveComposition(
-    buildResolverOptions(createSceneRegistry(uniqueScenes), manifest, options),
-  );
-}
-
-/**
- * Build the {@link ResolveCompositionOptions} the bridge hands the
- * resolver: map the bridge's input names onto the resolver's head-scoped
- * names (`beat`→`headBeat`, etc.) and drop absent keys so the resolver's
- * `'<key>' in opts` checks see absent rather than `undefined`. Paired
- * surfaces (`onBeatMissing` / `onPresenterError`) are dropped when their
- * partner (`beat` / `presenter`) is absent.
- */
-function buildResolverOptions(
-  registry: ReturnType<typeof createSceneRegistry>,
-  manifest: CompositionManifest,
-  options: LoadSceneNavigationTargetOptions,
-): ResolveCompositionOptions {
-  const optional: Record<string, unknown> = {
-    signal: options.signal,
-    headBeat: options.beat,
-    onBeatMissing: options.beat === undefined ? undefined : options.onBeatMissing,
-    headRepeat: options.repeat,
-    headHold: options.hold,
-    headCueGate: options.cueGate,
-    audioCueGate: options.audioCueGate,
-    headScreenshot: options.screenshot,
-    presenter: options.presenter,
-    onPresenterError: options.presenter === undefined ? undefined : options.onPresenterError,
-    onSceneCleaned: options.onSceneCleaned,
-    onSceneFailed: options.onSceneFailed,
-  };
-  for (const key of Object.keys(optional)) {
-    if (optional[key] === undefined) delete optional[key];
-  }
-  return {
-    registry,
-    manifest,
-    ctx: options.ctx,
-    preloadAssets: options.preloadAssets,
-    timeline: options.timeline,
-    ...optional,
-  };
 }

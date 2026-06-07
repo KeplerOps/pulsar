@@ -172,11 +172,6 @@ export const terminal = (id: string, content: TerminalContent): SceneModule => {
           innerTl.call(() => playScript(id, ctx, content));
           innerTl.to({}, { duration: 1 });
         },
-        // Strip chrome side-effects (clock / srcMark / FF overlay)
-        // when master leaves the segment. The scene root is
-        // deactivated by `buildTemplateTimeline` itself; this hook
-        // covers the elements mounted on `document.body`.
-        onDeactivate: () => sessionTeardown(id),
       }),
     cleanup: (ctx) => {
       // Best-effort teardown of clock + srcMark + ff overlay (the

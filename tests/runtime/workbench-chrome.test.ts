@@ -45,15 +45,8 @@ const buildFakeElement = (): FakeChromeElement => {
 };
 
 describe('chromeVisibilityFor (PUL-F031)', () => {
-  it.each([['standalone'], ['screenshot']] as const)(
-    "maps mode='%s' to 'hidden' (requirement statement: chrome SHALL hide)",
-    (mode) => {
-      expect(chromeVisibilityFor(mode)).toBe('hidden');
-    },
-  );
-
-  it.each([['present'], ['loop'], ['paused'], ['scrub'], ['prompter'], ['rehearsal']] as const)(
-    "maps mode='%s' to 'visible' (statement only names standalone/screenshot as hidden)",
+  it.each([['present'], ['prompter']] as const)(
+    "maps mode='%s' to 'visible' (ADR-032: chrome shows for both surviving modes; hiding is a composition override)",
     (mode) => {
       expect(chromeVisibilityFor(mode)).toBe('visible');
     },
@@ -97,22 +90,8 @@ describe('createDomWorkbenchChrome (PUL-F031 / ADR-031)', () => {
     expect(element.isHidden()).toBe(false);
   });
 
-  it.each([['standalone'], ['screenshot']] as const)(
-    "applyMode('%s') hides chrome (data-pulsar-chrome-visibility=hidden + hidden=true)",
-    (mode) => {
-      const element = buildFakeElement();
-      const chrome = createDomWorkbenchChrome({
-        mount: () => undefined,
-        createSurface: () => element,
-      });
-      chrome.applyMode(mode);
-      expect(element.attrs.get('data-pulsar-chrome-visibility')).toBe('hidden');
-      expect(element.isHidden()).toBe(true);
-    },
-  );
-
-  it.each([['loop'], ['paused'], ['scrub'], ['prompter'], ['rehearsal']] as const)(
-    "applyMode('%s') leaves chrome visible (other modes default to visible per preflight)",
+  it.each([['present'], ['prompter']] as const)(
+    "applyMode('%s') leaves chrome visible (ADR-032: both modes default to visible)",
     (mode) => {
       const element = buildFakeElement();
       const chrome = createDomWorkbenchChrome({
@@ -145,10 +124,14 @@ describe('createDomWorkbenchChrome (PUL-F031 / ADR-031)', () => {
     });
     chrome.applyMode('present');
     expect(element.isHidden()).toBe(false);
-    chrome.applyMode('standalone');
+    // A composition `behavior.chrome: hidden` override flips visibility
+    // (ADR-031) without recreating the surface.
+    chrome.setForcedVisibility('hidden');
+    chrome.applyMode('present');
     expect(element.isHidden()).toBe(true);
-    chrome.applyMode('screenshot');
+    chrome.applyMode('prompter');
     expect(element.isHidden()).toBe(true);
+    chrome.setForcedVisibility(null);
     chrome.applyMode('present');
     expect(element.isHidden()).toBe(false);
     // The same element instance — never re-created or re-mounted.
@@ -202,7 +185,7 @@ describe('createDomWorkbenchChrome (PUL-F031 / ADR-031)', () => {
     // throws. Capture the attrs snapshot to assert nothing changed.
     const snapshot = new Map(element.attrs);
     const hiddenSnapshot = element.isHidden();
-    chrome.applyMode('screenshot');
+    chrome.applyMode('prompter');
     chrome.setForcedVisibility('hidden');
     chrome.setAtmosphere('cinematic');
     expect(new Map(element.attrs)).toEqual(snapshot);

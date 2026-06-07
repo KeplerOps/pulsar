@@ -77,10 +77,6 @@ export const splitDialogueEmail = (id: string, content: SplitDialogueEmailConten
           innerTl.call(() => play(id, ctx, content));
           innerTl.to({}, { duration: 1 });
         },
-        onDeactivate: () => {
-          const s = sessions.get(id);
-          if (s !== undefined) s.abortedFlag.aborted = true;
-        },
       }),
     cleanup: (ctx) => {
       const s = sessions.get(id);

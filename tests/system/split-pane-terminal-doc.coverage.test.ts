@@ -150,7 +150,7 @@ describe('splitPaneTerminalDoc — behavioral coverage', () => {
     expect(figure.getAttribute('style')).toBe('transform: rotate(-2deg)');
   });
 
-  it('authors a timeline with the panes-in label and a non-trivial duration; activation flips on then off', () => {
+  it('authors a timeline with the panes-in label and a non-trivial duration; activation flips on and stays on through the end (ADR-032)', () => {
     const scene = splitPaneTerminalDoc('sptd-tl', {
       leftScript: [{ role: 'user', text: 'hi' }],
       rightDoc: { imgSrc: '/t.png' },
@@ -177,9 +177,10 @@ describe('splitPaneTerminalDoc — behavioral coverage', () => {
     tl.seek(0.001, false);
     expect(root.dataset.pulsarTemplateActive).toBe('true');
 
-    // Seek past the end: the trailing suffix tween's onComplete deactivates.
+    // ADR-032: reaching the natural end no longer deactivates the root — the
+    // run-loop holds for advance; teardown is the scene's cleanup job.
     tl.seek(tl.duration() + 0.1, false);
-    expect(root.dataset.pulsarTemplateActive).toBe('false');
+    expect(root.dataset.pulsarTemplateActive).toBe('true');
   });
 
   it('playScript types each script line into a ph-line--<role> span honoring per-line base + afterMs', async () => {
@@ -228,7 +229,7 @@ describe('splitPaneTerminalDoc — behavioral coverage', () => {
     expect(lines[0]?.querySelectorAll('.ph-char').length).toBe('who is alice'.length);
   });
 
-  it('onDeactivate aborts the running session so cleanup leaves no further lines, and removes the root', async () => {
+  it('cleanup aborts the running session so no further lines append, and removes the root', async () => {
     const scene = splitPaneTerminalDoc('sptd-abort', {
       leftScript: [
         { role: 'user', text: 'one' },
@@ -253,19 +254,17 @@ describe('splitPaneTerminalDoc — behavioral coverage', () => {
     await waitFor(() => term.querySelector('.ph-line--agent')?.textContent === 'two');
     expect(term.querySelectorAll('.ph-line').length).toBe(2);
 
-    // Seek past the end → suffix onComplete fires onDeactivate → abort flag set
-    // mid-dwell. suppressEvents=false so the onComplete actually runs.
-    tl.seek(tl.duration() + 0.1, false);
+    // ADR-032: the run-loop calls cleanup on scene exit; that sets the abort
+    // flag mid-dwell AND removes the root from the stage.
+    tl.kill();
+    scene.cleanup(ctx(stage));
+    expect(stage.querySelector('[data-pulsar-template="sptd-abort"]')).toBeNull();
 
     // Once the 3s dwell resolves, iteration three sees the abort flag and
     // breaks — the third (output) line is never appended.
     await new Promise<void>((resolve) => setTimeout(resolve, 3200));
     expect(term.querySelectorAll('.ph-line').length).toBe(2);
     expect(term.querySelector('.ph-line--output')).toBeNull();
-
-    // cleanup deletes the session and removes the root from the stage.
-    scene.cleanup(ctx(stage));
-    expect(stage.querySelector('[data-pulsar-template="sptd-abort"]')).toBeNull();
   });
 
   it('cleanup is safe when called without a prior timeline/session and still removes the root', () => {
