@@ -15,16 +15,12 @@ import {
   PULSAR_NAVIGATE_ERROR_EVENT_TYPE,
   PULSAR_NAVIGATE_EVENT_TYPE,
   bootstrapNavigation,
-  effectiveMode,
 } from './runtime/navigation';
+import { createPresentLoader } from './runtime/present-loader';
 import type { PrompterRenderer } from './runtime/prompter';
 import { createSceneRegistry } from './runtime/registry';
-import {
-  type WorkbenchChromeSlots,
-  type WorkbenchSceneCtx,
-  createSceneLoader,
-} from './runtime/scene-loader';
-import { createGsapCompositionTimeline, createTimelineEngine } from './runtime/timeline';
+import type { WorkbenchChromeSlots, WorkbenchSceneCtx } from './runtime/scene-loader';
+import { createTimelineEngine } from './runtime/timeline';
 import { assertNoValidationFindings, validateRuntime } from './runtime/validation';
 import { createDomWorkbenchChrome } from './runtime/workbench-chrome';
 // Pulsar L2 — register, chrome, templates, transitions.
@@ -32,12 +28,7 @@ import './system/register/tokens.css';
 import './system/chrome/atmospheric.css';
 import './system/chrome/chrome.css';
 import './system/templates/templates.css';
-import {
-  type ChromeSlots,
-  type ScrubControlsHandle,
-  createScrubControls,
-  mountChromeSlots,
-} from './system/chrome';
+import { type ChromeSlots, mountChromeSlots } from './system/chrome';
 import {
   type PracticeRendererHandle,
   type PresenterBridgeHandle,
@@ -48,7 +39,6 @@ import {
   createPresenterBridge,
   getPresenterSessionId,
 } from './system/presenter';
-import { defaultTransitions } from './system/transitions';
 import { WORKBENCH_COMPOSITIONS, WORKBENCH_SCENES } from './workbench-graph';
 
 const stage = document.querySelector('#stage');
@@ -91,52 +81,9 @@ const audioEngine = createHowlerAudioEngine();
 const createPreloader = (signal: AbortSignal): ReturnType<typeof createAssetPreloader> =>
   createAssetPreloader({ init: { signal } });
 
-// Timeline adapter — PUL-F022 / ADR-003 / ADR-025: composes scene timelines
-// into the master, applies URL head hints, wires audio + cue gate +
-// presenter, and resolves on natural completion or abort.
-// Inter-scene transition overlay (`<div>` on `document.body`, above the
-// chrome). L2 transitions tween it via the master timeline; living outside
-// the scene roots keeps it from desyncing scene-owned GSAP state.
-const transitionOverlay = document.createElement('div');
-transitionOverlay.dataset.pulsarTransition = 'overlay';
-transitionOverlay.style.position = 'fixed';
-transitionOverlay.style.inset = '0';
-transitionOverlay.style.pointerEvents = 'none';
-transitionOverlay.style.zIndex = 'var(--pulsar-z-transition)';
-transitionOverlay.style.opacity = '0';
-transitionOverlay.style.display = 'none';
-document.body.appendChild(transitionOverlay);
-
-// PUL-F017 / ADR-020: scrub controls (built below). Declared here so the
-// timeline adapter's `onMaster` hook can attach the live master; revealed
-// only under `mode=scrub` (re-derived per navigation in `onNavigate`).
-let scrubControls: ScrubControlsHandle | undefined;
-let scrubMode = false;
-
-let activeMode: NavigationMode = 'present';
-
-const applyActiveSegment = (segment: import('./runtime/timeline').MasterSegment): void => {
-  if (stage === null) return;
-  stage.setAttribute('data-pulsar-scene-target', segment.id);
-  if (activeMode !== 'present') return;
-  const roots = stage.querySelectorAll('[data-pulsar-template]');
-  for (const root of Array.from(roots)) {
-    const shouldActive = root.getAttribute('data-pulsar-template') === segment.id;
-    root.setAttribute('data-pulsar-template-active', shouldActive ? 'true' : 'false');
-  }
-};
-
-const timeline = createGsapCompositionTimeline({
-  engine: timelineEngine,
-  transitions: defaultTransitions(),
-  transitionOverlay,
-  onSegmentChange: applyActiveSegment,
-  // Reports the live master once per activation; only `mode=scrub`
-  // attaches it to the scrub controls (PUL-F017 / ADR-020).
-  onMaster: (master) => {
-    if (scrubMode) scrubControls?.attach(master);
-  },
-});
+// ADR-032: scene sequencing is the imperative run-loop (see
+// `present-loader.ts`) — no master-timeline adapter, transition overlay, or
+// scrub transport. The present-loader sets the active scene's stage marker.
 
 // Filled in after the chrome surface is mounted (below).
 let chromeSlots: ChromeSlots | undefined;
@@ -229,18 +176,7 @@ if (chromeSurfaceEl !== null) {
     surface: chromeSurfaceEl,
     ownerDocument: document,
   });
-  // PUL-F017 / ADR-020: scrub transport controls, mounted AFTER the slot DOM
-  // (`mountChromeSlots` clears the surface). Hidden until a scrub navigation.
-  scrubControls = createScrubControls({
-    ownerDocument: document,
-    parent: chromeSurfaceEl,
-  });
 }
-
-// PUL-F017 / ADR-020: drive the scrub readout off the GSAP ticker;
-// `sync()` is inert when the controls are hidden / detached.
-const syncScrubControls = (): void => scrubControls?.sync();
-timelineEngine.gsap.ticker.add(syncScrubControls);
 
 // L2 keyboard presenter source (see `keyboard-source.ts` for key mappings).
 // `onHome` pushes the default-composition URL and lets the popstate
@@ -298,33 +234,23 @@ if (chromeSlots !== undefined) {
   });
 }
 
-const loader = createSceneLoader({
+const loader = createPresentLoader({
   scenes: sceneRegistry,
   compositions: compositionRegistry,
-  stage,
-  buildCtx,
-  createPreloader,
-  timeline,
+  ...(chromeSlots !== undefined ? { chrome: chromeSlots } : {}),
   audioEngine,
-  renderPrompter,
-  audioUnlockAdapter,
-  chrome,
   presenterCommands: combinedPresenterSource,
+  audioUnlockAdapter,
+  renderPrompter,
+  createPreloader,
+  buildCtx,
+  onError: (err) => console.error('pulsar navigation error:', err),
 });
 
 const onNavigate = (event: Event): void => {
-  const target = (event as CustomEvent<NavigationTarget>).detail;
-  // PUL-F017 / ADR-020: re-derive scrub mode from the URL and detach from
-  // any prior master; a scrub activation re-attaches via `onMaster`.
-  activeMode = effectiveMode(target);
-  scrubMode = activeMode === 'scrub';
-  scrubControls?.detach();
-  void loader.handle(target);
+  void loader.handle((event as CustomEvent<NavigationTarget>).detail);
 };
 const onNavigateError = (event: Event): void => {
-  activeMode = 'present';
-  scrubMode = false;
-  scrubControls?.detach();
   loader.handleError((event as CustomEvent<Error>).detail);
 };
 
@@ -342,11 +268,8 @@ import.meta.hot?.dispose(() => {
   globalThis.removeEventListener(PULSAR_NAVIGATE_ERROR_EVENT_TYPE, onNavigateError);
   loader.dispose();
   chrome.dispose();
-  transitionOverlay.remove();
   presenterKeyboard.dispose();
   presenterBridge.dispose();
   stageObserver?.disconnect();
   practiceRenderer?.dispose();
-  timelineEngine.gsap.ticker.remove(syncScrubControls);
-  scrubControls?.dispose();
 });

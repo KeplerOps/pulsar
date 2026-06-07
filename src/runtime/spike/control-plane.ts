@@ -302,7 +302,8 @@ const asPlayableTimeline = (value: unknown): ControllableTimeline | null => {
 };
 
 export interface RunModuleDeps {
-  readonly chrome: ChromeSlots;
+  /** L2 chrome slots reset between scenes; omit in non-DOM/headless runs. */
+  readonly chrome?: ChromeSlots;
   readonly audio?: AudioService;
   readonly presenter?: PresenterController;
   /** Navigation supersession signal (jump away / teardown the whole run). */
@@ -354,7 +355,7 @@ async function runOneModule(
     } catch (err) {
       report(deps, err);
     }
-    resetChrome(deps.chrome);
+    if (deps.chrome !== undefined) resetChrome(deps.chrome);
   }
   return gate.getReason();
 }

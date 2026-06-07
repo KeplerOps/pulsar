@@ -21,7 +21,6 @@ import {
 } from '../../runtime/scene';
 import type { WorkbenchSceneCtx } from '../../runtime/scene-loader';
 import type { ChromeSlots } from '../chrome';
-import { addAdvanceGate } from '../helpers/timing';
 
 // ---------- ctx view --------------------------------------------------
 
@@ -184,30 +183,20 @@ export const buildTemplateTimeline = (host: BuildTemplateTimelineHost): Template
   if (ctx.stage === null) return null;
   const root = findTemplateRoot(host.ctx, host.rootValue);
   const suffix = host.suffixDurationSeconds ?? 0.5;
-  const hold = host.holdForAdvance !== false;
   const tl = ctx.gsap.timeline();
   tl.call(() => {
     deactivateOtherRoots(ctx.stage, host.rootValue);
     setTemplateActive(root, true);
   });
   host.buildSegments(tl, root);
-  if (hold) addAdvanceGate(tl);
+  // ADR-032 run-loop: no master advance-gate. The scene timeline plays
+  // standalone to its natural end; the run-loop then holds for advance and
+  // removes the root on cleanup, so the root stays visible until then — no
+  // deactivate-on-complete that would blank the scene before advance.
   const userOnDeactivate = host.onDeactivate;
-  // Trailing tween whose onComplete deactivates the root. Suffix
-  // duration is intentionally small so the window between "this
-  // scene's onComplete" and "next scene's leading setActive(true)"
-  // is imperceptible — otherwise both roots briefly stack on the
-  // stage during the cross-fade.
-  tl.to(
-    {},
-    {
-      duration: suffix,
-      onComplete: () => {
-        setTemplateActive(root, false);
-        if (userOnDeactivate !== undefined) userOnDeactivate();
-      },
-    },
-  );
+  if (userOnDeactivate !== undefined) {
+    tl.to({}, { duration: suffix, onComplete: () => userOnDeactivate() });
+  }
   return tl;
 };
 

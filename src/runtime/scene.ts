@@ -20,6 +20,18 @@ export interface Caption {
   text: string;
 }
 
+/**
+ * Identity of one scene activation within a navigation slice (PUL-F008 /
+ * issue #99). `entryIndex` is the 0-based position in the slice; `occurrence`
+ * is the 0-based ordinal among entries that share the same scene id, so
+ * repeated scenes get independent DOM / audio / rng / disposal ownership.
+ */
+export interface SceneActivation {
+  readonly sceneId: string;
+  readonly entryIndex: number;
+  readonly occurrence: number;
+}
+
 /** Lifecycle function signature; `ctx` is opaque here, refined by the loader. */
 export type SceneLifecycleFn = (ctx: unknown) => unknown;
 
